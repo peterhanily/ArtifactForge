@@ -11,13 +11,15 @@ import sqlite3
 
 from artifactforge import suite
 from artifactforge.compose.scene import build_macos_scene
+from artifactforge.content import ContentStore
 from artifactforge.model import macos_profile
 
 KEY = suite.scenario_key(suite.PUBLIC_DEV_KEY, "test-macos-scene")
 
 
 def _scene(tmp_path, name="s"):
-    return build_macos_scene(skey=KEY, profile=macos_profile(),
+    store = ContentStore("artifactforge::test", str(tmp_path / "content"))
+    return build_macos_scene(store, skey=KEY, profile=macos_profile(),
                              scene_dir=str(tmp_path / name / "scene"),
                              staging_dir=str(tmp_path / name / "staging"))
 

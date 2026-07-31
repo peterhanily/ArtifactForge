@@ -38,10 +38,14 @@ jobs:
         run: |
           uv run python - <<'PY'
           import sqlite3
-          import pefile, regipy, windowsprefetch, yara
+          import lief, macholib, pefile, pyregf, pyscca, regipy, windowsprefetch, yara
           print("pefile          ", pefile.__version__)
+          print("lief            ", lief.__version__)
+          print("macholib        ", macholib.__version__)
           print("regipy          ", getattr(regipy, "__version__", "(unversioned)"))
+          print("libregf         ", pyregf.get_version())
           print("windowsprefetch ", getattr(windowsprefetch, "__version__", "(unversioned)"))
+          print("libscca         ", pyscca.get_version())
           print("yara-python     ", yara.__version__)
           print("sqlite3         ", sqlite3.sqlite_version)
           PY

@@ -202,3 +202,45 @@ def test_solvability_reddens_when_the_blind_adversary_is_broken(tmp_path):
     after = solvability.run(holdout, broken_control)
     assert not after.ok
     assert any("it is broken" in f for f in after.fails), after.fails
+
+
+def _macos(tmp_path, name="m"):
+    return next(t for t in _suite(tmp_path, name) if t.family == "macos")
+
+
+def test_identity_reddens_when_the_macho_no_longer_matches_the_scene(tmp_path):
+    """MUTATION: append one byte to the subject's Mach-O.
+
+    The macOS half of the keystone. Before this landed the gate carried a declared gap
+    saying macOS scenes had no hash-shaped field at all, so there was nothing here to break.
+    """
+    task = _macos(tmp_path)
+    before = identity.run(task.directory, task.join)
+    assert before.ok, f"gate 2 must be green before the mutation:\n{before.render()}"
+
+    with open(os.path.join(task.directory, task.join["subject"]["bundle_id"]), "ab") as f:
+        f.write(b"\x00")
+
+    after = identity.run(task.directory, task.join)
+    assert not after.ok
+    new = _new_fails(before, after)
+    assert any("sha256" in f for f in new), new
+
+
+def test_identity_reddens_when_the_quarantine_uuid_join_is_broken(tmp_path):
+    """MUTATION: point the subject's xattr at a UUID no quarantine row carries."""
+    task = _macos(tmp_path)
+    before = identity.run(task.directory, task.join)
+    assert before.ok
+
+    path = os.path.join(task.directory,
+                        f"{task.join['subject']['bundle_id']}.quarantine.xattr")
+    with open(path) as f:
+        head = f.read().rsplit(";", 1)[0]
+    with open(path, "w") as f:
+        f.write(head + ";00000000-0000-4000-8000-000000000000")
+
+    after = identity.run(task.directory, task.join)
+    assert not after.ok
+    assert any("quarantine UUID" in f or "matches no row" in f
+               for f in _new_fails(before, after)), _new_fails(before, after)

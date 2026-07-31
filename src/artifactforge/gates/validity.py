@@ -24,6 +24,7 @@ from artifactforge.gates import GateReport
 # format -> the oracles that must all read it, plus any declared gap in that oracle set.
 ORACLES = {
     "pe":       {"required": ["pefile", "lief"], "gap": None},
+    "macho":    {"required": ["lief", "macholib"], "gap": None},
     "hive":     {"required": ["regipy", "libregf"], "gap": None},
     "prefetch": {"required": ["windowsprefetch", "pyscca"], "gap": None},
     "sqlite":   {"required": ["sqlite3"],
@@ -68,6 +69,12 @@ def _read_lief(path):
     if b is None:
         raise ValueError("lief returned None")
     return f"format={b.format}"
+
+
+def _read_macholib(path):
+    from macholib.MachO import MachO
+    m = MachO(path)
+    return f"headers={len(m.headers)},cmds={len(m.headers[0].commands)}"
 
 
 def _read_regipy(path):
@@ -121,6 +128,7 @@ def _read_plistlib(path):
 READERS = {
     "pefile": _read_pefile,
     "lief": _read_lief,
+    "macholib": _read_macholib,
     "regipy": _read_regipy,
     "libregf": _read_libregf,
     "windowsprefetch": _read_windowsprefetch,

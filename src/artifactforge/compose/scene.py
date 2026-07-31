@@ -153,7 +153,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     return Scene("windows", scene_dir, artifacts, join)
 
 
-def build_macos_scene(*, skey: bytes, profile: HostProfile,
+def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
                       scene_dir: str, staging_dir: str) -> Scene:
     support = f"{profile.home_dir}/Library/Application Support"
     t = profile.mac_abs_time()
@@ -165,6 +165,16 @@ def build_macos_scene(*, skey: bytes, profile: HostProfile,
 
     def app_path(b):
         return f"{support}/{b}/{b.rsplit('.', 1)[-1]}"
+
+    # --- the binaries. Real Mach-O, routed through the same ContentStore as the PEs, so a
+    # macOS scene carries genuine hash-shaped identity rather than only database rows. The
+    # signing identifier is part of the content id because it lives inside the CodeDirectory
+    # and therefore changes the file's SHA256.
+    binaries = {}
+    for b in [subject, also_granted, persisted_only, *benign]:
+        c = store.materialize(f"macho:{b}:" + suite.content_seed(skey, f"macho:{b}"))
+        binaries[b] = c
+        _write(staging_dir, b, c.bytes)
 
     # --- quarantine: five downloads, each with its own UUID and origin ----------------
     all_bundles = [subject, also_granted, persisted_only, *benign]
@@ -200,11 +210,13 @@ def build_macos_scene(*, skey: bytes, profile: HostProfile,
         _write(staging_dir, f"{b}.plist", build_launch_agent(b, app_path(b)))
 
     allowlist = sorted(["QuarantineEventsV2", "TCC.db", "knowledgeC.db",
+                        *all_bundles,
                         *[f"{b}.plist" for b in agents],
                         *[f"{b}.quarantine.xattr" for b in all_bundles]])
     artifacts = suite.stage(scene_dir, staging_dir, allowlist)
 
     u, agent, url = uuids[subject]
+    c = binaries[subject]
     join = {
         "family": "macos",
         "os": f"{profile.os_family} {profile.version}",
@@ -212,15 +224,19 @@ def build_macos_scene(*, skey: bytes, profile: HostProfile,
         "user": profile.username,
         "subject": {"bundle_id": subject, "app_path": app_path(subject),
                     "quarantine_uuid": u, "download_url": url, "agent": agent,
-                    "tcc_service": tcc_rows[0][1]},
+                    "tcc_service": tcc_rows[0][1],
+                    "sha256": c.sha256, "sha1": c.sha1, "md5": c.md5,
+                    "symhash": c.symhash, "cdhash": c.cdhash, "marker": c.marker},
         "decoys": {"bundles": len(all_bundles), "tcc_rows": len(tcc_rows),
                    "quarantine_rows": len(events), "launch_agents": len(agents),
+                   "binaries": len(binaries),
                    "also_granted": also_granted, "persisted_only": persisted_only},
         "pivots": {
             "subject": "the one TCC-allowed client that also appears in knowledgeC",
             "download_url": "subject -> its quarantine xattr UUID -> QuarantineEventsV2 row",
             "agent": "the same row's LSQuarantineAgentName",
             "persistence": "subject -> the LaunchAgent whose Label matches it",
+            "sha256": "subject -> the binary on disk carrying its bundle identifier",
         },
     }
     return Scene("macos", scene_dir, artifacts, join)

@@ -117,7 +117,25 @@ def _windows(r: GateReport, scene_dir: str, join: dict):
 
 
 def _macos(r: GateReport, scene_dir: str, join: dict):
+    from artifactforge.content.macho import cdhash_of_file
+
     s = join["subject"]
+
+    # The macOS half of the keystone: the subject's binary is a real Mach-O and every
+    # hash-shaped field about it is re-derived from those bytes.
+    binary = os.path.join(scene_dir, s["bundle_id"])
+    if os.path.exists(binary):
+        with open(binary, "rb") as f:
+            data = f.read()
+        _check(r, "disk->subject", "sha256", hashlib.sha256(data).hexdigest(), s["sha256"])
+        _check(r, "disk->subject", "sha1",
+               hashlib.sha1(data).hexdigest(), s["sha1"])             # noqa: S324 - identity
+        _check(r, "codesign blob->subject", "cdhash", cdhash_of_file(data), s["cdhash"])
+        _check(r, "disk->subject", "the binary is a 64-bit Mach-O",
+               data[:4], b"\xcf\xfa\xed\xfe")
+    else:
+        r.fail("disk: the subject application has no binary, so its hashes are claims about "
+               "a file nobody can check")
 
     granted = {row[0] for row in _q(scene_dir, "TCC.db",
                                     "SELECT client FROM access WHERE auth_value = 2")}
@@ -164,8 +182,6 @@ def run(scene_dir: str, join: dict) -> GateReport:
         _windows(r, scene_dir, join)
     else:
         _macos(r, scene_dir, join)
-        r.gap("macOS scenes carry no binary and therefore no hash-shaped field; the keystone "
-              "currently covers the Windows family only")
     joined = r.metrics.get("checks_joined", 0)
     total = r.metrics.get("checks_total", 0)
     r.denominator = f"{joined}/{total} cross-artifact identity checks hold"

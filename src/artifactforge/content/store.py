@@ -1,17 +1,19 @@
-"""Deterministic content-first identity — the ArtifactForge keystone.
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
+"""Content-first identity — the keystone.
 
-Synthesize a file's real bytes once from a seed; every hash-shaped field in every
-artifact (Sysmon log, Zeek files.log, Amcache, on-disk bytes, YARA target, IMPHASH) is
-then a real digest of those SAME bytes / that same import table, so they agree by
-construction. This is the fix for EvidenceForge's per-emitter seed-string hashes.
+Synthesize a file's real bytes once from a seed; every hash-shaped field in every artifact —
+Amcache FileId, the digest on disk, a YARA target, IMPHASH on Windows, symhash on macOS — is
+then a real digest of those same bytes and that same import table. They agree by construction
+rather than by assertion, which is the fix for EvidenceForge computing a file's "hashes" as
+digests of a per-emitter seed string.
 
-Bytes are a pure function of the seed — no wall clock, no os.urandom, no PID — so the
-same scenario regenerates byte-identical forever (the two-clock determinism gate). The PE
-is hand-assembled (not via LIEF, which promises no determinism) including a real import
-table, so pefile computes a genuine, stable IMPHASH.
+Bytes are a pure function of the seed, so the same identity regenerates byte-identical
+forever. Both writers are hand-assembled rather than driven by a toolchain or by LIEF,
+neither of which promises determinism.
 
-Generated PEs are INERT SYNTHETIC STUBS (code section is a single `ret`), never
-functional malware.
+Everything generated here is inert: the code section is a single return instruction and
+nothing else. See artifactforge.gates.inertness, which checks that on the emitted bytes.
 """
 from __future__ import annotations
 
@@ -20,17 +22,8 @@ import os
 import struct
 from dataclasses import dataclass
 
-
-def _sub_seed(parent: bytes, domain: str) -> bytes:
-    return hashlib.sha256(parent + b"|" + domain.encode()).digest()
-
-
-def _prng_bytes(seed: bytes, n: int) -> bytes:
-    out, ctr = b"", 0
-    while len(out) < n:
-        out += hashlib.sha256(seed + struct.pack("<Q", ctr)).digest()
-        ctr += 1
-    return out[:n]
+from artifactforge.content.seed import prng_bytes as _prng_bytes
+from artifactforge.content.seed import sub_seed as _sub_seed
 
 
 # Realistic benign import pool; the seed picks a deterministic subset so IMPHASH varies
@@ -166,19 +159,28 @@ def build_pe_stub(content_seed: bytes) -> bytes:
 
 @dataclass(frozen=True)
 class Content:
+    """One file's bytes and every identity a forensic artifact might quote about them."""
+
     bytes: bytes
     path: str
+    fmt: str            # "pe" | "macho"
     sha256: str
     sha1: str
     md5: str
-    imphash: str
     marker: str
+    imphash: str = ""   # PE only — md5 of the import table, as pefile computes it
+    symhash: str = ""   # Mach-O only — md5 of the sorted undefined external symbols
+    cdhash: str = ""    # Mach-O only — what `codesign -d` reports
 
 
-#: A content_id is "<format>:<anything>". The prefix selects the writer, and an unrecognised
-#: one raises rather than falling through to PE — a `macho:` id quietly yielding a Windows
-#: binary is the kind of bug that only surfaces in a parser months later.
-KNOWN_FORMATS = ("pe",)
+#: A content_id is "<format>:<...>". The prefix selects the writer, and an unrecognised one
+#: raises rather than falling through to PE — a `macho:` id quietly yielding a Windows binary
+#: is the kind of bug that only surfaces in a parser months later.
+#:
+#: A Mach-O id is "macho:<signing identifier>:<...>". The signing identifier has to be part of
+#: the identity because it lives inside the CodeDirectory, so it changes the file's length and
+#: therefore its SHA256; passing it separately would break the content_id -> bytes contract.
+KNOWN_FORMATS = ("pe", "macho")
 
 
 class ContentStore:
@@ -218,10 +220,24 @@ class ContentStore:
                 f"unknown content_id format {fmt!r} in {content_id!r}; "
                 f"known formats: {sorted(KNOWN_FORMATS)}")
         seed = _sub_seed(self._root, content_id)
-        imports = _pick_imports(seed)
-        data = _assemble_pe(seed, imports)
-        sha256 = hashlib.sha256(data).hexdigest()
-        path = self._store(sha256, data)
         marker = "ARTIFACTFORGE-SYNTHETIC-" + _prng_bytes(_sub_seed(seed, "marker"), 8).hex()
-        return Content(data, path, sha256, hashlib.sha1(data).hexdigest(),
-                       hashlib.md5(data).hexdigest(), imphash_of(imports), marker)
+        extra = {}
+        if fmt == "pe":
+            imports = _pick_imports(seed)
+            data = _assemble_pe(seed, imports)
+            extra["imphash"] = imphash_of(imports)
+        else:
+            from artifactforge.content import macho
+            parts = content_id.split(":")
+            if len(parts) < 3 or not parts[1]:
+                raise ValueError(
+                    f"a Mach-O content_id must be 'macho:<signing identifier>:<...>'; "
+                    f"got {content_id!r}")
+            imports = macho.pick_imports(seed)
+            data = macho.build_macho(seed, imports, sign_identifier=parts[1])
+            extra["symhash"] = macho.symhash_of(imports)
+            extra["cdhash"] = macho.cdhash_of_file(data)
+        sha256 = hashlib.sha256(data).hexdigest()
+        return Content(data, self._store(sha256, data), fmt, sha256,
+                       hashlib.sha1(data).hexdigest(), hashlib.md5(data).hexdigest(),
+                       marker, **extra)

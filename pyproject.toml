@@ -11,12 +11,24 @@ dependencies = []
 
 [project.optional-dependencies]
 # Real DFIR parsers used only as CI oracles (consistency-by-construction), never to generate.
+# Two independently-implemented parsers per format, because one permissive parser hides what
+# a strict one rejects: every prefetch file this project emitted was accepted by
+# `windowsprefetch` and refused by libyal's `pyscca` — which plaso is built on — for as long
+# as `windowsprefetch` was the only oracle installed.
+#   PE        pefile + lief
+#   Mach-O    lief + macholib
+#   registry  regipy + libregf
+#   prefetch  windowsprefetch + libscca
 dev = [
     "pytest>=8",
     "pefile",
+    "lief",
+    "macholib",
     "yara-python",
     "regipy",
+    "libregf-python",
     "windowsprefetch",
+    "libscca-python",
     # Pin below 0.16: ruff 0.16 turns on new default lint rules that flag pre-existing code,
     # which breaks CI on an unpinned upgrade. Cap so CI is reproducible; bump deliberately
     # (and clear the new findings) when adopting 0.16+.

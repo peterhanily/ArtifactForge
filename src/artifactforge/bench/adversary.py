@@ -62,12 +62,22 @@ def blind_solve(public) -> dict:
              if n != suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)])
     else:
         from artifactforge import pools
+        from artifactforge.content import ContentStore
+        from artifactforge.model import macos_profile
         subject = suite.pick_many(skey, "bundles", pools.BUNDLES, 3)[0]
         host = suite.pick(skey, f"dlhost:{subject}", pools.DOWNLOAD_HOSTS)
+        cache = os.path.join(public.directory, "..", "..", "_blind-cache")
+        store = ContentStore("artifactforge::suite", os.path.abspath(cache))
+        c = store.materialize(f"macho:{subject}:" + suite.content_seed(skey, f"macho:{subject}"))
+        profile = macos_profile(username=suite.pick(skey, "user", pools.USERS))
         a["granted_and_used_bundle"] = subject
         a["subject_download_url"] = f"https://{host}/{subject}.dmg"
         a["subject_quarantine_agent"] = suite.pick(skey, f"agent:{subject}",
                                                    pools.DOWNLOAD_AGENTS)
+        a["subject_binary_sha256"] = c.sha256
+        a["subject_binary_symhash"] = c.symhash
+        a["subject_persistence_path"] = (f"{profile.home_dir}/Library/Application Support/"
+                                         f"{subject}/{subject.rsplit('.', 1)[-1]}")
     return a
 
 

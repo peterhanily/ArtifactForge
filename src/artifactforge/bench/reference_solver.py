@@ -124,6 +124,18 @@ def _solve_macos(d: str) -> dict:
     # Pivot 3: the LaunchAgent whose Label is that bundle id.
     with open(os.path.join(d, f"{subject}.plist"), "rb") as f:
         a["subject_persistence_path"] = plistlib.load(f)["ProgramArguments"][0]
+
+    # Pivot 4: that app's binary, read with a real Mach-O parser.
+    import lief
+    with open(os.path.join(d, subject), "rb") as f:
+        data = f.read()
+    a["subject_binary_sha256"] = hashlib.sha256(data).hexdigest()
+    binary = lief.parse(os.path.join(d, subject))
+    undefined = sorted(sym.name for sym in binary.symbols
+                       if sym.is_external and not sym.has_export_info
+                       and sym.name.startswith("_"))
+    a["subject_binary_symhash"] = hashlib.md5(                        # noqa: S324 - identity
+        ",".join(undefined).encode()).hexdigest()
     return a
 
 

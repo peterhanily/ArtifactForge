@@ -153,6 +153,14 @@ def _macos_questions(join: dict) -> list:
         Question("subject_persistence_path",
                  "Give the program path its LaunchAgent launches.",
                  "path", s["app_path"], joins=2),
+        Question("subject_binary_sha256",
+                 "Each application's binary is present, named by its bundle identifier. "
+                 "Give the SHA256 of that application's binary.",
+                 "hash", s["sha256"], joins=3),
+        Question("subject_binary_symhash",
+                 "Give that binary's symhash — the md5 of its sorted undefined external "
+                 "symbol names, the Mach-O analogue of IMPHASH.",
+                 "imphash", s["symhash"], joins=3),
     ]
 
 
@@ -183,7 +191,7 @@ def generate_suite(n: int, root: str, *, key: bytes = suite.PUBLIC_DEV_KEY,
             questions = _windows_questions(scene.join)
         else:
             profile = _profile(skey, "macos")
-            scene = build_macos_scene(skey=skey, profile=profile,
+            scene = build_macos_scene(store, skey=skey, profile=profile,
                                       scene_dir=scene_dir, staging_dir=staging)
             questions = _macos_questions(scene.join)
 

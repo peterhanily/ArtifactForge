@@ -1,15 +1,18 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""HostProfile — OS family, version, and settings as DATA, not code.
+"""The host a scene happens on, and the pinned time it happens at.
 
-The generators read a profile instead of hard-coding host details, so OS versions and
-settings become small data records rather than new code paths. This keeps breadth at the
-loose-file tier (families parameterized by version) and out of the per-OS block-level trap.
+Deliberately small. An earlier version of this record carried a timezone, a per-format version
+knob and an open `extra` dict, none of which anything ever read — configurability nobody had
+asked for, which reads as flexibility and behaves as noise. What remains is what the scene
+builders actually use.
+
+Depends on nothing.
 """
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Mac absolute time epoch (2001-01-01) vs Unix epoch.
 _MAC_EPOCH_OFFSET = 978307200
@@ -23,10 +26,6 @@ class HostProfile:
     version: str              # e.g. "10.0.19045", "14.4.1", "22.04"
     hostname: str
     username: str
-    timezone: str = "UTC"
-    # format-version knobs (loose-file tier); defaults suit the family
-    prefetch_version: int = 17
-    extra: dict = field(default_factory=dict)
 
     @property
     def home_dir(self) -> str:
@@ -35,9 +34,6 @@ class HostProfile:
         if self.os_family == "macos":
             return f"/Users/{self.username}"
         return f"/home/{self.username}"
-
-    def seed_tag(self) -> str:
-        return f"{self.os_family}:{self.version}:{self.hostname}:{self.username}"
 
     def mac_abs_time(self, unix_ts: int = PINNED_UNIX) -> int:
         return unix_ts - _MAC_EPOCH_OFFSET
@@ -53,7 +49,7 @@ def deterministic_uuid(seed: str) -> str:
 
 
 def windows_profile(hostname="WKSTN-01", username="v", version="10.0.19045") -> HostProfile:
-    return HostProfile("windows", version, hostname, username, prefetch_version=17)
+    return HostProfile("windows", version, hostname, username)
 
 
 def macos_profile(hostname="mac-01", username="v", version="14.4.1") -> HostProfile:

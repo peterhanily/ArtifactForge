@@ -24,18 +24,10 @@ ef-out/
 **/_key/
 *.key.hex
 
-# Keep the committed sample artifacts, but narrowly. A blanket `!samples/**` would re-enable
-# EVERY ignored pattern inside samples/, which is the one directory where a real artifact
-# could be staged by mistake. Negations first, then deny rules, which win.
-!samples/**/
-!samples/**/*.md
-!samples/**/*.json
-!samples/**/*.exe
-!samples/**/*.hve
-!samples/**/*.hive
-!samples/**/*.pf
-!samples/**/*.plist
-!samples/**/*.db
+# samples/ holds committed artifacts, and nothing above matches them — so there are no
+# negations here on purpose. A blanket `!samples/**` would re-enable EVERY ignored pattern
+# inside the one directory where a real artifact could be staged by mistake, which is the
+# opposite of what it looks like it does. These are deny rules only, and deny rules win.
 samples/**/real*
 samples/**/.DS_Store
 samples/**/*.env

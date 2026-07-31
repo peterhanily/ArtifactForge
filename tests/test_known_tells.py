@@ -68,3 +68,25 @@ def test_the_security_policy_and_inertness_doc_exist_and_link_up():
     assert "security@" in security, "a security policy with no address is a decoration"
     assert "docs/inert-by-construction.md" in security
     assert MARKER in inert and "SECURITY.md" in inert
+
+
+def test_no_document_links_to_a_file_that_does_not_exist():
+    """Relative links rot silently, and a README pointing at a deleted design doc is the
+    cheapest possible way to look careless."""
+    import glob
+    docs = ([os.path.join(ROOT, n) for n in
+             ("README.md", "SECURITY.md", "KNOWN_TELLS.md", "CHANGELOG.md", "CLAUDE.md")]
+            + glob.glob(os.path.join(ROOT, "docs", "*.md"))
+            + glob.glob(os.path.join(ROOT, "samples", "**", "*.md"), recursive=True)
+            + glob.glob(os.path.join(ROOT, "integration", "**", "*.md"), recursive=True))
+    broken = []
+    for doc in docs:
+        if not os.path.exists(doc):
+            continue
+        with open(doc) as f:
+            body = f.read()
+        for target in re.findall(r"\]\((?!https?://|#)([^)#]+)", body):
+            resolved = os.path.normpath(os.path.join(os.path.dirname(doc), target))
+            if not os.path.exists(resolved):
+                broken.append(f"{os.path.relpath(doc, ROOT)} -> {target}")
+    assert not broken, broken

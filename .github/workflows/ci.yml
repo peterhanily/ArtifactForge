@@ -22,6 +22,7 @@ jobs:
   # cannot go green without it, the standalone claim is false.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +83,18 @@ jobs:
       # half is the control that stops the first from passing vacuously.
       - name: Gate 4 — solvability (must PASS)
         run: uv run artifactforge gate solvability --n 4
+
+      # The committed gallery must still be what the generator produces. A regeneration that
+      # differs is a change in the generator, and it should be reviewed as one rather than
+      # discovered by a reader.
+      - name: Samples — regenerate and byte-diff against what is committed
+        run: |
+          cp -r samples samples.committed
+          PY=.venv/bin/python AF=.venv/bin/artifactforge ./scripts/make-samples.sh
+          diff -r samples.committed samples && echo "committed samples are reproducible"
+
+      - name: Demo — the whole loop end to end
+        run: AF=.venv/bin/artifactforge ./scripts/demo.sh
 
       - name: Scorecard — no tracked metric may regress
         run: uv run artifactforge scorecard --check fidelity-scorecard.json

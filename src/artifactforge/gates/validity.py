@@ -36,6 +36,13 @@ ORACLES = {
 }
 
 
+#: Files that travel with a scene but are not artifacts: documentation, answer keys, and the
+#: quarantine xattr, which is a value emitted as data rather than a format with a parser. They
+#: have no oracle because there is nothing to be wrong about. Anything else the gate cannot
+#: classify IS a failure — an unidentifiable file in a scene is exactly what should be noticed.
+_SIDECAR_SUFFIXES = (".md", ".json", ".txt", ".quarantine.xattr")
+
+
 def classify(path: str) -> str | None:
     """Which format is this file? Magic first, extension only as a tiebreak."""
     with open(path, "rb") as f:
@@ -148,8 +155,8 @@ def run(scene_dir: str) -> GateReport:
         path = os.path.join(scene_dir, name)
         if not os.path.isfile(path) or name.startswith("."):
             continue
-        if name == "JOIN_MANIFEST.json" or name.endswith(".quarantine.xattr"):
-            continue                                     # metadata, not an artifact format
+        if name.endswith(_SIDECAR_SUFFIXES):
+            continue
         fmt = classify(path)
         if fmt is None:
             r.fail(f"{name}: no format recognised, so nothing can validate it")

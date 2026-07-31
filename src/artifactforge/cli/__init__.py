@@ -156,6 +156,76 @@ def cmd_bench_new(args) -> int:
     return 0
 
 
+def _load_suite(root: str):
+    """Read a suite back from disk: what a solver sees, and what the grader knows."""
+    from artifactforge.bench.benchmark import PublicQuestion, PublicTask
+    with open(suite.suite_paths(root)["public"]) as f:
+        public = json.load(f)
+    tasks = []
+    for entry in public["scenarios"]:
+        tasks.append(PublicTask(
+            entry["scenario_id"], entry["family"],
+            os.path.join(suite.suite_paths(root)["scenarios"], entry["scenario_id"]),
+            [PublicQuestion(q["id"], q["prompt"], q["kind"], q["joins"])
+             for q in entry["questions"]]))
+    return public, tasks
+
+
+def cmd_bench_solve(args) -> int:
+    """Run the reference solver over a suite and write a submission.
+
+    Exactly what an evaluated agent would produce, so the grading path is exercised by the
+    same route a real submission takes rather than by a shortcut.
+    """
+    from artifactforge.bench.reference_solver import reference_solve
+    _public, tasks = _load_suite(args.suite)
+    with open(args.out, "w") as f:
+        for task in tasks:
+            f.write(json.dumps({"scenario_id": task.scenario_id,
+                                "answers": reference_solve(task)}) + "\n")
+    print(f"wrote {len(tasks)} submissions to {args.out}")
+    return 0
+
+
+def cmd_bench_grade(args) -> int:
+    from artifactforge.bench.benchmark import normalize
+    public, _tasks = _load_suite(args.suite)
+    submitted = {}
+    with open(args.submission) as f:
+        for line in f:
+            if line.strip():
+                row = json.loads(line)
+                submitted[row["scenario_id"]] = row.get("answers") or {}
+
+    correct = total = 0
+    per_kind = {}
+    for entry in public["scenarios"]:
+        answers = submitted.get(entry["scenario_id"], {})
+        key = suite.read_answers(args.suite, entry["scenario_id"])["answers"]
+        for q in entry["questions"]:
+            expected = key.get(q["id"])
+            ok = (isinstance(answers, dict)
+                  and normalize(answers.get(q["id"]), q["kind"])
+                  == normalize(expected, q["kind"]))
+            hit, seen = per_kind.get(q["kind"], (0, 0))
+            per_kind[q["kind"]] = (hit + int(ok), seen + 1)
+            correct += int(ok)
+            total += 1
+
+    for kind in sorted(per_kind):
+        hit, seen = per_kind[kind]
+        print(f"  {kind:10s} {hit}/{seen}")
+    if public.get("suite_kind") == "dev":
+        # A dev suite is built with the key published in the source. Printing an accuracy for
+        # it would produce a number someone will eventually quote, and it would mean nothing.
+        print(f"  SCORE (DEV SUITE - NOT REPORTABLE): {correct}/{total}")
+        print("  Build a hold-out suite to measure anything: "
+              "artifactforge bench new SUITE --kind holdout")
+        return 0
+    print(f"  SCORE: {correct}/{total} = {correct / total:.1%}" if total else "  no questions")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="artifactforge", description=__doc__)
     p.add_argument("--version", action="version", version=__version__)
@@ -183,6 +253,16 @@ def main(argv=None) -> int:
     bn.add_argument("--kind", choices=("dev", "holdout"), default="dev",
                     help="dev uses the published key and is not reportable; holdout mints one")
     bn.set_defaults(func=cmd_bench_new)
+
+    bs = bsub.add_parser("solve", help="run the reference solver and write a submission")
+    bs.add_argument("suite")
+    bs.add_argument("--out", default="answers.jsonl")
+    bs.set_defaults(func=cmd_bench_solve)
+
+    bg = bsub.add_parser("grade", help="score a submission against a suite")
+    bg.add_argument("suite")
+    bg.add_argument("--submission", default="answers.jsonl")
+    bg.set_defaults(func=cmd_bench_grade)
 
     args = p.parse_args(argv)
     return args.func(args)

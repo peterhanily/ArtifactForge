@@ -8,8 +8,8 @@ with the canonical forensic queries; plistlib), driven entirely by a HostProfile
 import plistlib
 import sqlite3
 
-from artifactforge.profile import macos_profile
-from artifactforge.scenario import build_macos_crime_scene
+from artifactforge.model import macos_profile
+from artifactforge.compose.scene import build_macos_crime_scene
 
 APP = dict(bundle_id="com.acme.updater",
            app_path="/Users/v/Library/Application Support/Updater/updater",

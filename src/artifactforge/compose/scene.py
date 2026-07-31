@@ -13,12 +13,12 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-from artifactforge.contentstore import Content, ContentStore
-from artifactforge.hive import build_amcache_hive, build_run_hive
-from artifactforge.macos import (build_knowledgec, build_launch_agent, build_quarantine_events,
+from artifactforge.content.store import Content, ContentStore
+from artifactforge.artifacts.hive import build_amcache_hive, build_run_hive
+from artifactforge.artifacts.macos import (build_knowledgec, build_launch_agent, build_quarantine_events,
                            build_tcc, quarantine_xattr)
-from artifactforge.prefetch import build_prefetch, prefetch_name_hash
-from artifactforge.profile import PINNED_UNIX, HostProfile, deterministic_uuid
+from artifactforge.artifacts.prefetch import build_prefetch, prefetch_name_hash
+from artifactforge.model import PINNED_UNIX, HostProfile, deterministic_uuid
 
 
 @dataclass

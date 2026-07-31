@@ -8,8 +8,8 @@ construction), and the whole scene regenerates byte-identical (determinism gate)
 """
 import pytest
 
-from artifactforge.contentstore import ContentStore
-from artifactforge.scenario import build_crime_scene
+from artifactforge.content.store import ContentStore
+from artifactforge.compose.scene import build_crime_scene
 
 PARAMS = dict(content_id="pe:acme-update-dropper",
               exec_path=r"C:\Users\v\AppData\Local\Temp\update.exe",

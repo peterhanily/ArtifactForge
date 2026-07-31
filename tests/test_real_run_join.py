@@ -11,7 +11,7 @@ import re
 
 import pytest
 
-from artifactforge.contentstore import ContentStore
+from artifactforge.content.store import ContentStore
 from artifactforge.ef_seeds import content_id, sysmon_seed
 
 EF_OUT = os.environ.get("ARTIFACTFORGE_EF_OUT")

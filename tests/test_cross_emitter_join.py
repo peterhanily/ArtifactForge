@@ -18,7 +18,7 @@ from evidenceforge.generation.actions.file_transfer import (  # noqa: E402
 )
 from evidenceforge.generation.emitters.sysmon import SysmonEventEmitter  # noqa: E402
 
-from artifactforge.contentstore import ContentStore  # noqa: E402
+from artifactforge.content.store import ContentStore  # noqa: E402
 
 # One logical file that is both fetched over HTTP and run on a host.
 DROPPER = dict(

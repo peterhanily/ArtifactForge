@@ -12,9 +12,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from artifactforge.contentstore import ContentStore
-from artifactforge.profile import HostProfile, macos_profile, windows_profile
-from artifactforge.scenario import build_crime_scene, build_macos_crime_scene
+from artifactforge.content.store import ContentStore
+from artifactforge.model import HostProfile, macos_profile, windows_profile
+from artifactforge.compose.scene import build_crime_scene, build_macos_crime_scene
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,10 @@ class Question:
     prompt: str
     kind: str            # hash | imphash | path | name | count | uuid | url | enum
     expected: str        # ground truth (server-side only)
+    joins: int = 1       # how many artifacts must be read together to answer it. A question
+                         # with joins=1 is answerable from one file in isolation and so can
+                         # never detect a broken cross-artifact pivot; Gate 4 requires at
+                         # least one question per family with joins >= 2.
 
 
 @dataclass

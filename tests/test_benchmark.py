@@ -8,8 +8,9 @@
 """
 import pytest
 
-from artifactforge.benchmark import generate_batch, grade
-from artifactforge.reference_solver import constant_solve, null_solve, reference_solve
+from artifactforge.bench.adversary import constant_solve, null_solve
+from artifactforge.bench.benchmark import generate_batch, grade
+from artifactforge.bench.reference_solver import reference_solve
 
 pytest.importorskip("pefile")
 pytest.importorskip("regipy")
@@ -28,9 +29,10 @@ def test_reference_solver_scores_100(tmp_path):
 
 def test_null_and_constant_solvers_score_low(tmp_path):
     for task in _batch(tmp_path):
-        assert grade(task, null_solve(task)).accuracy == 0.0
+        pub = task.public()
+        assert grade(task, null_solve(pub)).accuracy == 0.0
         # a trivial guesser must be far below the reference solver
-        assert grade(task, constant_solve(task)).accuracy < 0.34
+        assert grade(task, constant_solve(pub)).accuracy < 0.34
 
 
 def test_corrupted_answer_key_is_caught(tmp_path):

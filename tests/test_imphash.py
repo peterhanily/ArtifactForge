@@ -6,7 +6,7 @@ of a real import table — not a placeholder — and is stable across regenerati
 """
 import pytest
 
-from artifactforge.contentstore import ContentStore, _sub_seed, imphash_of
+from artifactforge.content.store import ContentStore, _sub_seed, imphash_of
 
 
 def _content_seed(scenario, cid):

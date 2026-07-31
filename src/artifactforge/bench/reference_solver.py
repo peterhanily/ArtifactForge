@@ -15,7 +15,7 @@ import os
 import plistlib
 import sqlite3
 
-from artifactforge.benchmark import Task
+from artifactforge.bench.benchmark import Task
 
 
 def _find_pe(directory: str) -> str:
@@ -71,11 +71,7 @@ def reference_solve(task: Task) -> dict:
     return a
 
 
-def null_solve(task: Task) -> dict:
-    """Answers nothing — the vacuous-pass guard (must score ~0)."""
-    return {}
-
-
-def constant_solve(task: Task) -> dict:
-    """A trivial heuristic guesser — must not beat the reference solver."""
-    return {q.id: ("0" * 64 if q.kind in ("hash", "imphash") else "unknown") for q in task.questions}
+# The trivial solvers that used to live here now sit in artifactforge.bench.adversary,
+# alongside the two that actually threaten the benchmark. Keeping the weak baselines apart
+# from the strong ones was how "trivial solvers score 0%" came to read as a validity proof
+# when a solver opening zero files was scoring 100%.

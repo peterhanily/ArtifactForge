@@ -51,6 +51,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artifactforge"]
+# integration/ holds a sketch of a possible upstream contribution to EvidenceForge. It is not
+# part of the package and must never be installed alongside it: it is the only place in the
+# repository that patches upstream in process, and that belongs in a demonstration, not in a
+# dependency. tests/test_isolation.py enforces the same boundary in the other direction.
+exclude = ["integration"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

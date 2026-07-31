@@ -1,0 +1,145 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
+"""Read an EvidenceForge run's output directory. Files only — never its code.
+
+EvidenceForge generates synthetic *logs*; ArtifactForge generates the *artifacts* a responder
+finds once they dig in. Companion mode is the case where both describe one incident: take a
+run EvidenceForge has already produced, recover which logical binary each of its Sysmon
+hashes denotes, and generate matching artifacts for them.
+
+This adapter reads the output tree and nothing else. It does not import `evidenceforge`, so
+it works whether or not the tool is installed, and an upstream refactor of its internals
+cannot reach ArtifactForge through here. What it does depend on is the *shape of the output* —
+directory names, filenames, field names — and every one of those constants is in the single
+block below so the coupling is countable rather than scattered.
+
+Identity recovery goes through `artifactforge.ef_seeds`, which verifies each candidate seed
+against the digest upstream actually emitted and raises rather than guessing.
+"""
+from __future__ import annotations
+
+import glob
+import os
+import re
+from dataclasses import dataclass, field
+
+from artifactforge.ef_seeds import IdentityNotRecovered, recover
+
+# ---------------------------------------------------------------------------------------
+# Everything ArtifactForge knows about EvidenceForge's output, in one place.
+# Verified against v1.13.1. If a run stops parsing, this block is the whole surface to check.
+_EF_LAYOUT = {
+    "hosts_dir": "data",                        # <run>/data/<fqdn>/
+    "sysmon_log": "windows_event_sysmon.xml",   # per-host Sysmon, as rendered XML
+    "ground_truth": "GROUND_TRUTH.json",        # the run's own answer key
+    "hash_field": "Hashes",                     # "SHA1=..,MD5=..,SHA256=..,IMPHASH=.."
+    "image_field": "Image",                     # the executed binary (EventID 1)
+    "image_loaded_field": "ImageLoaded",        # the loaded module (EventID 7)
+    # The PE metadata fields upstream renders, in the order its seed strings use them.
+    "metadata_fields": ("FileVersion", "Description", "Product", "Company", "OriginalFileName"),
+}
+# ---------------------------------------------------------------------------------------
+
+_EVENT = re.compile(r"<Event\b.*?</Event>", re.S)
+_EVENT_ID = re.compile(r"<EventID>(\d+)</EventID>")
+
+
+def _data_field(event: str, name: str):
+    m = re.search(r'Name="' + re.escape(name) + r'">([^<]*)<', event)
+    return m.group(1) if m else None
+
+
+def _parse_hashes(raw: str) -> dict:
+    """`SHA1=..,MD5=..,SHA256=..` into a dict, tolerating anything malformed.
+
+    Parsed defensively on purpose: one unparseable field in a 60,000-event run must not abort
+    the whole ingest, and a record we cannot read is a record we skip and count, not a crash.
+    """
+    out = {}
+    for part in (raw or "").split(","):
+        key, sep, value = part.partition("=")
+        if sep and key.strip():
+            out[key.strip().upper()] = value.strip()
+    return out
+
+
+@dataclass
+class Binary:
+    """One logical binary an EvidenceForge run hashed, recovered and verified."""
+
+    content_id: str
+    image: str
+    emitted_sha256: str
+    seed_form: str
+    hosts: set = field(default_factory=set)
+    records: int = 0
+
+
+@dataclass
+class Run:
+    """What a companion needs from an EvidenceForge run, and nothing more."""
+
+    root: str
+    hosts: list = field(default_factory=list)
+    binaries: dict = field(default_factory=dict)     # content_id -> Binary
+    records_with_hashes: int = 0
+    records_recovered: int = 0
+    unrecovered: list = field(default_factory=list)  # (image, reason), for reporting
+
+    @property
+    def recovery_rate(self) -> float:
+        if not self.records_with_hashes:
+            return 0.0
+        return self.records_recovered / self.records_with_hashes
+
+
+def read_run(root: str) -> Run:
+    """Parse an EvidenceForge output directory into the identities it hashed."""
+    if not os.path.isdir(os.path.join(root, _EF_LAYOUT["hosts_dir"])):
+        raise FileNotFoundError(
+            f"{root!r} does not look like an EvidenceForge run: no "
+            f"{_EF_LAYOUT['hosts_dir']}/ directory. Point this at the folder containing "
+            f"{_EF_LAYOUT['ground_truth']}.")
+
+    run = Run(root=root)
+    pattern = os.path.join(root, _EF_LAYOUT["hosts_dir"], "*", _EF_LAYOUT["sysmon_log"])
+    for log in sorted(glob.glob(pattern)):
+        host = os.path.basename(os.path.dirname(log))
+        run.hosts.append(host)
+        with open(log, errors="ignore") as f:
+            text = f.read()
+        for event in _EVENT.findall(text):
+            _ingest_event(run, host, event)
+    return run
+
+
+def _ingest_event(run: Run, host: str, event: str) -> None:
+    hashes = _parse_hashes(_data_field(event, _EF_LAYOUT["hash_field"]))
+    emitted = hashes.get("SHA256")
+    if not emitted:
+        return
+
+    eid = _EVENT_ID.search(event)
+    image = _data_field(event, _EF_LAYOUT["image_loaded_field"] if eid and eid.group(1) == "7"
+                        else _EF_LAYOUT["image_field"])
+    if not image:
+        # A hashed record naming no file is not something we can bind an artifact to, but it
+        # is also not drift — count it and move on.
+        return
+
+    run.records_with_hashes += 1
+    fv, desc, prod, comp, orig = (_data_field(event, f) for f in _EF_LAYOUT["metadata_fields"])
+    try:
+        identity = recover(emitted, image=image, file_version=fv, description=desc,
+                           product=prod, company=comp, original_name=orig)
+    except IdentityNotRecovered as exc:
+        run.unrecovered.append((image, str(exc)))
+        return
+
+    run.records_recovered += 1
+    binary = run.binaries.get(identity.content_id)
+    if binary is None:
+        binary = Binary(identity.content_id, image, identity.emitted_sha256, identity.form)
+        run.binaries[identity.content_id] = binary
+    binary.hosts.add(host)
+    binary.records += 1

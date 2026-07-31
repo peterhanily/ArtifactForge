@@ -11,6 +11,12 @@ on:
   push:
   pull_request:
 
+env:
+  # One place to bump the pin. The seed formulas in artifactforge/ef_seeds.py are verified
+  # against this exact tag, and tests/ef_contract/test_golden_formulas.py compares them to
+  # upstream's own code on every run.
+  EF_TAG: v1.13.1
+
 jobs:
   # ArtifactForge is standalone. This job installs NO EvidenceForge on purpose: if the suite
   # cannot go green without it, the standalone claim is false.
@@ -90,12 +96,17 @@ jobs:
           diff -r out/a/_answers out/b/_answers
           echo "byte-identical across runs"
 
-  # EvidenceForge is a CI-only dev tool, never a declared dependency. This job proves the
-  # identity reverse-map still matches upstream's seed formulas. It must HARD FAIL if
-  # EvidenceForge is missing or if its contract tests skip — a skipped integration test is
-  # exactly how a formula change would sail through green.
+  # EvidenceForge is a CI-only development tool, never a declared dependency: it is not on
+  # PyPI, so naming it would force a git URL into the metadata and hatchling refuses to build
+  # a wheel for a project carrying one.
+  #
+  # This job proves the transcribed seed formulas still match upstream's own code and that a
+  # real run still recovers cleanly. It generates its own run and HARD FAILS if EvidenceForge
+  # is missing or if any contract test skips — a skipped integration test exits 0 and reads
+  # exactly like a passing one, which is how a formula change would sail through green.
   ef-contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -109,16 +120,45 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install -e ".[dev]"
-          uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@v1.13.1"
+          uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@${{ env.EF_TAG }}"
 
       - name: EvidenceForge version (fail fast if broken)
         run: uv run python -c "import evidenceforge; print(evidenceforge.__file__)"
 
-      - name: Contract — the EvidenceForge-facing tests must RUN, not skip
+      - name: Generate a real EvidenceForge run
+        # The scenario is not shipped in the wheel, so fetch it from the same pinned tag.
+        run: |
+          curl -fsSL -o scenario.yaml \
+            "https://raw.githubusercontent.com/Cisco-Talos/EvidenceForge/${{ env.EF_TAG }}/scenarios/branch-office-example/scenario.yaml"
+          uv run python -m evidenceforge generate scenario.yaml -o ef-out
+          test -f ef-out/GROUND_TRUTH.json
+
+      - name: Contract — must RUN, not skip
+        env:
+          ARTIFACTFORGE_EF_OUT: ef-out
         run: |
           set -o pipefail
-          uv run pytest -q -rs tests/test_cross_emitter_join.py | tee ef.log
+          uv run pytest -q -rs tests/ef_contract/ | tee ef.log
           if grep -qi 'skipped' ef.log; then
             echo "an EvidenceForge contract test SKIPPED — a skip here is a silent pass" >&2
             exit 1
           fi
+
+  # A canary, not a gate. Runs the same contract against upstream's default branch so that a
+  # seed-formula change shows up here as a warning rather than as a surprise on the day the
+  # pin is bumped.
+  ef-drift-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - name: Install against EvidenceForge main
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[dev]"
+          uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@main"
+      - name: Golden formulas against main
+        run: uv run pytest -q tests/ef_contract/test_golden_formulas.py

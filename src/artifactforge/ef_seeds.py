@@ -8,34 +8,107 @@
 # reimplement EvidenceForge. Upstream: https://github.com/Cisco-Talos/EvidenceForge
 """Recover a file's logical identity from EvidenceForge's per-emitter hashes.
 
-EvidenceForge computes file "hashes" as digests of a seed STRING, keyed differently per
-event type, so the same binary carries disagreeing hashes across emitters. To bind an
-artifact to a log at all, we first have to recover which logical file each hash denotes.
+EvidenceForge computes file "hashes" as digests of a seed STRING, keyed differently per call
+site, so the same binary carries disagreeing hashes across emitters. To bind an artifact to a
+log at all, we first have to recover which logical file each hash denotes.
 
-These are upstream's verified Sysmon seed formulas, confirmed by recomputing them against a
-real run — every hash matched, and the formulas are unchanged between v1.12.0 and v1.13.1.
+**Verify or refuse.** Every recovery recomputes the candidate digests and compares them
+against the one upstream actually emitted. If none matches, or more than one does, this
+raises. Nothing routes an unverified identity onward.
 
-This module is a deliberate anti-corruption layer around a PRIVATE upstream surface, which
-SemVer does not protect. Nothing in the rest of the package imports it, and it is absent
-from the public exports, so the coupling stays in one file that can fail loudly on its own.
+That matters because of how the discrimination works. Upstream selects its seed form by the
+*shape of the arguments it was handed*, not by event type — and it has three forms, one of
+which had no ArtifactForge counterpart at all. A previous version of this module guessed the
+form from the Sysmon EventID, which happens to coincide with upstream's choice today, and
+would have gone on returning a wrong identity, silently, the moment that stopped being true.
+
+This is a deliberate anti-corruption layer around a PRIVATE upstream surface, which SemVer
+does not protect. Nothing else in the package imports it, it is absent from the public
+exports, and its CI job fails rather than skips — so drift breaks loudly, in one file.
 """
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
+
+#: The upstream tag these formulas were verified against. Confirmed byte-for-byte identical at
+#: v1.12.0 and v1.13.1: the function body and both its call sites are unchanged between them.
+VERIFIED_AGAINST = "v1.13.1"
 
 
-def sysmon_seed(path, file_version, description, product, company, original_name, event_id) -> str:
-    ni = path.replace("/", "\\").lower()
-    if str(event_id) == "7":  # ImageLoaded: rendered_identity=(fv, desc, prod, comp, orig)
-        return f"{ni}:{file_version}:{description}:{product}:{company}:{original_name}"
-    return f"{ni}:{file_version}:{product}:{company}:{original_name}"  # ProcessCreate: no desc
+def _normalize(image: str) -> str:
+    return image.replace("/", "\\").lower()
 
 
-def sysmon_sha256(*seed_args) -> str:
-    """The SHA256 EF would emit for these fields (upper-case, matching EF)."""
-    return hashlib.sha256(sysmon_seed(*seed_args).encode()).hexdigest().upper()
+def seed_bare(image: str) -> str:
+    """Upstream form 1: neither a rendered identity nor a host context was supplied."""
+    return _normalize(image)
 
 
-def content_id(*seed_args) -> str:
-    """Stable logical-file identity: the tuple EF keys its hash on. One binary -> one bytes."""
-    return "pe:" + sysmon_seed(*seed_args)
+def seed_with_description(image: str, file_version, description, product, company,
+                          original_name) -> str:
+    """Upstream form 2: `rendered_identity[:5]`, joined — description included."""
+    return (f"{_normalize(image)}:{file_version}:{description}:{product}:{company}:"
+            f"{original_name}")
+
+
+def seed_from_host_metadata(image: str, file_version, product, company,
+                            original_name) -> str:
+    """Upstream form 3: PE metadata looked up from a host context — description dropped."""
+    return f"{_normalize(image)}:{file_version}:{product}:{company}:{original_name}"
+
+
+def _digest(seed: str) -> str:
+    """The SHA256 upstream would emit for a seed — upper-case, matching its output."""
+    return hashlib.sha256(seed.encode()).hexdigest().upper()
+
+
+@dataclass(frozen=True)
+class Identity:
+    """One logical file, recovered and verified against the digest upstream emitted."""
+
+    content_id: str      # stable across emitters: one binary, one set of bytes
+    seed: str            # the upstream seed string that reproduced the emitted digest
+    form: str            # which of upstream's three forms matched
+    emitted_sha256: str  # the digest we verified against, exactly as it appeared
+
+
+class IdentityNotRecovered(Exception):
+    """The emitted digest matched no candidate seed, or matched more than one.
+
+    Both are drift. Neither is recoverable here, and guessing would put a wrong identity into
+    the ContentStore where nothing downstream could tell.
+    """
+
+
+def recover(emitted_sha256: str, *, image: str, file_version=None, description=None,
+            product=None, company=None, original_name=None) -> Identity:
+    """Recover which logical file an emitted Sysmon hash denotes, or raise.
+
+    Tries every upstream seed form and requires exactly one to reproduce the digest. The
+    caller passes whatever fields the record carried; absent ones render as upstream renders
+    them, which is `str(None)`.
+    """
+    emitted = (emitted_sha256 or "").strip().upper()
+    if len(emitted) != 64:
+        raise IdentityNotRecovered(
+            f"{emitted_sha256!r} is not a SHA256 digest, so nothing can be verified against it")
+
+    candidates = {
+        "with_description": seed_with_description(image, file_version, description, product,
+                                                  company, original_name),
+        "from_host_metadata": seed_from_host_metadata(image, file_version, product, company,
+                                                      original_name),
+        "bare": seed_bare(image),
+    }
+    matched = {form: seed for form, seed in candidates.items() if _digest(seed) == emitted}
+
+    if len(matched) != 1:
+        raise IdentityNotRecovered(
+            f"{len(matched)} of {len(candidates)} upstream seed forms reproduce "
+            f"{emitted[:16]}... for {image!r}; exactly one must. Either EvidenceForge's seed "
+            f"construction has drifted from the {VERIFIED_AGAINST} formulas transcribed in "
+            f"this module, or these are not the fields the record was rendered from.")
+
+    form, seed = next(iter(matched.items()))
+    return Identity(content_id="pe:" + seed, seed=seed, form=form, emitted_sha256=emitted)

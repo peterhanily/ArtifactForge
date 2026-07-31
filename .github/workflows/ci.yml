@@ -67,22 +67,29 @@ jobs:
       # real parser and only then compared, so this can actually fail — and does, the moment
       # a single byte of any artifact stops agreeing with the others.
       - name: Gate 2 — identity (must PASS)
-        run: uv run artifactforge gate identity --n 4
+        run: uv run artifactforge gate identity --n 40
 
       # Two independently-implemented parsers per format. A missing oracle fails here rather
       # than skipping, because a skipped check exits 0 and reads exactly like a passing one.
       - name: Gate 1 — validity (must PASS)
-        run: uv run artifactforge gate validity --n 4
+        run: uv run artifactforge gate validity --n 40
 
       # Checked on the emitted bytes: the code section is one return instruction, every format
       # carries its in-band marker, and no indicator names anything that could be real.
       - name: Gate 3 — inertness (must PASS)
-        run: uv run artifactforge gate inertness --n 4
+        run: uv run artifactforge gate inertness --n 40
 
-      # A hold-out suite's answers must not be derivable, a dev suite's must be — the second
-      # half is the control that stops the first from passing vacuously.
-      - name: Gate 4 — solvability (must PASS)
-        run: uv run artifactforge gate solvability --n 4
+      # Gate 4 is RED, deliberately and truthfully: a solver that counts substring mentions
+      # scores ~73% against a ~4% chance floor. The number is published in the README. This
+      # step asserts the gate STILL FAILS, so the benchmark cannot be quietly declared fixed
+      # without the step and the README being updated together — and so nobody is tempted to
+      # raise the threshold, which is the failure mode this project's own notes name.
+      - name: Gate 4 — solvability (known red — see README "Benchmark validity")
+        run: |
+          if uv run artifactforge gate solvability --n 60; then
+            echo "Gate 4 unexpectedly PASSES — re-measure, then update README and this step" >&2
+            exit 1
+          fi
 
       # The committed gallery must still be what the generator produces. A regeneration that
       # differs is a change in the generator, and it should be reviewed as one rather than

@@ -139,6 +139,9 @@ def run(scene_dir: str) -> GateReport:
             r.fail(f"{fmt}: carries no in-band synthetic marker, so a copy that "
                            f"escapes its bundle cannot be recognised as generated")
 
+    if fmts == 0:
+        r.fail(f"no artifact in {scene_dir!r} was classified, so nothing was checked for "
+               f"inertness or for its synthetic marker")
     r.metrics["formats_marked"] = marked
     r.metrics["formats_total"] = fmts
     r.denominator = f"{marked}/{fmts} artifacts carry an in-band synthetic marker"

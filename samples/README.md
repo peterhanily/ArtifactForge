@@ -15,7 +15,7 @@ Two generated scenes, committed so they can be read without running anything.
 | [`02-macos-quarantined-app`](02-macos-quarantined-app/) | macOS | Five signed arm64 Mach-O binaries with quarantine records, a TCC database with grants and refusals, knowledgeC usage, and LaunchAgent plists. One app was allowed *and* used; everything else about it hangs off its quarantine UUID. |
 
 Each directory holds the artifacts, a `README.md` with real parser output pasted in — pefile,
-regipy, libscca, LIEF, sqlite3, plistlib — and a `GROUND_TRUTH.json` answer key.
+regipy, libscca, LIEF, sqlite3, plistlib — and a `ARTIFACT_ANSWERS.json` answer key.
 
 These are built from a **dev suite**, whose key is published in `artifactforge/suite.py` on
 purpose. That is what makes them reproducible: `scripts/make-samples.sh` regenerates these

@@ -23,6 +23,8 @@ The gate measures four things, and the fourth is what keeps the other three hone
 """
 from __future__ import annotations
 
+import random
+
 from artifactforge.bench.adversary import ADVERSARIES, blind_solve
 from artifactforge.bench.benchmark import grade
 from artifactforge.bench.reference_solver import reference_solve
@@ -30,6 +32,35 @@ from artifactforge.gates import GateReport
 
 #: Below this the blind adversary is not working, and no negative result can be trusted.
 CONTROL_FLOOR = 0.50
+
+
+def _chance_floor(tasks, reps: int = 20) -> float:
+    """What a solver scores by guessing uniformly among the candidates it can see.
+
+    Published beside the adversary scores because `null` and `constant` both score 0.0000,
+    which is BELOW chance — using them as the only baselines made every number this benchmark
+    reported look better than it was. A score is only meaningful against the floor of the same
+    corpus, measured in the same round.
+    """
+    import os
+    rng = random.Random(0xA5F)                    # fixed: the floor must be reproducible
+    correct = total = 0
+    for _ in range(reps):
+        for t in tasks:
+            try:
+                visible = sorted(f for f in os.listdir(t.directory)
+                                 if os.path.isfile(os.path.join(t.directory, f)))
+            except OSError:
+                visible = []
+            for q in t.questions:
+                total += 1
+                # A guesser can only pick among things it can see; for a hash-shaped answer
+                # there is nothing to pick from, so it cannot score.
+                if q.kind in ("hash", "imphash", "uuid", "url") or not visible:
+                    continue
+                correct += int(rng.choice(visible).split(".")[0].lower()
+                               == str(q.expected).split(".")[0].lower())
+    return correct / total if total else 0.0
 
 
 def _score(tasks, solver) -> float:
@@ -47,6 +78,9 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
     if not holdout_tasks:
         r.fail("no tasks generated, so nothing was measured")
         return r
+
+    floor = _chance_floor(holdout_tasks)
+    r.metrics["chance_floor"] = round(floor, 4)
 
     # positive — the artifacts must actually encode the answers
     ref = _score(holdout_tasks, reference_solve)
@@ -82,6 +116,7 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
                    f"cannot detect a broken cross-artifact pivot")
 
     worst = max((r.metrics.get(f"{n}_solver_score", 0.0) for n in ADVERSARIES), default=0.0)
-    r.denominator = (f"reference {ref:.0%}, best hold-out adversary {worst:.0%}, "
-                     f"blind-vs-dev control {r.metrics.get('blind_control_score', 0.0):.0%}")
+    r.metrics["adversarial_floor"] = round(worst, 4)
+    r.denominator = (f"reference {ref:.0%}, adversarial floor {worst:.1%} against a "
+                     f"{floor:.1%} chance floor")
     return r

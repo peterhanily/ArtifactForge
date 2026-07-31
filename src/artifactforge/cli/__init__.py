@@ -74,6 +74,13 @@ def gate_validity(args) -> GateReport:
 
 
 def gate_identity(args) -> GateReport:
+    if getattr(args, "scene", None):
+        r = GateReport(2, "identity",
+                       "is every hash-shaped field a genuine digest of one ContentStore blob?")
+        r.fail("--scene cannot be used with the identity gate: it needs the scene's join, "
+               "which lives in the suite's _answers/ and deliberately not in the served "
+               "directory. Run without --scene to generate a suite.")
+        return r
     r = _merge(2, "identity",
                "is every hash-shaped field a genuine digest of one ContentStore blob?",
                [identity.run(t.directory, t.join) for t in _dev(args)])
@@ -233,7 +240,8 @@ def main(argv=None) -> int:
 
     g = sub.add_parser("gate", help="run one gate; exits non-zero when the answer is no")
     g.add_argument("name", choices=sorted(GATES))
-    g.add_argument("--scene", help="an existing scene directory (validity and inertness only)")
+    g.add_argument("--scene", help="an existing scene directory (validity and inertness only; "
+                                   "identity needs a suite and will refuse)")
     g.add_argument("--n", type=int, default=4, help="scenarios to generate (default 4)")
     g.add_argument("--gen-dir", help="where to generate them (default: a temp dir)")
     g.set_defaults(func=cmd_gate)

@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "generator": {
     "artifactforge_version": "0.0.1",
-    "git_commit": "c20b7e9",
+    "git_commit": "5d4294f",
     "sqlite_version": "3.50.4"
   },
   "gates": {
@@ -13,40 +13,47 @@
         "plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
         "sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
       ],
-      "oracle_reads_passed": 76,
-      "oracle_reads_total": 76
+      "oracle_reads_passed": 760,
+      "oracle_reads_total": 760
     },
     "identity": {
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "checks_total": 40,
-      "checks_joined": 40
+      "checks_total": 400,
+      "checks_joined": 400
     },
     "inertness": {
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "formats_marked": 44,
-      "formats_total": 44
+      "formats_marked": 440,
+      "formats_total": 440
     },
     "solvability": {
-      "verdict": "pass",
-      "fails": [],
+      "verdict": "fail",
+      "fails": [
+        "the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
+      ],
       "gaps": [],
+      "chance_floor": 0.0366,
       "reference_solver_score": 1.0,
+      "footprint_solver_score": 0.7273,
+      "mechanical_solver_score": 0.2727,
       "blind_solver_score": 0.0,
-      "listing_solver_score": 0.0,
+      "listing_solver_score": 0.0045,
       "null_solver_score": 0.0,
       "constant_solver_score": 0.0,
       "blind_control_score": 1.0,
-      "join_questions_macos": 12,
-      "join_questions_windows": 10
+      "join_questions_macos": 120,
+      "join_questions_windows": 100,
+      "adversarial_floor": 0.7273
     }
   },
   "honest_gaps": [
     "Gate 1 (validity): plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
-    "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
+    "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap",
+    "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
   ],
-  "verdict": "gap"
+  "verdict": "fail"
 }

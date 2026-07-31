@@ -50,4 +50,4 @@ WINLOGON_H.EXE           run_count=9  hash=0x5a5d06c6
 
 ## The answers
 
-In [`GROUND_TRUTH.json`](GROUND_TRUTH.json). Each one requires reading at least two of the files above together.
+In [`ARTIFACT_ANSWERS.json`](ARTIFACT_ANSWERS.json). Each one requires reading at least two of the files above together.

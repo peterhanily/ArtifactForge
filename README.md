@@ -77,10 +77,11 @@ Answering anything about it requires reading two artifacts together, which is th
 - **One identity behind all of it.** `ContentStore` synthesizes a file's bytes once. Every
   hash-shaped field anywhere is a real digest of those bytes, so the file-hash pivot works
   because it cannot not work.
-- **A benchmark for investigation, not recall.** Deterministic scenes with decoys, questions
-  that each span at least two artifacts, and answers derived from a suite key the solver never
-  sees. A dev suite is built with the key published in the source and is cheatable on purpose;
-  a hold-out suite mints one that never leaves the evaluator.
+- **A benchmark for investigation, not recall — experimental, and currently failing its own
+  validity gate.** Deterministic scenes with decoys, questions that each span at least two
+  artifacts, and answers derived from a suite key the solver never sees. The keyed-suite half
+  works; the scene composition leaks, at 72.7% against a 3.7% floor. See *How honest is it,
+  really?* below. Do not report a score from it yet.
 - **A companion adapter** that reads an EvidenceForge run's output and recovers which logical
   binary each of its Sysmon hashes denotes — verifying every recovery against the digest
   upstream emitted, and refusing rather than guessing. It never imports EvidenceForge.
@@ -132,20 +133,45 @@ limitations and [`KNOWN_TELLS.md`](KNOWN_TELLS.md) lists them: minimal registry 
 ASCII-only key names, uncompressed prefetch where Windows 10 compresses, a Mach-O using an
 older linker idiom than any current clang emits.
 
-**Benchmark validity — measured in both directions.** The reference solver scores 100% and
-every adversary scores 0% against a hold-out suite. That second number only means something
-because the same blind adversary scores **100%** against the dev suite whose key is published
-— an adversary too weak to cheat is indistinguishable from a benchmark that cannot be cheated,
-which is exactly the mistake the earlier version of this project made.
+**Benchmark validity — currently failing, and the number is published.** Gate 4 is **red**.
+The reference solver scores 100%, and so does a solver that understands nothing: for each
+candidate, count how many other files mention its name, and take the maximum. Measured on a
+hold-out suite:
+
+| | |
+|---|---|
+| reference solver (real parsers, real joins) | **100%** |
+| `footprint` adversary (counts substring mentions, parses nothing) | **72.7%** |
+| chance floor (guesses among visible candidates) | **3.7%** |
+
+Those three numbers are the ones in `fidelity-scorecard.json`, measured at `--n 40` on one
+hold-out suite. Reproduce them with `artifactforge scorecard --n 40`. The floor is a Monte
+Carlo estimate and moves slightly with `n`, so the committed scorecard is the number of
+record — quoting a different run's figure here is how a document starts lying slowly.
+
+An earlier version of this file claimed *"every adversary scores 0%"*. That was true of the
+four adversaries then registered and false about the benchmark, because all four were weaker
+than five minutes of work. The attack above is not incidental — it is structural. The answer
+object is by definition the thing the registry, Amcache, prefetch and disk all talk about,
+while a decoy appears in fewer of them, so counting mentions *is* the intended pivot performed
+without understanding any of it.
+
+Fixing it means deleting questions rather than patching the generator: for
+`persisted_sha256` the declared pivot is "the one Run value naming a resident program", and
+balancing the scene so decoys are mentioned equally makes the reference solver itself fail.
+The question and the leak are the same object. Until that lands the benchmark is
+**experimental** and no score from it should be reported. The generator, and Gates 1 to 3,
+are unaffected.
 
 **What it is not.** Not disk images, not memory, not EVTX, not a live host. The tier is loose
 files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.0.1, nothing published to PyPI. The four gates pass, two
-declared gaps remain, and `fidelity-scorecard.json` at the repository root is the honest
-record — it ships whatever it actually reads. MIT licensed, deliberately, so any part of it
+Early and experimental, version 0.0.1, nothing published to PyPI. **Gates 1 to 3 pass; Gate 4
+is red and its number is above.** Two declared gaps remain besides. `fidelity-scorecard.json`
+at the repository root is the honest record — it ships whatever it actually reads, and right
+now that includes a failure. MIT licensed, deliberately, so any part of it
 could be merged upstream without friction if that ever became useful.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and the gate discipline,

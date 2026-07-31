@@ -2,10 +2,42 @@
 
 What is not built, and why. Ordered by what would change the most if it existed.
 
+## The benchmark is failing its own validity gate
+
+Gate 4 is red and the number is in the README. A solver that parses nothing — for each
+candidate, count how many other files mention its name, take the maximum — scores **72.7%**
+against a **3.7%** chance floor, where the reference solver scores 100%.
+
+It is structural. The answer object is by definition the one the registry, Amcache, prefetch
+and disk all talk about; a decoy appears in fewer of them. Counting mentions *is* the intended
+pivot, performed without understanding. And it cannot be patched in the generator alone: for
+`persisted_sha256` the declared pivot is "the one Run value naming a resident program", so
+balancing the scene until decoys are mentioned equally makes the reference solver fail with
+*"expected exactly one resident autostart, found 5"*. The question and the leak are one object.
+
+What the repair looks like, in order:
+
+1. **A class gate.** Not an exemption list of the leaks found so far — those were found by
+   sweeping, and the sweep found families nobody would have enumerated (position inside a
+   stored sequence: Run-value order, Amcache subkey order, SQLite rowid). The durable form is
+   "no agent-visible quantity predicts any answer above chance, over every candidate slot".
+2. **Delete rather than patch.** `persisted_sha256`, `persisted_imphash` and
+   `persisted_run_count` go; `orphan_execution` is rewritten to ask for the SHA1 Amcache
+   recorded rather than the filename, which takes a listing-only solver from 100% to 0%;
+   `amcache_match_sha256` survives, because value agreement between two artifacts is the one
+   answer shape that resists a knowledge-free solver.
+3. **The rule that falls out**, and which belongs in `docs/DESIGN.md`: an answer must be
+   determined by **agreement between two artifacts' values** — never by an extremum, a
+   presence test, a name, or a position in a stored sequence.
+
+Until that lands the benchmark is experimental and no score from it should be reported. The
+generator and Gates 1 to 3 are unaffected by any of it.
+
 ## Open gaps in what already ships
 
-These are the two entries in `fidelity-scorecard.json`'s `honest_gaps`, and the reason its
-headline verdict reads `gap`.
+These are the two declared gaps in `fidelity-scorecard.json`. They are limits of the measuring
+apparatus rather than failures of the thing measured, which is why they do not set the
+verdict — that currently reads `fail`, because of Gate 4 above.
 
 - **No independent oracle for SQLite or plists.** `sqlite3` and `plistlib` write and read
   their own formats, so knowledgeC, TCC, QuarantineEventsV2 and the LaunchAgent plists have no

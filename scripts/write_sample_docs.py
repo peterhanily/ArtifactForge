@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Write each sample's answer key and README, with real parser output pasted in.
 
+The key is called ARTIFACT_ANSWERS.json rather than GROUND_TRUTH.json on purpose.
+EvidenceForge's loader searches an output directory AND its parent for a file named exactly
+`GROUND_TRUTH.json`, and degrades to a single `logger.warning` when one does not match its
+schema — so an ArtifactForge scene sitting anywhere near an EvidenceForge run would make that
+tool report a wrong number quietly. Not colliding costs nothing.
+
 The parser output is the part that matters. A gallery showing what the generator says about
 its own files is a brochure; a gallery showing what pefile, regipy, libscca and LIEF say about
 them is evidence — and if any of those tools ever stop agreeing, regenerating the gallery
@@ -134,7 +140,7 @@ def _macos_readings(d: str) -> list:
 
 
 def write(sample_dir: str, title: str, story: str, answers: dict, join: dict, readings) -> None:
-    with open(os.path.join(sample_dir, "GROUND_TRUTH.json"), "w") as f:
+    with open(os.path.join(sample_dir, "ARTIFACT_ANSWERS.json"), "w") as f:
         json.dump({**BANNER, "answers": answers, "join": join}, f, indent=2)
         f.write("\n")
 
@@ -150,7 +156,7 @@ def write(sample_dir: str, title: str, story: str, answers: dict, join: dict, re
     for heading, output in readings:
         body += [f"### {heading}", "", "```", output, "```", ""]
     body += ["## The answers", "",
-             "In [`GROUND_TRUTH.json`](GROUND_TRUTH.json). Each one requires reading at least "
+             "In [`ARTIFACT_ANSWERS.json`](ARTIFACT_ANSWERS.json). Each one requires reading at least "
              "two of the files above together.", ""]
     with open(os.path.join(sample_dir, "README.md"), "w") as f:
         f.write("\n".join(body))

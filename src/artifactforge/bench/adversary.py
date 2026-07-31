@@ -107,8 +107,141 @@ def constant_solve(public) -> dict:
             for q in public.questions}
 
 
-#: name -> (solver, the score above which the benchmark is considered gameable)
+
+
+def mechanical_solve(public) -> dict:
+    """Exploit position: the answer is first in every stored sequence.
+
+    Reads the artifacts, parses nothing meaningfully, joins nothing. It relies only on the
+    generator having emitted the interesting record before the decoys — in the Run key, in the
+    Amcache subkey list, and in every SQLite table. That is the family the owner's own wiki
+    names: "an events file written in the order the agent was asked to reconstruct".
+    """
+    import hashlib
+    d = public.directory
+    a: dict = {}
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return a
+    blobs = {}
+    for n in names:
+        p = os.path.join(d, n)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                blobs[n] = f.read()
+
+    if public.family == "windows":
+        try:
+            from regipy.registry import RegistryHive
+        except ImportError:
+            return a
+        run = RegistryHive(os.path.join(d, "Software.run.hive")).get_key(
+            "\\Microsoft\\Windows\\CurrentVersion\\Run")
+        values = [v.value for v in run.get_values()]
+        if not values:
+            return a
+        target = values[0].replace("/", "\\").rsplit("\\", 1)[-1]
+        for name, data in blobs.items():
+            if name.lower() == target.lower():
+                a["persisted_sha256"] = hashlib.sha256(data).hexdigest()
+                try:
+                    import pefile
+                    a["persisted_imphash"] = pefile.PE(data=data).get_imphash()
+                except Exception:                          # noqa: BLE001 — best effort
+                    pass
+    else:
+        try:
+            import sqlite3
+            con = sqlite3.connect(os.path.join(d, "TCC.db"))
+            row = con.execute("SELECT client FROM access").fetchone()
+            con.close()
+        except Exception:                                  # noqa: BLE001 — best effort
+            return a
+        if row:
+            a["granted_and_used_bundle"] = row[0]
+    return a
+
+
+def footprint_solve(public) -> dict:
+    """Exploit the scene's shape: the answer is whatever the other artifacts talk about most.
+
+    No parsing at all — for each candidate, count how many other files in the directory
+    contain its name as a substring, and take the maximum. This is the strongest attack found,
+    and it is structural rather than incidental: the target is by definition the object the
+    registry, Amcache, prefetch and disk all mention, while a decoy appears in fewer of them.
+    Counting mentions IS the intended pivot, performed without understanding any of it.
+    """
+    import hashlib
+    d = public.directory
+    a: dict = {}
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return a
+    blobs = {}
+    for n in names:
+        p = os.path.join(d, n)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                blobs[n] = f.read()
+
+    def mentions(cand: str) -> int:
+        pats = [cand.encode(), cand.upper().encode(), cand.lower().encode(),
+                cand.encode("utf-16-le"), cand.upper().encode("utf-16-le")]
+        return sum(1 for f, b in blobs.items() if f != cand and any(p in b for p in pats))
+
+    if public.family == "windows":
+        pes = [f for f, b in blobs.items() if b[:2] == b"MZ"]
+        if not pes:
+            return a
+        ranked = sorted(pes, key=mentions, reverse=True)
+        a["persisted_sha256"] = hashlib.sha256(blobs[ranked[0]]).hexdigest()
+        try:
+            import pefile
+            a["persisted_imphash"] = pefile.PE(data=blobs[ranked[0]]).get_imphash()
+        except Exception:                                  # noqa: BLE001 — best effort
+            pass
+        if len(ranked) > 1:
+            a["amcache_match_sha256"] = hashlib.sha256(blobs[ranked[1]]).hexdigest()
+    else:
+        bundles = [f[: -len(".quarantine.xattr")] for f in blobs
+                   if f.endswith(".quarantine.xattr")]
+        if not bundles:
+            return a
+        subject = max(bundles, key=mentions)
+        a["granted_and_used_bundle"] = subject
+        # Everything else about the subject is now a lookup in the subject's own files.
+        try:
+            import plistlib
+            import sqlite3
+            with open(os.path.join(d, f"{subject}.quarantine.xattr")) as f:
+                uuid = f.read().strip().split(";")[-1]
+            con = sqlite3.connect(os.path.join(d, "QuarantineEventsV2"))
+            row = con.execute(
+                "SELECT LSQuarantineDataURLString, LSQuarantineAgentName FROM "
+                "LSQuarantineEvent WHERE LSQuarantineEventIdentifier = ?", (uuid,)).fetchone()
+            con.close()
+            if row:
+                a["subject_download_url"], a["subject_quarantine_agent"] = row
+            with open(os.path.join(d, f"{subject}.plist"), "rb") as f:
+                a["subject_persistence_path"] = plistlib.load(f)["ProgramArguments"][0]
+            data = blobs.get(subject)
+            if data:
+                a["subject_binary_sha256"] = hashlib.sha256(data).hexdigest()
+        except Exception:                                  # noqa: BLE001 — best effort
+            pass
+    return a
+
+
+#: name -> (solver, the score above which the benchmark is considered gameable).
+#:
+#: The first two are the ones that matter. `null` and `constant` score 0.0000, which is BELOW
+#: the chance floor of a solver that simply guesses among the visible candidates — keeping them
+#: as the only baselines flattered every number this benchmark ever published.
 ADVERSARIES = {
+    "footprint": (footprint_solve, 0.30),
+    "mechanical": (mechanical_solve, 0.30),
     "blind": (blind_solve, 0.10),
     "listing": (listing_solve, 0.10),
     "null": (null_solve, 0.0),

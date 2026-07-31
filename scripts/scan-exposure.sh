@@ -26,7 +26,7 @@ echo "== building a corpus: a fresh 20-scenario batch plus the committed gallery
 mkdir -p "$WORK/corpus"
 find "$WORK/batch/scenarios" -type f -exec cp {} "$WORK/corpus/" \; 2>/dev/null
 cp samples/*/* "$WORK/corpus/" 2>/dev/null
-rm -f "$WORK/corpus/README.md" "$WORK/corpus/GROUND_TRUTH.json"
+rm -f "$WORK/corpus/README.md" "$WORK/corpus/ARTIFACT_ANSWERS.json"
 echo "   $(ls "$WORK/corpus" | wc -l | tr -d ' ') files"
 
 # ---------------------------------------------------------------- ClamAV

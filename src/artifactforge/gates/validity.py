@@ -184,6 +184,11 @@ def run(scene_dir: str) -> GateReport:
         if ORACLES[fmt]["gap"]:
             r.gap(f"{fmt}: {ORACLES[fmt]['gap']}")
 
+    if checked == 0:
+        # A gate that classified no artifact has not passed; it has not run. Reporting PASS
+        # with 0/0 and exiting 0 is the exact vacuous success this project is built to catch,
+        # and it did it to itself.
+        r.fail(f"no artifact in {scene_dir!r} was classified, so nothing was validated")
     r.metrics["oracle_reads_passed"] = passed
     r.metrics["oracle_reads_total"] = checked
     r.metrics.pop("reads", None)                          # detail is for humans, not the card

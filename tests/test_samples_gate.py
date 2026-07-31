@@ -30,7 +30,7 @@ def _ids(paths):
 
 
 def _ground_truth(sample):
-    with open(os.path.join(sample, "GROUND_TRUTH.json")) as f:
+    with open(os.path.join(sample, "ARTIFACT_ANSWERS.json")) as f:
         return json.load(f)
 
 
@@ -92,7 +92,7 @@ def test_the_sample_readme_quotes_the_bytes_that_are_committed(sample):
         readme = f.read()
     for path in sorted(glob.glob(os.path.join(sample, "*"))):
         name = os.path.basename(path)
-        if name in ("README.md", "GROUND_TRUTH.json"):
+        if name in ("README.md", "ARTIFACT_ANSWERS.json"):
             continue
         with open(path, "rb") as f:
             head = f.read(4)

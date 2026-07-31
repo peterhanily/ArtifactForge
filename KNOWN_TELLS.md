@@ -22,6 +22,11 @@ Everything here is inert by construction: see
   (kernel32, advapi32, user32, ws2_32), so pefile computes a stable IMPHASH. The imported
   functions are a plausible selection, not a real program's.
 - **`TimeDateStamp` is pinned to 0** so the bytes never depend on a clock.
+- **No DOS stub message.** The DOS header is followed straight by the PE header, with none of
+  the usual "This program cannot be run in DOS mode." stub. The community YARA rule
+  `HasModified_DOS_Message` fires on every binary we emit because of it. This is left in
+  deliberately: it is a cheap, reliable way for anyone to tell a generated PE from a real one,
+  and that is worth more here than the marginal realism of adding the stub.
 - **Marked.** The overlay carries `ARTIFACTFORGE-SYNTHETIC-<16 hex>`.
 
 ## macho

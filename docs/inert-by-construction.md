@@ -86,6 +86,62 @@ The mutation tests are the load-bearing ones. A gate that has never been observe
 proves nothing, so each of these breaks the property on purpose and requires the gate to
 notice.
 
+## What real scanners make of it
+
+Run with `scripts/scan-exposure.sh` against a fresh 20-scenario batch plus the committed
+gallery — 160 files. Every scanner is preceded by a positive control, because one that detects
+nothing because it is misconfigured is indistinguishable from a clean result.
+
+Measured 2026-07-31 on macOS 26.5.2 (arm64):
+
+| Scanner | Control | Result |
+|---|---|---|
+| **ClamAV 1.5.3**, signature set 28078 (355,577 signatures, same day) | EICAR detected | **0 detections** across 160 files |
+| **Apple XProtect** 5353 — the 451-rule set macOS scans downloads with | a crafted file matches `XProtect_MACOS_71915a8`; a near-miss one condition short does not | **no threat-naming rule fired** |
+| **Yara-Rules community set** — 12,685 rules from 436 files | (the set is deliberately trigger-happy, which is the control) | **no threat-naming rule fired**; 496 descriptive hits, below |
+| **Gatekeeper** (`spctl -a -t execute`) | — | **rejected**, with and without a quarantine xattr |
+| **`codesign -v`** | — | signature valid on disk; `codesign -d` reports the cdhash we computed by hand, for all five sample binaries |
+
+The Gatekeeper result is the one to keep in view. The Mach-O is real enough that Apple's own
+tooling parses it, validates its ad-hoc signature and agrees with our hand-computed cdhash —
+and the operating system still refuses to run it as a download, exactly as it refuses any
+ad-hoc-signed binary. Realistic to a forensic parser, refused by the actual security gate, is
+the shape this project wants.
+
+### The 496 community-YARA hits, itemised
+
+None of them names a threat. They are *characteristic* rules — statements about what a file
+contains — and a genuine artifact of the same kind fires them identically:
+
+| Rule | Fires because |
+|---|---|
+| `domain`, `url`, `contains_base64` | the artifacts contain domain names and encoded strings, as they must |
+| `IsPE64`, `IsConsole`, `HasOverlay` | the PEs are 64-bit console binaries with an overlay, which is true |
+| `win_registry`, `win_files_operation`, `win_token`, `network_tcp_socket`, `Str_Win32_Winsock2_Library` | the import table names registry, file and winsock APIs, which is the point of having one |
+| `with_sqlite` | the macOS databases are SQLite |
+| `Big_Numbers1` | `Amcache.hve` contains long hex strings, which are the SHA1 `FileId`s a real Amcache also contains |
+| `Browsers` | `Amcache.hve` mentions `chrome.exe`, one of the benign decoy names |
+| `Misc_Suspicious_Strings` | a prefetch record for `CMD.EXE` contains the string `CMD.EXE` |
+| `HasModified_DOS_Message` | **a real tell** — see below |
+
+`HasModified_DOS_Message` fires on every PE we emit, because the DOS stub carries no "This
+program cannot be run in DOS mode." message. That is a genuine fingerprint, it is disclosed in
+`KNOWN_TELLS.md`, and it is deliberately **not** fixed. Adding the standard stub would make
+the binaries marginally more realistic and correspondingly harder for a community ruleset to
+tell apart from real ones, which is a trade this project should not want: distinguishability
+is a safety property here, not a defect.
+
+### VirusTotal
+
+Not submitted, and not to be submitted.
+
+Uploading a file to VirusTotal publishes it and its hash to a third party permanently, and
+[`SECURITY.md`](../SECURITY.md) tells everyone else not to submit these hashes to a
+threat-intelligence platform. Doing it ourselves to get a badge would be the same pollution
+the policy exists to prevent — a synthetic SHA256 that acquires a reputation is a small piece
+of noise in somebody else's data and it never goes away. ClamAV and XProtect run locally
+against current signature sets and answer the question that actually mattered.
+
 ## What this does not protect against
 
 Someone determined to build malware will not start from here — writing a functional payload

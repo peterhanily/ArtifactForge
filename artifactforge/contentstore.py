@@ -1,0 +1,197 @@
+"""Deterministic content-first identity — the ArtifactForge keystone.
+
+Synthesize a file's real bytes once from a seed; every hash-shaped field in every
+artifact (Sysmon log, Zeek files.log, Amcache, on-disk bytes, YARA target, IMPHASH) is
+then a real digest of those SAME bytes / that same import table, so they agree by
+construction. This is the fix for EvidenceForge's per-emitter seed-string hashes.
+
+Bytes are a pure function of the seed — no wall clock, no os.urandom, no PID — so the
+same scenario regenerates byte-identical forever (the two-clock determinism gate). The PE
+is hand-assembled (not via LIEF, which promises no determinism) including a real import
+table, so pefile computes a genuine, stable IMPHASH.
+
+Generated PEs are INERT SYNTHETIC STUBS (code section is a single `ret`), never
+functional malware.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import struct
+from dataclasses import dataclass
+
+
+def _sub_seed(parent: bytes, domain: str) -> bytes:
+    return hashlib.sha256(parent + b"|" + domain.encode()).digest()
+
+
+def _prng_bytes(seed: bytes, n: int) -> bytes:
+    out, ctr = b"", 0
+    while len(out) < n:
+        out += hashlib.sha256(seed + struct.pack("<Q", ctr)).digest()
+        ctr += 1
+    return out[:n]
+
+
+# Realistic benign import pool; the seed picks a deterministic subset so IMPHASH varies
+# per file while staying a pure function of the seed. Names only (no ordinals).
+_IMPORT_POOL = [
+    ("kernel32.dll", ["CreateFileA", "ReadFile", "WriteFile", "CloseHandle", "GetProcAddress",
+                      "LoadLibraryA", "VirtualAlloc", "GetModuleHandleA", "ExitProcess", "Sleep"]),
+    ("advapi32.dll", ["RegOpenKeyExA", "RegSetValueExA", "RegCloseKey", "OpenProcessToken"]),
+    ("user32.dll", ["MessageBoxA", "wsprintfA", "GetDesktopWindow"]),
+    ("ws2_32.dll", ["WSAStartup", "socket", "connect", "send", "recv"]),
+]
+
+
+def _pick_imports(content_seed: bytes):
+    r = _prng_bytes(_sub_seed(content_seed, "imports"), 64)
+    picked = []
+    for i, (dll, funcs) in enumerate(_IMPORT_POOL):
+        if i == 0 or (r[i] & 1):  # always include kernel32
+            chosen = [funcs[j] for j in range(len(funcs)) if (r[16 + i * 8 + j] & 1)]
+            if len(chosen) < 2:
+                chosen = funcs[:2]
+            picked.append((dll, chosen))
+    return picked
+
+
+def imphash_of(imports) -> str:
+    """Replicate pefile.get_imphash for a name-only import list (validated against pefile)."""
+    parts = []
+    for dll, funcs in imports:
+        lib = dll.lower()
+        head, _, ext = lib.rpartition(".")
+        if head and ext in ("ocx", "sys", "dll"):
+            lib = head
+        for f in funcs:
+            parts.append(f"{lib}.{f.lower()}")
+    return hashlib.md5(",".join(parts).encode()).hexdigest()
+
+
+def _assemble_pe(content_seed: bytes, imports) -> bytes:
+    IMAGE_BASE = 0x140000000
+    RDATA_RVA, RDATA_RAW = 0x2000, 0x600
+    n = len(imports)
+
+    # Lay out the import blob at RDATA_RVA: IDT | ILTs | IATs | dll names | hint/name.
+    idt_size = (n + 1) * 20
+    cur = idt_size
+    ilt_off, iat_off, dllname_off, hintname_off = {}, {}, {}, {}
+    for i, (dll, funcs) in enumerate(imports):
+        ilt_off[i] = cur
+        cur += (len(funcs) + 1) * 8
+    for i, (dll, funcs) in enumerate(imports):
+        iat_off[i] = cur
+        cur += (len(funcs) + 1) * 8
+    for i, (dll, funcs) in enumerate(imports):
+        dllname_off[i] = cur
+        cur += len(dll) + 1 + ((len(dll) + 1) & 1)
+    for i, (dll, funcs) in enumerate(imports):
+        for f in funcs:
+            hintname_off[(i, f)] = cur
+            cur += 2 + len(f) + 1
+            cur += cur & 1
+    blob = bytearray(cur)
+
+    def rva(off):
+        return RDATA_RVA + off
+
+    for i, (dll, funcs) in enumerate(imports):
+        blob[i * 20:i * 20 + 20] = struct.pack("<IIIII", rva(ilt_off[i]), 0, 0, rva(dllname_off[i]), rva(iat_off[i]))
+    for i, (dll, funcs) in enumerate(imports):
+        for j, f in enumerate(funcs):
+            thunk = struct.pack("<Q", rva(hintname_off[(i, f)]))
+            blob[ilt_off[i] + j * 8:ilt_off[i] + j * 8 + 8] = thunk
+            blob[iat_off[i] + j * 8:iat_off[i] + j * 8 + 8] = thunk
+    for i, (dll, funcs) in enumerate(imports):
+        blob[dllname_off[i]:dllname_off[i] + len(dll) + 1] = dll.encode() + b"\x00"
+        for f in funcs:
+            o = hintname_off[(i, f)]
+            blob[o:o + 2 + len(f) + 1] = b"\x00\x00" + f.encode() + b"\x00"
+
+    marker = b"ARTIFACTFORGE-SYNTHETIC-" + _prng_bytes(_sub_seed(content_seed, "marker"), 8).hex().encode()
+    dos = b"MZ" + b"\x00" * 58 + struct.pack("<I", 0x40)
+    coff = b"PE\x00\x00" + struct.pack("<HHIIIHH", 0x8664, 2, 0, 0, 0, 240, 0x0022)  # 2 sections
+    opt = struct.pack("<H", 0x20B)              # Magic PE32+
+    opt += struct.pack("<BB", 14, 0)            # linker version
+    opt += struct.pack("<I", 0x200)             # SizeOfCode
+    opt += struct.pack("<I", 0x200)             # SizeOfInitializedData
+    opt += struct.pack("<I", 0)                 # SizeOfUninitializedData
+    opt += struct.pack("<I", 0x1000)            # AddressOfEntryPoint
+    opt += struct.pack("<I", 0x1000)            # BaseOfCode
+    opt += struct.pack("<Q", IMAGE_BASE)        # ImageBase
+    opt += struct.pack("<I", 0x1000)            # SectionAlignment
+    opt += struct.pack("<I", 0x200)             # FileAlignment
+    opt += struct.pack("<HH", 6, 0)             # OS version
+    opt += struct.pack("<HH", 0, 0)             # Image version
+    opt += struct.pack("<HH", 6, 0)             # Subsystem version
+    opt += struct.pack("<I", 0)                 # Win32VersionValue
+    opt += struct.pack("<I", 0x4000)            # SizeOfImage
+    opt += struct.pack("<I", 0x400)             # SizeOfHeaders
+    opt += struct.pack("<I", 0)                 # CheckSum
+    opt += struct.pack("<H", 3)                 # Subsystem (CUI)
+    opt += struct.pack("<H", 0x8160)            # DllCharacteristics
+    opt += struct.pack("<Q", 0x100000)          # SizeOfStackReserve
+    opt += struct.pack("<Q", 0x1000)            # SizeOfStackCommit
+    opt += struct.pack("<Q", 0x100000)          # SizeOfHeapReserve
+    opt += struct.pack("<Q", 0x1000)            # SizeOfHeapCommit
+    opt += struct.pack("<I", 0)                 # LoaderFlags
+    opt += struct.pack("<I", 16)                # NumberOfRvaAndSizes
+    dd = [(0, 0)] * 16
+    dd[1] = (RDATA_RVA, idt_size)               # Import Table directory
+    for a, b in dd:
+        opt += struct.pack("<II", a, b)
+    assert len(opt) == 240, len(opt)
+
+    def _section(name, vsize, rva_, rawsize, rawptr, chars):
+        return name.ljust(8, "\x00").encode() + struct.pack(
+            "<IIIIIIHHI", vsize, rva_, rawsize, rawptr, 0, 0, 0, 0, chars)
+
+    rdata_rawsize = ((len(blob) + 0x1FF) // 0x200) * 0x200
+    text = _section(".text", 0x200, 0x1000, 0x200, 0x400, 0x60000020)
+    rdata = _section(".rdata", max(0x200, len(blob)), RDATA_RVA, rdata_rawsize, RDATA_RAW, 0x40000040)
+    hdr = dos + coff + opt + text + rdata
+    hdr += b"\x00" * (0x400 - len(hdr))
+    code = b"\xC3" + b"\x00" * 0x1FF
+    rdata_raw = bytes(blob) + b"\x00" * (rdata_rawsize - len(blob))
+    overlay = marker + b"\x00" + _prng_bytes(_sub_seed(content_seed, "filler"), 128)
+    return hdr + code + rdata_raw + overlay
+
+
+def build_pe_stub(content_seed: bytes) -> bytes:
+    """A structurally-valid, inert PE (single `ret`) with a real deterministic import table."""
+    return _assemble_pe(content_seed, _pick_imports(content_seed))
+
+
+@dataclass(frozen=True)
+class Content:
+    bytes: bytes
+    path: str
+    sha256: str
+    sha1: str
+    md5: str
+    imphash: str
+    marker: str
+
+
+class ContentStore:
+    """content_id -> real bytes, content-addressed by sha256 (git-blob style)."""
+
+    def __init__(self, scenario_seed: str, cache_dir: str):
+        self._root = _sub_seed(scenario_seed.encode(), "contentstore")
+        self._cache = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+
+    def materialize(self, content_id: str) -> Content:
+        seed = _sub_seed(self._root, content_id)
+        imports = _pick_imports(seed)
+        data = _assemble_pe(seed, imports)
+        sha256 = hashlib.sha256(data).hexdigest()
+        path = os.path.join(self._cache, sha256)
+        if not os.path.exists(path):
+            with open(path, "wb") as f:
+                f.write(data)
+        marker = "ARTIFACTFORGE-SYNTHETIC-" + _prng_bytes(_sub_seed(seed, "marker"), 8).hex()
+        return Content(data, path, sha256, hashlib.sha1(data).hexdigest(),
+                       hashlib.md5(data).hexdigest(), imphash_of(imports), marker)

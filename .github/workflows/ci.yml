@@ -1,0 +1,95 @@
+name: CI
+
+# Least privilege: this workflow only reads the tree and runs tests.
+permissions:
+  contents: read
+
+# The gate is not just unit tests — it is real DFIR parsers (pefile, regipy, windowsprefetch,
+# YARA) reading freshly generated artifacts, so "a responder's tools can read this" is checked
+# on every change rather than asserted in a README.
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ArtifactForge is standalone. This job installs NO EvidenceForge on purpose: if the suite
+  # cannot go green without it, the standalone claim is false.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]   # 3.11 is the declared floor — test it, don't assume it
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install ArtifactForge + real-parser oracles
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e ".[dev]"
+
+      - name: Oracle versions (fail fast if broken)
+        # A silently-missing oracle turns a real gate into a skipped test, and a skipped test
+        # exits 0. Print every oracle's version so a broken install fails here, loudly, rather
+        # than downstream as a green run that checked nothing.
+        run: |
+          uv run python - <<'PY'
+          import sqlite3
+          import pefile, regipy, windowsprefetch, yara
+          print("pefile          ", pefile.__version__)
+          print("regipy          ", getattr(regipy, "__version__", "(unversioned)"))
+          print("windowsprefetch ", getattr(windowsprefetch, "__version__", "(unversioned)"))
+          print("yara-python     ", yara.__version__)
+          print("sqlite3         ", sqlite3.sqlite_version)
+          PY
+
+      - name: Lint
+        run: uv run ruff check artifactforge/ tests/
+
+      - name: Tests (real parsers over freshly generated artifacts)
+        run: uv run pytest -q -rs
+
+      - name: Determinism — regenerate and byte-diff
+        # The property everything else rests on: the same seed must produce the same bytes.
+        # Generated twice into separate trees under a different PYTHONHASHSEED, TZ and locale.
+        run: |
+          uv run python -c "from artifactforge.benchmark import generate_batch; generate_batch(8, 'out/a')"
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C \
+            uv run python -c "from artifactforge.benchmark import generate_batch; generate_batch(8, 'out/b')"
+          diff -r --exclude='.cache' out/a out/b && echo "byte-identical across runs"
+
+  # EvidenceForge is a CI-only dev tool, never a declared dependency. This job proves the
+  # identity reverse-map still matches upstream's seed formulas. It must HARD FAIL if
+  # EvidenceForge is missing or if its contract tests skip — a skipped integration test is
+  # exactly how a formula change would sail through green.
+  ef-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Python
+        run: uv python install 3.12
+
+      - name: Install ArtifactForge + EvidenceForge (pinned)
+        # The distribution is `evidence-forge`; the import name is `evidenceforge`. Naming the
+        # import here makes uv exit 1 with "Package metadata name does not match given name" —
+        # which is what stopped this workflow from ever reaching pytest.
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[dev]"
+          uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@v1.13.1"
+
+      - name: EvidenceForge version (fail fast if broken)
+        run: uv run python -c "import evidenceforge; print(evidenceforge.__file__)"
+
+      - name: Contract — the EvidenceForge-facing tests must RUN, not skip
+        run: |
+          set -o pipefail
+          uv run pytest -q -rs tests/test_cross_emitter_join.py | tee ef.log
+          if grep -qi 'skipped' ef.log; then
+            echo "an EvidenceForge contract test SKIPPED — a skip here is a silent pass" >&2
+            exit 1
+          fi

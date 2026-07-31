@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+
+# ArtifactForge generated output
+out/
+ef-out/
+.content-cache/
+
+# Benchmark suite keys. A hold-out suite's key is what makes its scores real; committing one
+# silently converts every score it ever produced back into a dev-suite score.
+**/_key/
+*.key.hex
+
+# Keep the committed sample artifacts, but narrowly. A blanket `!samples/**` would re-enable
+# EVERY ignored pattern inside samples/, which is the one directory where a real artifact
+# could be staged by mistake. Negations first, then deny rules, which win.
+!samples/**/
+!samples/**/*.md
+!samples/**/*.json
+!samples/**/*.exe
+!samples/**/*.hve
+!samples/**/*.hive
+!samples/**/*.pf
+!samples/**/*.plist
+!samples/**/*.db
+samples/**/real*
+samples/**/.DS_Store
+samples/**/*.env
+samples/**/.env
+samples/**/*.key
+samples/**/*.pem
+samples/**/*.p12

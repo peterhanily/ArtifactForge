@@ -22,11 +22,12 @@ Everything here is inert by construction: see
   (kernel32, advapi32, user32, ws2_32), so pefile computes a stable IMPHASH. The imported
   functions are a plausible selection, not a real program's.
 - **`TimeDateStamp` is pinned to 0** so the bytes never depend on a clock.
-- **No DOS stub message.** The DOS header is followed straight by the PE header, with none of
-  the usual "This program cannot be run in DOS mode." stub. The community YARA rule
-  `HasModified_DOS_Message` fires on every binary we emit because of it. This is left in
-  deliberately: it is a cheap, reliable way for anyone to tell a generated PE from a real one,
-  and that is worth more here than the marginal realism of adding the stub.
+- **The MS-DOS header and stub are the standard MSVC ones**, byte for byte, including the
+  "This program cannot be run in DOS mode." message. A PE without them is trivially
+  distinguishable from a real one — the community rule `HasModified_DOS_Message` fires on
+  every binary that omits the message. The stub is 16-bit code that prints a sentence and
+  exits, and Gate 3 requires it byte-exact, because it is the one region of a PE where
+  arbitrary code is conventional and nothing reads it.
 - **Marked.** The overlay carries `ARTIFACTFORGE-SYNTHETIC-<16 hex>`.
 
 ## macho

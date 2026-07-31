@@ -159,6 +159,26 @@ def test_inertness_reddens_when_the_code_section_is_not_inert(tmp_path):
     assert any("not inert" in f for f in new), new
 
 
+def test_inertness_reddens_when_the_dos_stub_is_tampered_with(tmp_path):
+    """MUTATION: replace the standard MS-DOS stub with different 16-bit code.
+
+    The stub is the one region of a PE where arbitrary code is conventional and nothing
+    reads it, so it is the obvious place to hide something. The gate requires it byte-exact.
+    """
+    task = _windows(tmp_path)
+    before = inertness.run(task.directory)
+
+    path = _persisted_pe(task)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    data[0x40:0x44] = b"\xb8\x00\x4c\xcd"          # different real-mode code
+    with open(path, "wb") as f:
+        f.write(bytes(data))
+
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("MS-DOS stub" in f for f in new), new
+
+
 # --- Gate 4: both directions, and the control -----------------------------------------
 
 def test_solvability_reddens_when_an_answer_is_not_in_the_evidence(tmp_path):

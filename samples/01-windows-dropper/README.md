@@ -11,11 +11,11 @@ Regenerate with `scripts/make-samples.sh`. The bytes are deterministic, so a reg
 ### pefile — every binary present
 
 ```
-acrord32.exe             sha256=e811d572e100ddc4...  imphash=391916e482252b8db28e0680e04c743e
-calc.exe                 sha256=3021a403dd6f2032...  imphash=488a0ce187f360bcd9b9ce8cb04c7199
-onedrive.exe             sha256=9b1cd4f3ba66bef9...  imphash=c7972c33d207975641133256550e12f7
-putty.exe                sha256=b0670e8e3740366f...  imphash=634a14fcdb4364b396dcc1c67aa18197
-winlogon_h.exe           sha256=bd8c33e28537f985...  imphash=31e964de5fd56a9caf08a1435c233608
+acrord32.exe             sha256=f9192f15dcb361d9...  imphash=391916e482252b8db28e0680e04c743e
+calc.exe                 sha256=4e9af850ee8557f3...  imphash=488a0ce187f360bcd9b9ce8cb04c7199
+onedrive.exe             sha256=7b66ac8f29bc34cd...  imphash=c7972c33d207975641133256550e12f7
+putty.exe                sha256=0b7be563d74a2a32...  imphash=634a14fcdb4364b396dcc1c67aa18197
+winlogon_h.exe           sha256=3128f4b32bdddab9...  imphash=31e964de5fd56a9caf08a1435c233608
 ```
 
 ### regipy — Run key: three autostarts, one naming a program that is here
@@ -29,7 +29,7 @@ DllHostUp                C:\Program Files\slack.exe
 ### regipy — Amcache: eight records, one whose hash belongs to a resident file
 
 ```
-onedrive.exe             FileId=00007d8580a3462448dd...  <-- matches onedrive.exe on disk
+onedrive.exe             FileId=0000fc41e187ecf0180d...  <-- matches onedrive.exe on disk
 winlogon_h.exe           FileId=00002f3544b2bff1b248...  
 spotify.exe              FileId=0000a1f1531c3a672334...  
 python.exe               FileId=0000d1bda268b1ddf2c8...  

@@ -16,13 +16,21 @@ reverse-engineer because there is nothing in it.
 
 Concretely, the entire code body of each format is:
 
-| Format | Code section | Bytes |
-|---|---|---|
-| PE (x86-64) | `ret` | `C3` |
-| Mach-O (arm64) | `mov w0, #0 ; ret` | `52 80 00 00  D6 5F 03 C0` |
+| Format | Region | Code | Bytes |
+|---|---|---|---|
+| PE (x86-64) | `.text` | `ret` | `C3` |
+| PE (16-bit) | MS-DOS stub | print a sentence, exit | `0E 1F BA 0E 00 B4 09 CD 21 B8 01 4C CD 21` |
+| Mach-O (arm64) | `__text` | `mov w0, #0 ; ret` | `52 80 00 00  D6 5F 03 C0` |
 
-Everything after that is zero padding. Gate 3 disassembles what actually lands on disk and
-fails if a single instruction appears past the return.
+Everything after that is zero padding. Gate 3 reads what actually lands on disk and fails if a
+single instruction appears past the return.
+
+The DOS stub is the standard one every Windows compiler has emitted for thirty years,
+reproduced byte for byte. It is included because a PE without it is trivially distinguishable
+from a real binary, and it is the one region of a PE where arbitrary code is conventional and
+nothing ever reads it — so Gate 3 requires it to equal the canonical bytes exactly, closing the
+obvious place to hide something. `tests/test_gate_mutations.py` overwrites four bytes of it and
+requires the gate to notice.
 
 ## Why the Mach-O is signed and loadable
 
@@ -73,6 +81,7 @@ Every claim above is a test. These are the ones that would go red:
 | Property | Enforced by |
 |---|---|
 | The PE's `.text` is one `ret` and padding | `gates/inertness.py::_pe_code_is_inert` |
+| The PE's MS-DOS stub is the canonical one, byte for byte | same |
 | The Mach-O's `__text` is `mov w0,#0 ; ret` | `gates/inertness.py::_macho_code_is_inert` |
 | Every emitted format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
 | A format with no declared marker fails | same — an unknown format is a failure, not a skip |
@@ -80,6 +89,7 @@ Every claim above is a test. These are the ones that would go red:
 | No address outside RFC 5737 / RFC 1918 | same |
 | Stripping a marker turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_synthetic_marker_is_stripped` |
 | Code past the `ret` turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_code_section_is_not_inert` |
+| Tampering with the DOS stub turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_dos_stub_is_tampered_with` |
 | A routable domain turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_an_indicator_could_be_real` |
 
 The mutation tests are the load-bearing ones. A gate that has never been observed to fail
@@ -98,7 +108,7 @@ Measured 2026-07-31 on macOS 26.5.2 (arm64):
 |---|---|---|
 | **ClamAV 1.5.3**, signature set 28078 (355,577 signatures, same day) | EICAR detected | **0 detections** across 160 files |
 | **Apple XProtect** 5353 — the 451-rule set macOS scans downloads with | a crafted file matches `XProtect_MACOS_71915a8`; a near-miss one condition short does not | **no threat-naming rule fired** |
-| **Yara-Rules community set** — 12,685 rules from 436 files | (the set is deliberately trigger-happy, which is the control) | **no threat-naming rule fired**; 496 descriptive hits, below |
+| **Yara-Rules community set** — 12,685 rules from 436 files | (the set is deliberately trigger-happy, which is the control) | **no threat-naming rule fired**; 461 descriptive hits, below |
 | **Gatekeeper** (`spctl -a -t execute`) | — | **rejected**, with and without a quarantine xattr |
 | **`codesign -v`** | — | signature valid on disk; `codesign -d` reports the cdhash we computed by hand, for all five sample binaries |
 
@@ -108,7 +118,7 @@ and the operating system still refuses to run it as a download, exactly as it re
 ad-hoc-signed binary. Realistic to a forensic parser, refused by the actual security gate, is
 the shape this project wants.
 
-### The 496 community-YARA hits, itemised
+### The 461 community-YARA hits, itemised
 
 None of them names a threat. They are *characteristic* rules — statements about what a file
 contains — and a genuine artifact of the same kind fires them identically:
@@ -122,14 +132,19 @@ contains — and a genuine artifact of the same kind fires them identically:
 | `Big_Numbers1` | `Amcache.hve` contains long hex strings, which are the SHA1 `FileId`s a real Amcache also contains |
 | `Browsers` | `Amcache.hve` mentions `chrome.exe`, one of the benign decoy names |
 | `Misc_Suspicious_Strings` | a prefetch record for `CMD.EXE` contains the string `CMD.EXE` |
-| `HasModified_DOS_Message` | **a real tell** — see below |
+| `HasModified_DOS_Message` | *fired on the first run; since fixed — see below* |
 
-`HasModified_DOS_Message` fires on every PE we emit, because the DOS stub carries no "This
-program cannot be run in DOS mode." message. That is a genuine fingerprint, it is disclosed in
-`KNOWN_TELLS.md`, and it is deliberately **not** fixed. Adding the standard stub would make
-the binaries marginally more realistic and correspondingly harder for a community ruleset to
-tell apart from real ones, which is a trade this project should not want: distinguishability
-is a safety property here, not a defect.
+`HasModified_DOS_Message` was the one hit that meant something. It fired on every PE because
+the DOS header ran straight into the PE header with no stub at all — a fingerprint of the
+generator rather than a property of the artifact. The canonical MSVC header and stub are now
+reproduced byte for byte and the rule no longer fires.
+
+Making a synthetic binary *less* distinguishable is a trade worth being explicit about. It is
+the right one here because the thing being removed was an accident, not a disclosure: the
+deliberate marking is the in-band `ARTIFACTFORGE` anchor, which every artifact still carries
+and which Gate 3 still requires. Distinguishability that comes from an honest marker is a
+safety property; distinguishability that comes from an incomplete header is just a bug that
+happened to be load-bearing.
 
 ### VirusTotal
 

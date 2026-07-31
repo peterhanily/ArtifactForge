@@ -46,8 +46,22 @@ _IPV4 = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
 def _pe_code_is_inert(data: bytes) -> tuple[bool, str]:
-    """The .text section must be one 0xC3 (ret) and then nothing but padding."""
+    """The .text section must be one 0xC3 (ret), and the DOS stub must be the standard one.
+
+    A PE has two places that legitimately hold executable code, and both are checked. The
+    second matters more than it looks: the MS-DOS stub is the one region of a Windows binary
+    where arbitrary code is conventional and nobody reads it, so requiring it to equal the
+    stub every compiler has emitted for thirty years — byte for byte — closes the obvious
+    place to hide something.
+    """
     import pefile
+
+    from artifactforge.content.store import DOS_STUB
+    stub = data[0x40:0x40 + len(DOS_STUB)]
+    if stub != DOS_STUB:
+        return False, ("the MS-DOS stub is not the standard one; the only permitted 16-bit "
+                       "code is the message-and-exit stub every compiler emits")
+
     pe = pefile.PE(data=data)
     for s in pe.sections:
         if s.Name.rstrip(b"\x00") != b".text":
@@ -57,7 +71,7 @@ def _pe_code_is_inert(data: bytes) -> tuple[bool, str]:
             return False, f".text does not begin with ret (0xC3): {body[:8].hex()}"
         if body[1:].strip(b"\x00"):
             return False, f".text carries {len(body[1:].strip(chr(0).encode()))} bytes past ret"
-        return True, "ret + padding"
+        return True, "ret + padding, standard DOS stub"
     return False, "no .text section"
 
 

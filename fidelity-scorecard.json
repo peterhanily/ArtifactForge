@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "generator": {
     "artifactforge_version": "0.0.1",
-    "git_commit": "0195b54",
+    "git_commit": "c20b7e9",
     "sqlite_version": "3.50.4"
   },
   "gates": {

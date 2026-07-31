@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """Minimal deterministic regf (Windows registry hive) writer — validated by regipy.
 
 Two passes: (1) assign every cell an offset (an nk's offset is reserved before its

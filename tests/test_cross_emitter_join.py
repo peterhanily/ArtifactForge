@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """Keystone proof (Phase 0.5): one dropper, downloaded AND executed, one identity.
 
 BEFORE — using EvidenceForge's OWN hash functions — the download hash (Zeek) and the

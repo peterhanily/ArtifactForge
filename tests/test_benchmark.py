@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """The benchmark's validity, from both directions.
 
 The reference solver proves the answers are recoverable from the artifacts. The adversaries

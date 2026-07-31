@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """Deterministic macOS forensic artifacts — the gap EvidenceForge structurally can't fill.
 
 All are loose files a responder's tools read directly: SQLite databases (knowledgeC / TCC /
@@ -17,6 +19,18 @@ import plistlib
 import sqlite3
 import tempfile
 
+from artifactforge.disclosure import MARKER, NOTICE, RESERVED_NAME
+
+
+def _mark(con) -> None:
+    """A reserved table naming ArtifactForge, so the file discloses itself.
+
+    Real forensic queries never touch it and `strings` cannot miss it. A schema a genuine
+    macOS database would not have is exactly the point: this must not be mistakable for one.
+    """
+    con.execute(f"CREATE TABLE {RESERVED_NAME} (marker TEXT, notice TEXT)")
+    con.execute(f"INSERT INTO {RESERVED_NAME} VALUES (?, ?)", (MARKER, NOTICE))
+
 
 def _sqlite_bytes(build) -> bytes:
     fd, path = tempfile.mkstemp(suffix=".db")
@@ -28,6 +42,7 @@ def _sqlite_bytes(build) -> bytes:
         con.execute("PRAGMA legacy_file_format=ON")
         con.execute("PRAGMA journal_mode=DELETE")
         build(con)
+        _mark(con)
         con.commit()
         con.close()
         with open(path, "rb") as f:
@@ -101,5 +116,9 @@ def build_launch_agent(label: str, program_path: str, run_at_load: bool = True) 
         "ProgramArguments": [program_path],
         "RunAtLoad": run_at_load,
         "StartInterval": 3600,
+        # launchd ignores keys it does not know, so the disclosure rides along harmlessly
+        # and survives the file being copied out of its bundle.
+        RESERVED_NAME: MARKER,
+        f"{RESERVED_NAME}_notice": NOTICE,
     }
     return plistlib.dumps(plist, fmt=plistlib.FMT_BINARY, sort_keys=True)

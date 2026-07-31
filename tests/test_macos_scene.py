@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """A macOS scene — coverage EvidenceForge structurally cannot produce, since its os_category
 is windows or linux and there is no macOS at all.
 

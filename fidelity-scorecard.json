@@ -2,20 +2,18 @@
   "schema_version": "1.0",
   "generator": {
     "artifactforge_version": "0.0.1",
-    "git_commit": "1453322",
+    "git_commit": "764c2ac",
     "sqlite_version": "3.50.4"
   },
   "gates": {
     "validity": {
-      "verdict": "fail",
-      "fails": [
-        "prefetch: pyscca rejected it \u2014 OSError: pyscca_file_open: unable to open file. libscca_io_handle_read_volumes_information: invalid volume device path "
-      ],
+      "verdict": "pass",
+      "fails": [],
       "gaps": [
         "plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
         "sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
       ],
-      "oracle_reads_passed": 68,
+      "oracle_reads_passed": 76,
       "oracle_reads_total": 76
     },
     "identity": {
@@ -26,14 +24,10 @@
       "checks_joined": 40
     },
     "inertness": {
-      "verdict": "fail",
-      "fails": [
-        "prefetch: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
-        "sqlite: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
-        "plist: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated"
-      ],
+      "verdict": "pass",
+      "fails": [],
       "gaps": [],
-      "formats_marked": 24,
+      "formats_marked": 44,
       "formats_total": 44
     },
     "solvability": {
@@ -52,11 +46,7 @@
   },
   "honest_gaps": [
     "Gate 1 (validity): plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
-    "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap",
-    "Gate 1 (validity) FAILING: prefetch: pyscca rejected it \u2014 OSError: pyscca_file_open: unable to open file. libscca_io_handle_read_volumes_information: invalid volume device path ",
-    "Gate 3 (inertness) FAILING: prefetch: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
-    "Gate 3 (inertness) FAILING: sqlite: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
-    "Gate 3 (inertness) FAILING: plist: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated"
+    "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
   ],
   "verdict": "gap"
 }

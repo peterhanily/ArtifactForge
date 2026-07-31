@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """HostProfile — OS family, version, and settings as DATA, not code.
 
 The generators read a profile instead of hard-coding host details, so OS versions and

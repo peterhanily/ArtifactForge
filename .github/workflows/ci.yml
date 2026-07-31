@@ -62,25 +62,15 @@ jobs:
       - name: Gate 2 — identity (must PASS)
         run: uv run artifactforge gate identity --n 4
 
-      # Gates 1 and 3 are RED today for reasons named in fidelity-scorecard.json's
-      # honest_gaps. Each step below asserts the gate STILL FAILS, so a gap can neither
-      # persist silently nor be closed silently: the moment one is genuinely fixed this step
-      # turns red and forces the step and the scorecard baseline to be updated together. Same
-      # idiom as PacketForge's Gate 4, where sample 18 must keep failing because a pass would
-      # mean it had been quietly edited.
-      - name: Gate 1 — validity (known red — lief/libregf oracles unwired, pyscca rejects .pf)
-        run: |
-          if uv run artifactforge gate validity --n 2; then
-            echo "Gate 1 unexpectedly PASSES — make it a hard gate and update the baseline" >&2
-            exit 1
-          fi
+      # Two independently-implemented parsers per format. A missing oracle fails here rather
+      # than skipping, because a skipped check exits 0 and reads exactly like a passing one.
+      - name: Gate 1 — validity (must PASS)
+        run: uv run artifactforge gate validity --n 4
 
-      - name: Gate 3 — inertness (known red — prefetch and macOS formats carry no marker)
-        run: |
-          if uv run artifactforge gate inertness --n 2; then
-            echo "Gate 3 unexpectedly PASSES — make it a hard gate and update the baseline" >&2
-            exit 1
-          fi
+      # Checked on the emitted bytes: the code section is one return instruction, every format
+      # carries its in-band marker, and no indicator names anything that could be real.
+      - name: Gate 3 — inertness (must PASS)
+        run: uv run artifactforge gate inertness --n 4
 
       # A hold-out suite's answers must not be derivable, a dev suite's must be — the second
       # half is the control that stops the first from passing vacuously.

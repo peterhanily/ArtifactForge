@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """The mutation register — the sixth binding, and the one that makes the rest mean anything.
 
 Every gate ships with a named mutation that must turn it red. A gate never observed to fail

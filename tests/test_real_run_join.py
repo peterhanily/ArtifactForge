@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """Phase 0 proof: on a REAL EvidenceForge run, every Sysmon binary routes through the
 ContentStore and the four-way join holds.
 

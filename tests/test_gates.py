@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """The gate discipline itself, enforced mechanically.
 
 A gate is only built when all six of its bindings exist. This file is their keeper: it fails

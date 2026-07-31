@@ -64,7 +64,14 @@ def build_scorecard(reports, *, artifactforge_version: str, git_commit: str,
         },
         "gates": gates,
         "honest_gaps": gaps,
-        "verdict": "pass" if all(r.ok for r in reports) else "gap",
+        # Three-valued on purpose. "pass" would be the wrong headline while a declared gap is
+        # open — a gap is a named limitation rather than a failure, but it is still something
+        # a reader deserves to see before they trust a number underneath it.
+        #   pass  every gate green and nothing left declared
+        #   gap   every gate green, but a limitation is named in honest_gaps
+        #   fail  a gate is red
+        "verdict": ("fail" if not all(r.ok for r in reports)
+                    else "gap" if gaps else "pass"),
     }
 
 

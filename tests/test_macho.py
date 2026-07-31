@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """The macOS binary is real, and its identity is real.
 
 The Windows side's value comes from the synthetic PE carrying a genuine IMPHASH that pefile

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """A Windows scene, read by the parsers a responder actually runs.
 
 Every artifact is checked by an independent tool rather than by the code that wrote it, and

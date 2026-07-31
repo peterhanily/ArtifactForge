@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """Step 1 proof: the synthetic PE carries a REAL, deterministic IMPHASH.
 
 Our pure-stdlib imphash_of() must equal what pefile computes from the assembled bytes,

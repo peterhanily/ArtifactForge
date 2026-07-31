@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
 """The committed fidelity scorecard must stay valid, honest, and leak nothing local.
 
 CI cannot always recompute the scorecard — some oracles are platform-bound — so it guards the
@@ -26,7 +28,7 @@ def test_committed_scorecard_is_schema_valid(card):
     for name, block in card["gates"].items():
         assert block["verdict"] in ("pass", "fail"), name
         assert isinstance(block["fails"], list) and isinstance(block["gaps"], list), name
-    assert card["verdict"] in ("pass", "gap")
+    assert card["verdict"] in ("pass", "gap", "fail")
 
 
 def test_every_tracked_metric_is_present(card):
@@ -50,5 +52,18 @@ def test_scorecard_declares_its_failures_rather_than_hiding_them(card):
         if block["verdict"] == "fail":
             assert f"({name}) FAILING" in gaps, \
                 f"gate '{name}' fails but says nothing in honest_gaps"
-    assert (card["verdict"] == "pass") == all(
-        b["verdict"] == "pass" for b in card["gates"].values())
+
+
+def test_the_headline_verdict_cannot_hide_an_open_gap(card):
+    """"pass" is reserved for a scorecard with nothing left declared.
+
+    A green headline sitting above a list of named limitations is exactly the shape of
+    overstatement this project exists to avoid, so the top-level verdict is three-valued.
+    """
+    any_fail = any(b["verdict"] == "fail" for b in card["gates"].values())
+    if any_fail:
+        assert card["verdict"] == "fail"
+    elif card["honest_gaps"]:
+        assert card["verdict"] == "gap", "gaps are declared but the headline says otherwise"
+    else:
+        assert card["verdict"] == "pass"

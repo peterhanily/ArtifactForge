@@ -90,3 +90,18 @@ def test_no_document_links_to_a_file_that_does_not_exist():
             if not os.path.exists(resolved):
                 broken.append(f"{os.path.relpath(doc, ROOT)} -> {target}")
     assert not broken, broken
+
+
+def test_every_platform_identifier_exemption_carries_a_real_reason():
+    """An allowlist entry without a justification is a hole somebody widened once and forgot.
+
+    The reason has to be long enough to be an argument rather than a shrug — the same bar
+    PacketForge applies to its own indicator exemptions.
+    """
+    from artifactforge.gates.inertness import _PLATFORM_IDENTIFIERS, _REAL_VENDOR_PREFIXES
+    assert _PLATFORM_IDENTIFIERS, "the exemption list must be explicit, not implicit"
+    for identifier, reason in _PLATFORM_IDENTIFIERS.items():
+        assert identifier == identifier.lower(), identifier
+        assert identifier.startswith(_REAL_VENDOR_PREFIXES), \
+            f"{identifier!r} is exempted from a rule it would never have tripped"
+        assert len(reason) > 40, f"{identifier!r}'s justification says nothing: {reason!r}"

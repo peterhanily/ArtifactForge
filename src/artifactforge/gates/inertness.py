@@ -41,6 +41,33 @@ MARKERS = {
 _RESERVED_TLD = (".example", ".invalid", ".test", ".localhost")
 _RESERVED_DOMAIN = ("example.com", "example.net", "example.org")
 _DOC_NETS = ("192.0.2.", "198.51.100.", "203.0.113.", "2001:db8:")
+# Reverse-DNS prefixes belonging to real organisations. A bundle identifier is a namespaced
+# claim of authorship, and on macOS it is embedded in the code signature — so an ad-hoc-signed
+# synthetic binary identifying itself as `com.apple.Notes` asserts something false about Apple.
+# Windows executable FILENAMES are deliberately not policed: `chrome.exe` is ubiquitous on a
+# real host and claims nothing about who wrote it.
+_REAL_VENDOR_PREFIXES = (
+    "com.apple.", "com.microsoft.", "com.google.", "org.mozilla.", "com.adobe.",
+    "com.amazon.", "com.meta.", "com.facebook.", "com.oracle.", "com.docker.",
+    "com.spotify.", "us.zoom.", "com.tinyspeck.", "com.figma.", "com.postmanlabs.",
+    "com.jetbrains.", "com.vmware.", "com.citrix.", "com.dropbox.", "com.slack.",
+)
+# Real vendor identifiers that are the PLATFORM'S OWN VOCABULARY rather than a claim of
+# authorship. An artifact that avoided these would simply be wrong: the quarantine attribute
+# really is called `com.apple.quarantine`, and a scene naming it something else would not be a
+# macOS scene. Every exemption carries a reason, and the reason has to say something.
+_PLATFORM_IDENTIFIERS = {
+    "com.apple.quarantine":
+        "the real extended attribute Gatekeeper sets on a downloaded file; the artifact is "
+        "named after the attribute, and renaming it would make the scene wrong",
+    "com.apple.launchservices.quarantineeventsv2":
+        "the real filename of the LaunchServices quarantine database a responder opens",
+    "com.apple.tcc":
+        "the real directory holding TCC.db; it identifies Apple's subsystem, not an author",
+    "com.apple.metadata":
+        "the real extended-attribute namespace Spotlight and LaunchServices write under",
+}
+_BUNDLE_ID = re.compile(rb"\b((?:com|org|io|net|us|uk|de)\.[A-Za-z0-9]+\.[A-Za-z0-9._-]+)")
 _URL = re.compile(rb"https?://([A-Za-z0-9._-]+)")
 _IPV4 = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
@@ -91,6 +118,16 @@ def _indicator_hygiene(r: GateReport, where: str, data: bytes):
             continue
         r.fail(f"{where}: URL host {h!r} is not an RFC 2606 reserved name — a "
                        f"synthetic artifact must never name a host that could be real")
+    for bundle in set(_BUNDLE_ID.findall(data)):
+        b = bundle.decode("ascii", "replace")
+        low = b.lower().rstrip(".")
+        if any(low == k or low.startswith(k + ".") for k in _PLATFORM_IDENTIFIERS):
+            continue
+        if low.startswith(_REAL_VENDOR_PREFIXES):
+            r.fail(f"{where}: bundle identifier {b!r} sits under a real vendor's reverse-DNS "
+                   f"prefix — on macOS that is embedded in the code signature, so a synthetic "
+                   f"binary would be asserting something false about them")
+
     for ip in set(_IPV4.findall(data)):
         s = ip.decode()
         if any(s.startswith(n) for n in _DOC_NETS) or s.startswith(("10.", "127.", "192.168.")):

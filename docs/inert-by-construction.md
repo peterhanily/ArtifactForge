@@ -70,7 +70,11 @@ marker has to survive every container it is put in, not most of them.
 
 No generated artifact may name something that could exist. Domains are RFC 2606 reserved
 (`.example`, `.invalid`, `.test`); addresses are RFC 5737 / RFC 3849 documentation ranges or
-RFC 1918 private ones. Gate 3 scans the emitted bytes of every artifact for URLs and addresses
+RFC 1918 private ones; and no bundle identifier may sit under a real vendor's reverse-DNS
+prefix. That last one matters more than it looks: on macOS the identifier is embedded in the
+code signature, so an ad-hoc-signed synthetic binary calling itself `com.apple.Notes` is
+asserting something false about Apple. Windows executable *filenames* are deliberately not
+policed — `chrome.exe` is ubiquitous on a real host and claims nothing about who wrote it. Gate 3 scans the emitted bytes of every artifact for URLs and addresses
 and fails on anything outside those ranges — so this is enforced against the file, not against
 the pool the file was drawn from.
 
@@ -87,10 +91,12 @@ Every claim above is a test. These are the ones that would go red:
 | A format with no declared marker fails | same — an unknown format is a failure, not a skip |
 | No URL outside RFC 2606 | `gates/inertness.py::_indicator_hygiene` |
 | No address outside RFC 5737 / RFC 1918 | same |
+| No bundle identifier under a real vendor's prefix | same, `_REAL_VENDOR_PREFIXES` |
 | Stripping a marker turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_synthetic_marker_is_stripped` |
 | Code past the `ret` turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_code_section_is_not_inert` |
 | Tampering with the DOS stub turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_dos_stub_is_tampered_with` |
 | A routable domain turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_an_indicator_could_be_real` |
+| A real vendor's bundle id turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_a_bundle_id_names_a_real_vendor` |
 
 The mutation tests are the load-bearing ones. A gate that has never been observed to fail
 proves nothing, so each of these breaks the property on purpose and requires the gate to

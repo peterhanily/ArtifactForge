@@ -7,8 +7,16 @@ and were indexed by `i % len(pool)` from a batch counter that stepped by two, so
 each even-length pool was ever reachable and host was locked to user: three distinct
 (host, user) pairs at any batch size. Selection is now keyed per scenario and per field.
 
-Every name here is invented. Domains are RFC 2606 reserved, which Gate 3 enforces on the
-emitted bytes rather than trusting this file.
+Every name here is invented, and Gate 3 enforces that on the emitted bytes rather than
+trusting this file: domains must be RFC 2606 reserved, and no bundle identifier may sit under
+a real vendor's reverse-DNS prefix.
+
+Windows executable *filenames* are a deliberate exception. A file called `chrome.exe` is
+ubiquitous on a real host and claims nothing about who wrote it, so the pools use conventional
+names — a scene without them would not look like a computer. A bundle identifier is different:
+it is a namespaced claim of authorship, and on macOS it is embedded in the code signature, so
+an ad-hoc-signed binary identifying itself as `com.apple.Notes` is asserting something false
+about Apple. Those are invented.
 """
 
 USERS = (
@@ -68,11 +76,16 @@ BUNDLES = (
     "com.windrow.updater", "io.slatebeck.agent", "net.foxglove.relay", "org.ashcombe.svc",
 )
 
+# The unremarkable software a Mac accumulates. Invented vendors, ordinary-sounding products —
+# these have to be indistinguishable in shape from the pool above, or "which one is benign"
+# becomes answerable from the name alone.
 BENIGN_BUNDLES = (
-    "com.apple.Safari", "com.apple.mail", "com.apple.Notes", "com.apple.Terminal",
-    "com.microsoft.VSCode", "com.google.Chrome", "org.mozilla.firefox", "com.tinyspeck.slackmacgap",
-    "us.zoom.xos", "com.spotify.client", "com.figma.Desktop", "com.postmanlabs.mac",
-    "com.docker.docker", "com.apple.Preview", "com.apple.iCal", "com.apple.systempreferences",
+    "com.brindlewood.notes", "com.harrowgate.mail", "com.pinewharf.terminal",
+    "com.claybourne.editor", "com.westvane.browser", "org.thistledown.reader",
+    "com.oakhaven.chat", "com.fernbrook.meet", "com.larkspur.music",
+    "com.stonewick.design", "com.mallowfield.api", "com.ridgeline.containers",
+    "com.duskwater.preview", "com.corriedale.calendar", "com.hollowmere.settings",
+    "com.eastmarch.notes",
 )
 
 # RFC 2606 reserved. Gate 3 checks the emitted bytes, not this list.

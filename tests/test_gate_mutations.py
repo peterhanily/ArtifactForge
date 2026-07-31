@@ -179,6 +179,26 @@ def test_inertness_reddens_when_the_dos_stub_is_tampered_with(tmp_path):
     assert any("MS-DOS stub" in f for f in new), new
 
 
+def test_inertness_reddens_when_a_bundle_id_names_a_real_vendor(tmp_path):
+    """MUTATION: give a LaunchAgent a real vendor's reverse-DNS identifier.
+
+    On macOS the bundle identifier is embedded in the code signature, so an ad-hoc-signed
+    synthetic binary calling itself com.apple.Notes asserts something false about Apple. Every
+    other indicator class is policed on the emitted bytes; this one was not, and the samples
+    shipped exactly that until it was.
+    """
+    from artifactforge.artifacts.macos import build_launch_agent
+
+    task = _macos(tmp_path, "vendor")
+    before = inertness.run(task.directory)
+
+    with open(os.path.join(task.directory, "com.apple.Notes.plist"), "wb") as f:
+        f.write(build_launch_agent("com.apple.Notes", "/tmp/x"))
+
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("real vendor" in f for f in new), new
+
+
 # --- Gate 4: both directions, and the control -----------------------------------------
 
 def test_solvability_reddens_when_an_answer_is_not_in_the_evidence(tmp_path):

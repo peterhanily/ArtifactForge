@@ -103,8 +103,10 @@ jobs:
       - name: Demo — the whole loop end to end
         run: AF=.venv/bin/artifactforge ./scripts/demo.sh
 
+      # --n must match the n the committed scorecard was built at, or the comparison is
+      # between different sample sizes and reports sampling noise as a regression.
       - name: Scorecard — no tracked metric may regress
-        run: uv run artifactforge scorecard --check fidelity-scorecard.json
+        run: uv run artifactforge scorecard --n 40 --check fidelity-scorecard.json
 
       - name: Determinism — regenerate and byte-diff
         # The property everything else rests on: the same seed must produce the same bytes.

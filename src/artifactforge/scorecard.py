@@ -21,9 +21,18 @@ import json
 # Metrics tracked for regression. (dotted path, direction, tolerance, label)
 #
 # Counts get tolerance 0: an artifact that used to be readable and now is not, or a join that
-# used to hold and now does not, is a regression at any magnitude. Ratios get a tolerance
-# only where genuine run-to-run noise exists, which today is nowhere — generation is
-# deterministic, so every number here is exact and any drift is a real change.
+# used to hold and now does not, is a regression at any magnitude.
+#
+# Ratios get a tolerance sized from MEASURED variance, not from taste. Across five unrelated
+# hold-out suite keys at n=40, every adversary metric had sd 0.0000 — the attacks transfer
+# between corpora exactly, which is what "effective sample size is the number of structures,
+# not the number of rows" means in practice, and why they keep tolerance 0. The exceptions are
+# `listing_solver_score` (sd 0.0046, 3 sigma 0.0137) and the Monte-Carlo `chance_floor`
+# (sd 0.0034), so the first gets a 3-sigma tolerance and the second is not tracked at all: a
+# reference floor moving is not a regression in anything.
+#
+# A bound sitting inside its own noise gets deleted by whoever it false-fails, taking its real
+# coverage with it. Re-measure before tightening any of these.
 _METRICS = [
     ("gates.validity.oracle_reads_passed",     "higher_better", 0, "validity: oracle reads passed"),
     ("gates.identity.checks_joined",           "higher_better", 0, "identity: cross-artifact joins holding"),
@@ -33,7 +42,7 @@ _METRICS = [
     ("gates.solvability.footprint_solver_score", "lower_better", 0, "solvability: footprint adversary"),
     ("gates.solvability.mechanical_solver_score", "lower_better", 0, "solvability: mechanical adversary"),
     ("gates.solvability.blind_solver_score",   "lower_better",  0, "solvability: blind adversary"),
-    ("gates.solvability.listing_solver_score", "lower_better",  0, "solvability: listing adversary"),
+    ("gates.solvability.listing_solver_score", "lower_better", 0.02, "solvability: listing adversary"),
     ("gates.solvability.join_questions_windows", "higher_better", 0, "solvability: windows join questions"),
     ("gates.solvability.join_questions_macos", "higher_better", 0, "solvability: macos join questions"),
 ]

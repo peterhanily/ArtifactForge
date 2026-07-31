@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "generator": {
     "artifactforge_version": "0.0.1",
-    "git_commit": "5d4294f",
+    "git_commit": "0e0e2b7",
     "sqlite_version": "3.50.4"
   },
   "gates": {
@@ -36,12 +36,12 @@
         "the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
       ],
       "gaps": [],
-      "chance_floor": 0.0366,
+      "chance_floor": 0.0411,
       "reference_solver_score": 1.0,
       "footprint_solver_score": 0.7273,
       "mechanical_solver_score": 0.2727,
       "blind_solver_score": 0.0,
-      "listing_solver_score": 0.0045,
+      "listing_solver_score": 0.0136,
       "null_solver_score": 0.0,
       "constant_solver_score": 0.0,
       "blind_control_score": 1.0,

@@ -1,0 +1,160 @@
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
+"""Keyed suite derivation — how a deterministic generator can still have unguessable answers.
+
+Determinism and unguessability look like opposites. A batch must regenerate byte-identical
+forever, which means every answer is a pure function of something; and the generator is open
+source, which means anyone can compute that function. The previous design resolved this by
+accident and badly: `scenario_id` was both the label handed to the solver *and* the seed the
+answers were derived from, so a solver that opened no file at all scored 100%.
+
+The resolution is a secret, introduced in exactly one place. Every derivation hangs off a
+32-byte **suite key**. The public identifier is an HMAC of the key and the index, so it is
+stable, deterministic and reproducible *given the key* — and reveals nothing without it.
+Domain-separated leaf keys keep the public identifier, the content seed, and each variable
+selection independent, so recovering one tells you nothing about the others.
+
+Two kinds of suite, and the difference is the whole point of publishing one:
+
+  **dev** — built with `PUBLIC_DEV_KEY`, which is printed below on purpose. Anyone can
+  regenerate it, inspect it, and cheat on it. That is what makes it useful for development
+  and useless as a score. `bench grade` refuses to report a bare accuracy for a dev suite.
+
+  **hold-out** — built with a freshly minted random key that never leaves the evaluator.
+  Scores are only meaningful here. Generate on one machine, ship `scenarios/` and
+  `public.json` to the machine under test, grade back on the first.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import os
+import secrets
+
+#: Domain separator. Changing it invalidates every derived value, which is the point of
+#: versioning it: a v2 suite can never collide with a v1 suite.
+DOMAIN = b"artifactforge/bench/v1"
+
+#: Published deliberately. A dev suite is meant to be reproducible and cheatable; the honest
+#: move is to say so loudly rather than to pretend a well-known constant is a secret.
+PUBLIC_DEV_KEY = b"artifactforge-public-dev-suite-v1"
+
+_SEP = b"\x1f"
+
+
+def _mac(key: bytes, *parts: str) -> bytes:
+    """HMAC-SHA256 over domain-separated parts. Unit separators make the parts unambiguous,
+    so ("ab", "c") and ("a", "bc") cannot derive the same value."""
+    msg = DOMAIN + _SEP + _SEP.join(p.encode() for p in parts)
+    return hmac.new(key, msg, hashlib.sha256).digest()
+
+
+def new_key() -> bytes:
+    """A fresh hold-out key. Lose it and the suite can never be regenerated or audited."""
+    return secrets.token_bytes(32)
+
+
+def public_id(key: bytes, index: int) -> str:
+    """The label a solver sees. Carries no information about the scenario it names."""
+    raw = _mac(key, "public-id", str(index))[:10]
+    return "af1_" + base64.b32encode(raw).decode().rstrip("=").lower()
+
+
+def scenario_key(key: bytes, pid: str) -> bytes:
+    """A per-scenario leaf key. Everything about one scenario derives from this and nothing
+    else, so leaking one scenario's answers cannot compromise another's."""
+    return _mac(key, "scenario", pid)
+
+
+def content_seed(skey: bytes, role: str) -> str:
+    """The ContentStore seed for one file in one scenario. `role` distinguishes the target
+    binary from each decoy, so decoys are as unguessable as the answer."""
+    return _mac(skey, "content", role).hex()
+
+
+def pick(skey: bytes, field: str, pool):
+    """Choose from a pool. Keyed per (scenario, field), which also removes the parity
+    degeneracy of the previous `pool[i % len(pool)]`: that reached only half of each
+    even-length pool and locked host to user, giving three distinct pairs at any batch size."""
+    return pool[int.from_bytes(_mac(skey, "pick", field)[:4], "big") % len(pool)]
+
+
+def pick_many(skey: bytes, field: str, pool, n: int):
+    """`n` distinct choices, deterministically ordered by their keyed rank."""
+    ranked = sorted(pool, key=lambda v: _mac(skey, f"{field}:rank", str(v)))
+    return ranked[:n]
+
+
+# --- suite layout on disk ----------------------------------------------------------------
+#
+#   SUITE/
+#     public.json          what the solver is given: kind, version, scenario ids, questions
+#     scenarios/<pid>/     the ONLY directory a solver may read
+#     _key/key.hex         the suite key (0600). Never inside scenarios/.
+#     _answers/<pid>.json  answer key + join manifest
+#     _content/<sha256>    the ContentStore cache, deliberately outside the served tree
+#                          because its filenames ARE sha256 answers
+#
+# The underscore prefix is a convention for humans. The guarantee is structural: nothing
+# under scenarios/ is a parent of anything else, and staging copies files in by allowlist
+# rather than filtering them out of a listing. The previous design wrote JOIN_MANIFEST.json
+# into the served directory and hid it from `os.listdir`, which is not a boundary.
+
+def suite_paths(root: str) -> dict:
+    return {
+        "public": os.path.join(root, "public.json"),
+        "scenarios": os.path.join(root, "scenarios"),
+        "key": os.path.join(root, "_key", "key.hex"),
+        "answers": os.path.join(root, "_answers"),
+        "content": os.path.join(root, "_content"),
+        "staging": os.path.join(root, "_staging"),
+    }
+
+
+def write_key(root: str, key: bytes) -> None:
+    p = suite_paths(root)["key"]
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    with open(p, "w") as f:
+        f.write(key.hex())
+    os.chmod(p, 0o600)
+
+
+def read_key(root: str) -> bytes:
+    with open(suite_paths(root)["key"]) as f:
+        return bytes.fromhex(f.read().strip())
+
+
+def stage(scene_dir: str, staging_dir: str, allowlist) -> list:
+    """Copy exactly the named files into the served directory, and nothing else.
+
+    An allowlist rather than a denylist: `os.listdir(scene_dir)` equals the allowlist by
+    construction, so a new artifact cannot leak into the solver's view by being forgotten in
+    a filter. This is the structural half of the fix; the keyed derivation is the other half.
+    """
+    os.makedirs(scene_dir, exist_ok=True)
+    staged = []
+    for name in allowlist:
+        src = os.path.join(staging_dir, name)
+        with open(src, "rb") as fh:
+            data = fh.read()
+        with open(os.path.join(scene_dir, name), "wb") as fh:
+            fh.write(data)
+        staged.append(name)
+    return sorted(staged)
+
+
+def write_answers(root: str, pid: str, answers: dict, join: dict) -> str:
+    d = suite_paths(root)["answers"]
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{pid}.json")
+    with open(path, "w") as f:
+        json.dump({"scenario_id": pid, "answers": answers, "join": join}, f, indent=2)
+        f.write("\n")
+    return path
+
+
+def read_answers(root: str, pid: str) -> dict:
+    with open(os.path.join(suite_paths(root)["answers"], f"{pid}.json")) as f:
+        return json.load(f)

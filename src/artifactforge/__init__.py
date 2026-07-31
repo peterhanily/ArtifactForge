@@ -25,8 +25,16 @@ from artifactforge.artifacts import (
     build_tcc,
     quarantine_xattr,
 )
-from artifactforge.bench import Question, Score, Task, generate_batch, grade
-from artifactforge.compose import CrimeScene, build_crime_scene, build_macos_crime_scene
+from artifactforge.bench import (
+    PublicTask,
+    Question,
+    Score,
+    Task,
+    generate_batch,
+    generate_suite,
+    grade,
+)
+from artifactforge.compose import Scene, build_macos_scene, build_windows_scene
 from artifactforge.content import Content, ContentStore, build_pe_stub, imphash_of
 from artifactforge.model import HostProfile, deterministic_uuid, macos_profile, windows_profile
 
@@ -40,8 +48,9 @@ __all__ = [
     "build_knowledgec", "build_tcc", "build_quarantine_events",
     "quarantine_xattr", "build_launch_agent",
     # compose
-    "CrimeScene", "build_crime_scene", "build_macos_crime_scene",
+    "Scene", "build_windows_scene", "build_macos_scene",
     # bench
-    "Task", "Question", "Score", "generate_batch", "grade",
+    "Task", "PublicTask", "Question", "Score",
+    "generate_suite", "generate_batch", "grade",
 ]
 __version__ = "0.0.1"

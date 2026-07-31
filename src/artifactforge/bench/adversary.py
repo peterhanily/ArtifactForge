@@ -2,90 +2,99 @@
 # SPDX-License-Identifier: MIT
 """Adversary solvers — the benchmark's negative controls.
 
-A benchmark is only measuring investigation if an agent that does no investigation scores
-badly. The reference solver proves the answers are *recoverable* from the artifacts; these
-prove they are not recoverable any *other* way. Both directions are needed, and only the
-first was ever checked here.
+A benchmark only measures investigation if an agent that does no investigation scores badly.
+The reference solver proves the answers are *recoverable* from the artifacts; these prove
+they are not recoverable any *other* way. Both directions are needed, and only the first was
+ever checked here — while a solver opening zero files was scoring 100%.
 
-Each solver below is an attack, and each must stay in the suite permanently. The moment one
-of them scores well, the benchmark has stopped measuring what it claims to.
+Each of these is an attack, and each stays in the suite permanently. The moment one scores
+well, the benchmark has stopped measuring what it claims to.
 
-  blind_solve    reads only the public task view; opens ZERO files. Because the generator is
-                 open source, anything derivable from a public identifier is free. This is
-                 the strongest attack and the reason the public identifier must not be the
-                 generation seed.
-  listing_solve  reads only the artifact FILENAMES. Answers that appear in a filename —
-                 an executable's name, a bundle id in `<id>.plist` — cost nothing.
-  null_solve     answers nothing. The floor.
-  constant_solve answers a fixed string. A floor so weak it flatters the scorer; kept only
-                 because removing it would lose the historical baseline.
+  blind     knows the entire generator source and the published dev key, and reads only the
+            public task. Opens no artifact. This is the strongest attack: anything derivable
+            from a public identifier is free, which is why the identifier is an HMAC of a
+            suite key rather than the seed itself.
+  listing   reads only the filenames in the served directory. Answers that appear in a name
+            cost nothing, which is why no question's answer is a resident filename.
+  null      answers nothing. The floor.
+  constant  a fixed guess for everything. A floor weak enough to flatter the scorer, kept
+            only so the historical baseline stays comparable.
 """
 from __future__ import annotations
 
 import os
 
 
-def blind_solve(public: dict, directory: str | None = None) -> dict:
-    """Reconstruct answers from the public identifier alone, opening no artifact.
+def blind_solve(public) -> dict:
+    """Reconstruct answers from the public task alone, opening no artifact.
 
-    Mirrors `generate_batch`'s derivation exactly. It is deliberately written against the
-    shipped generator rather than against a copy, so it cannot silently drift out of date:
-    if generation stops being derivable from the public view, this solver stops scoring.
+    Written against the shipped generator rather than a copy, so it cannot drift out of date:
+    if generation stops being derivable from the public view, this solver stops scoring. It
+    tries the published dev key first, because a dev suite is meant to be cheatable and the
+    gate must see that it is.
     """
-    from artifactforge.bench.benchmark import _BUNDLES, _HOSTS, _MALNAMES, _USERS, _pick
-    from artifactforge.content import ContentStore
-    from artifactforge.model import deterministic_uuid, macos_profile, windows_profile
+    from artifactforge import suite
 
-    sid = public["scenario_id"]
-    if not sid.startswith("scenario_"):
-        return {}                       # opaque identifier — nothing to derive from
-    try:
-        i = int(sid.split("_", 1)[1])
-    except ValueError:
+    # Recover the batch index by searching the public id space under the published key. On a
+    # dev suite this succeeds; on a hold-out suite the key is unknown and it cannot.
+    key = suite.PUBLIC_DEV_KEY
+    index = next((i for i in range(4096) if suite.public_id(key, i) == public.scenario_id),
+                 None)
+    if index is None:
         return {}
+    skey = suite.scenario_key(key, public.scenario_id)
 
     a: dict = {}
-    if public["family"] == "windows":
-        name = _pick(i, _MALNAMES)
-        prof = windows_profile(hostname=f"{_pick(i, _HOSTS)}-{i:03d}", username=_pick(i, _USERS))
-        cache = os.path.join(directory or ".", ".blind-cache")
-        c = ContentStore(f"artifactforge::{sid}", cache).materialize(f"pe:{sid}:{name}")
-        a["dropped_sha256"] = c.sha256
-        a["imphash"] = c.imphash
-        a["amcache_sha1"] = c.sha1
-        a["persistence_path"] = f"{prof.home_dir}\\AppData\\Local\\Temp\\{name}"
-        a["exec_name"] = name
-        a["run_count"] = 1 + (i % 9)
+    if public.family == "windows":
+        from artifactforge import pools
+        from artifactforge.content import ContentStore
+        cache = os.path.join(public.directory, "..", "..", "_blind-cache")
+        store = ContentStore("artifactforge::suite", os.path.abspath(cache))
+        persisted = store.materialize("pe:" + suite.content_seed(skey, "persisted"))
+        matched = store.materialize("pe:" + suite.content_seed(skey, "amcache-match"))
+        a["persisted_sha256"] = persisted.sha256
+        a["persisted_imphash"] = persisted.imphash
+        a["persisted_run_count"] = 1 + skey[0] % 9
+        a["amcache_match_sha256"] = matched.sha256
+        a["orphan_execution"] = suite.pick(
+            skey, "absent",
+            [n for n in pools.MALWARE_NAMES
+             if n != suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)])
     else:
-        prof = macos_profile(hostname=f"mac-{i:03d}", username=_pick(i, _USERS))
-        bundle = _pick(i, _BUNDLES)
-        a["quarantine_uuid"] = deterministic_uuid(prof.seed_tag() + ":" + bundle)
-        a["download_url"] = f"https://cdn{i}.evil.example/{bundle}.dmg"
-        a["tcc_bundle_id"] = bundle
-        a["persistence_path"] = f"{prof.home_dir}/Library/Application Support/{bundle}/agent"
+        from artifactforge import pools
+        subject = suite.pick_many(skey, "bundles", pools.BUNDLES, 3)[0]
+        host = suite.pick(skey, f"dlhost:{subject}", pools.DOWNLOAD_HOSTS)
+        a["granted_and_used_bundle"] = subject
+        a["subject_download_url"] = f"https://{host}/{subject}.dmg"
+        a["subject_quarantine_agent"] = suite.pick(skey, f"agent:{subject}",
+                                                   pools.DOWNLOAD_AGENTS)
     return a
 
 
-def listing_solve(public: dict, directory: str | None = None) -> dict:
-    """Answer from artifact filenames only — never opening a single file."""
+def listing_solve(public) -> dict:
+    """Answer from the served directory's filenames only — never opening a file."""
     a: dict = {}
-    for f in public.get("artifacts", []):
+    try:
+        names = sorted(os.listdir(public.directory))
+    except OSError:
+        return a
+    for f in names:
         if f.lower().endswith(".exe"):
-            a["exec_name"] = f
+            a.setdefault("orphan_execution", f)
         if f.endswith(".plist"):
-            a["tcc_bundle_id"] = f[: -len(".plist")]
+            a.setdefault("granted_and_used_bundle", f[: -len(".plist")])
     return a
 
 
-def null_solve(public: dict, directory: str | None = None) -> dict:
+def null_solve(public) -> dict:
     """Answers nothing — the vacuous-pass guard."""
     return {}
 
 
-def constant_solve(public: dict, directory: str | None = None) -> dict:
+def constant_solve(public) -> dict:
     """A fixed guess for every question, whatever it asks."""
-    return {q["id"]: ("0" * 64 if q["kind"] in ("hash", "imphash") else "unknown")
-            for q in public.get("questions", [])}
+    return {q.id: ("0" * 64 if q.kind in ("hash", "imphash") else "unknown")
+            for q in public.questions}
 
 
 #: name -> (solver, the score above which the benchmark is considered gameable)

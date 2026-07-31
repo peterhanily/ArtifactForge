@@ -5,175 +5,200 @@ proves nothing, and this repository has the receipts: `tests/test_real_run_join.
 `amcache == "0000" + c.sha1` one line after assigning exactly that, and stayed green when the
 hash it was supposedly checking was replaced with the string GARBAGE-NOT-A-SHA1.
 
-Each test below compares the gate's failures before and after the mutation and requires a
-NEW failure naming the thing that was broken. Comparing before-and-after rather than simply
-asserting `not ok` matters, because several gates are legitimately red already — a mutation
-test that only checked redness would pass without the mutation doing anything at all.
+Each test compares the gate's failures before and after the mutation and requires a NEW
+failure naming the thing that was broken. Comparing before and after, rather than simply
+asserting redness, matters because some gates are legitimately red already — a test that only
+checked redness would pass without the mutation doing anything at all.
 """
+import dataclasses
 import hashlib
 import os
 
 import pytest
 
-from artifactforge.bench.benchmark import generate_batch, grade
-from artifactforge.bench.reference_solver import reference_solve
+from artifactforge import suite
+from artifactforge.artifacts.hive import build_amcache_hive
+from artifactforge.bench.benchmark import generate_suite
 from artifactforge.gates import identity, inertness, solvability, validity
 
 pytest.importorskip("pefile")
 pytest.importorskip("regipy")
 pytest.importorskip("windowsprefetch")
 
+HOLDOUT_KEY = bytes.fromhex("a3" * 32)
+
 
 def _new_fails(before, after):
     return [f for f in after.fails if f not in before.fails]
 
 
-def _windows_scene(tmp_path, name="b"):
-    tasks = generate_batch(2, str(tmp_path / name))
-    return next(t for t in tasks if t.family == "windows")
+def _suite(tmp_path, name="s", n=2, key=None):
+    return generate_suite(n, str(tmp_path / name), key=key or suite.PUBLIC_DEV_KEY,
+                          kind="dev" if key is None else "holdout")
 
 
-def _pe_in(directory):
-    for f in sorted(os.listdir(directory)):
-        p = os.path.join(directory, f)
-        if os.path.isfile(p) and open(p, "rb").read(2) == b"MZ":
-            return p
-    raise AssertionError("no PE in scene")
+def _windows(tmp_path, name="s"):
+    return next(t for t in _suite(tmp_path, name) if t.family == "windows")
+
+
+def _persisted_pe(task):
+    return os.path.join(task.directory, task.join["persisted"]["name"])
 
 
 # --- Gate 1: corrupt an artifact and its parser must refuse it ------------------------
 
 def test_validity_reddens_when_an_artifact_is_corrupted(tmp_path):
     """MUTATION: truncate Amcache.hve to 200 bytes. regipy must reject it."""
-    task = _windows_scene(tmp_path)
+    task = _windows(tmp_path)
     before = validity.run(task.directory)
 
-    hive = os.path.join(task.directory, "Amcache.hve")
-    with open(hive, "r+b") as f:
+    with open(os.path.join(task.directory, "Amcache.hve"), "r+b") as f:
         f.truncate(200)
 
-    after = validity.run(task.directory)
-    new = _new_fails(before, after)
-    assert any("regipy rejected" in f for f in new), \
-        f"a truncated hive did not fail Gate 1. new fails: {new}"
+    new = _new_fails(before, validity.run(task.directory))
+    assert any("regipy rejected" in f for f in new), f"new fails: {new}"
 
 
-# --- Gate 2: break the pivot and the identity gate must notice ------------------------
+# --- Gate 2: break a pivot and the identity gate must notice --------------------------
 
-def test_identity_reddens_when_the_pe_no_longer_matches_its_manifest(tmp_path):
-    """MUTATION: append one byte to the PE. Every digest in the manifest is now wrong."""
-    task = _windows_scene(tmp_path)
-    before = identity.run(task.directory)
+def test_identity_reddens_when_the_pe_no_longer_matches_the_scene(tmp_path):
+    """MUTATION: append one byte to the persisted binary. Every digest is now wrong."""
+    task = _windows(tmp_path)
+    before = identity.run(task.directory, task.join)
     assert before.ok, f"gate 2 must be green before the mutation:\n{before.render()}"
 
-    pe = _pe_in(task.directory)
-    with open(pe, "ab") as f:
+    with open(_persisted_pe(task), "ab") as f:
         f.write(b"\x00")
 
-    after = identity.run(task.directory)
+    after = identity.run(task.directory, task.join)
     assert not after.ok
     assert any("sha256" in f for f in _new_fails(before, after))
 
 
 def test_identity_reddens_when_the_amcache_hash_join_is_destroyed(tmp_path):
-    """MUTATION: rewrite Amcache's FileId to a different file's SHA1.
+    """MUTATION: rewrite every Amcache FileId so none matches a resident file.
 
-    This is the exact failure the predecessor test could not see: the registry still parses,
-    the manifest is untouched, and only the *cross-artifact* claim is false.
+    This is exactly the failure the predecessor test could not see: the registry still
+    parses, the scene's own record is untouched, and only the cross-artifact claim is false.
     """
-    from artifactforge.artifacts.hive import build_amcache_hive
-
-    task = _windows_scene(tmp_path)
-    before = identity.run(task.directory)
+    task = _windows(tmp_path)
+    before = identity.run(task.directory, task.join)
     assert before.ok
 
-    wrong = hashlib.sha1(b"a different file entirely").hexdigest()  # noqa: S324
+    rows = [(hashlib.sha1(f"nothing-here-{i}".encode()).hexdigest(),   # noqa: S324
+             f"c:\\gone\\p{i}.exe", f"p{i}.exe", 4096) for i in range(8)]
     with open(os.path.join(task.directory, "Amcache.hve"), "wb") as f:
-        f.write(build_amcache_hive(wrong, "c:\\x.exe", "x.exe", 1))
+        f.write(build_amcache_hive(rows))
 
-    after = identity.run(task.directory)
+    after = identity.run(task.directory, task.join)
     assert not after.ok
-    assert any("FileId" in f for f in _new_fails(before, after)), _new_fails(before, after)
+    assert any("recorded hash belongs to a resident file" in f
+               for f in _new_fails(before, after)), _new_fails(before, after)
+
+
+def test_identity_reddens_when_persistence_points_somewhere_else(tmp_path):
+    """MUTATION: delete the persisted binary. The autostart now names nothing present."""
+    task = _windows(tmp_path)
+    before = identity.run(task.directory, task.join)
+    assert before.ok
+
+    os.remove(_persisted_pe(task))
+
+    after = identity.run(task.directory, task.join)
+    assert not after.ok
+    assert any("not in the scene" in f or "autostart" in f
+               for f in _new_fails(before, after)), _new_fails(before, after)
 
 
 # --- Gate 3: strip the marker, or point an indicator somewhere real --------------------
 
 def test_inertness_reddens_when_the_synthetic_marker_is_stripped(tmp_path):
-    """MUTATION: blank the PE's ARTIFACTFORGE-SYNTHETIC- overlay anchor."""
-    task = _windows_scene(tmp_path)
+    """MUTATION: blank the ARTIFACTFORGE-SYNTHETIC- overlay anchor in every PE."""
+    task = _windows(tmp_path)
     before = inertness.run(task.directory)
 
-    pe = _pe_in(task.directory)
-    data = open(pe, "rb").read().replace(b"ARTIFACTFORGE-SYNTHETIC-", b"\x00" * 24)
-    with open(pe, "wb") as f:
-        f.write(data)
+    for name in os.listdir(task.directory):
+        p = os.path.join(task.directory, name)
+        with open(p, "rb") as f:
+            data = f.read()
+        if data[:2] == b"MZ":
+            with open(p, "wb") as f:
+                f.write(data.replace(b"ARTIFACTFORGE-SYNTHETIC-", b"\x00" * 24))
 
-    after = inertness.run(task.directory)
-    assert any("synthetic marker" in f for f in _new_fails(before, after))
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("synthetic marker" in f for f in new), new
 
 
 def test_inertness_reddens_when_an_indicator_could_be_real(tmp_path):
     """MUTATION: put a routable, non-reserved domain into an artifact."""
-    task = _windows_scene(tmp_path)
+    task = _windows(tmp_path)
     before = inertness.run(task.directory)
 
-    pe = _pe_in(task.directory)
-    with open(pe, "ab") as f:
+    with open(_persisted_pe(task), "ab") as f:
         f.write(b"https://real-company-cdn.co.uk/payload")
 
-    after = inertness.run(task.directory)
-    assert any("RFC 2606" in f for f in _new_fails(before, after))
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("RFC 2606" in f for f in new), new
 
 
 def test_inertness_reddens_when_the_code_section_is_not_inert(tmp_path):
     """MUTATION: write real instructions after the ret."""
-    task = _windows_scene(tmp_path)
+    task = _windows(tmp_path)
     before = inertness.run(task.directory)
 
-    pe = _pe_in(task.directory)
-    data = bytearray(open(pe, "rb").read())
+    path = _persisted_pe(task)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
     data[0x401:0x405] = b"\x48\x31\xc0\x90"          # xor rax,rax ; nop — past the ret
-    with open(pe, "wb") as f:
+    with open(path, "wb") as f:
         f.write(bytes(data))
 
-    after = inertness.run(task.directory)
-    assert any("not inert" in f for f in _new_fails(before, after))
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("not inert" in f for f in new), new
 
 
-# --- Gate 4: make an answer unrecoverable, and the positive direction must notice ------
+# --- Gate 4: both directions, and the control -----------------------------------------
 
 def test_solvability_reddens_when_an_answer_is_not_in_the_evidence(tmp_path):
     """MUTATION: replace one expected answer with a value no artifact contains."""
-    import dataclasses
+    holdout = _suite(tmp_path, "h", n=2, key=HOLDOUT_KEY)
+    dev = _suite(tmp_path, "d", n=2)
+    before = solvability.run(holdout, dev)
+    assert before.ok, f"gate 4 must be green before the mutation:\n{before.render()}"
 
-    tasks = generate_batch(2, str(tmp_path / "b"))
-    before = solvability.run(tasks)
-
-    win = next(t for t in tasks if t.family == "windows")
+    win = next(t for t in holdout if t.family == "windows")
     win.questions[0] = dataclasses.replace(win.questions[0], expected="0" * 64)
 
-    after = solvability.run(tasks)
-    assert after.metrics["reference_solver_score"] < before.metrics["reference_solver_score"]
+    after = solvability.run(holdout, dev)
+    assert not after.ok
     assert any("reference solver" in f for f in _new_fails(before, after))
 
 
-def test_solvability_sees_the_blind_adversary(tmp_path):
-    """The benchmark's current, real state: a solver opening zero files reproduces answers.
+def test_solvability_reddens_when_a_question_stops_requiring_a_join(tmp_path):
+    """MUTATION: mark every macOS question as answerable from one artifact."""
+    holdout = _suite(tmp_path, "h", n=2, key=HOLDOUT_KEY)
+    dev = _suite(tmp_path, "d", n=2)
+    before = solvability.run(holdout, dev)
 
-    Recorded as a test rather than a note so that when Phase 2 splits the public identifier
-    from the generation seed, this test fails and must be updated deliberately — the number
-    cannot improve silently, and it cannot regress silently either.
+    for t in holdout:
+        if t.family == "macos":
+            t.questions = [dataclasses.replace(q, joins=1) for q in t.questions]
+
+    new = _new_fails(before, solvability.run(holdout, dev))
+    assert any("requires joining two artifacts" in f for f in new), new
+
+
+def test_solvability_reddens_when_the_blind_adversary_is_broken(tmp_path):
+    """MUTATION: hand the control a suite the blind adversary cannot cheat.
+
+    Without this the negative direction passes vacuously: an adversary that always returns
+    nothing scores 0% against the hold-out suite and looks like proof of security.
     """
-    tasks = generate_batch(4, str(tmp_path / "b"))
-    r = solvability.run(tasks)
-    blind = r.metrics["blind_solver_score"]
-    assert blind == pytest.approx(1.0), (
-        f"the blind adversary scores {blind:.1%}. If this dropped, the seed/identifier "
-        f"split has landed — update this test and the scorecard baseline together.")
-    assert any("blind" in f for f in r.fails)
+    holdout = _suite(tmp_path, "h", n=2, key=HOLDOUT_KEY)
+    dev = _suite(tmp_path, "d", n=2)
+    assert solvability.run(holdout, dev).ok
 
-
-def test_reference_solver_still_reads_real_artifacts(tmp_path):
-    """Guard against the mutations above leaking into the positive direction."""
-    task = _windows_scene(tmp_path, name="clean")
-    assert grade(task, reference_solve(task)).accuracy == 1.0
+    broken_control = _suite(tmp_path, "h2", n=2, key=HOLDOUT_KEY)   # not a dev suite at all
+    after = solvability.run(holdout, broken_control)
+    assert not after.ok
+    assert any("it is broken" in f for f in after.fails), after.fails

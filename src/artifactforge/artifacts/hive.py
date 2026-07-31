@@ -132,20 +132,34 @@ def build_hive(root: Key) -> bytes:
     return bytes(base) + hbin
 
 
-def build_run_hive(value_name: str, exe_path: str) -> bytes:
-    """A SOFTWARE-hive fragment: ...\\CurrentVersion\\Run with one autostart value."""
+def build_run_hive(values) -> bytes:
+    """A SOFTWARE-hive fragment: ...\\CurrentVersion\\Run with one value per autostart.
+
+    `values` is a sequence of (value_name, program_path). More than one is the normal case:
+    a real Run key carries several entries and only one of them is interesting, which is what
+    makes "which program does persistence launch" a question rather than a lookup.
+    """
     return build_hive(Key("ROOT", subkeys=[Key("Microsoft", subkeys=[
         Key("Windows", subkeys=[Key("CurrentVersion", subkeys=[
-            Key("Run", values=[sz(value_name, exe_path)])])])])]))
+            Key("Run", values=[sz(n, p) for n, p in values])])])])]))
 
 
-def build_amcache_hive(sha1: str, lower_path: str, name: str, size: int) -> bytes:
-    """An Amcache.hve fragment: Root\\InventoryApplicationFile\\<entry>, FileId = 0000+SHA1."""
-    entry = Key("0000" + sha1[:8], values=[
-        sz("FileId", "0000" + sha1),
-        sz("LowerCaseLongPath", lower_path),
-        sz("Name", name),
-        dword("Size", size),
-    ])
+def build_amcache_hive(entries) -> bytes:
+    """An Amcache.hve fragment: Root\\InventoryApplicationFile with one subkey per entry.
+
+    `entries` is a sequence of (sha1, lower_path, name, size). Amcache records the SHA1 of a
+    file it saw, not the file itself, so a populated hive naturally contains rows for programs
+    that are no longer on disk — which is the pivot: exactly one row's SHA1 belongs to a file
+    that is still here.
+    """
+    subkeys = [
+        Key("0000" + sha1[:8], values=[
+            sz("FileId", "0000" + sha1),
+            sz("LowerCaseLongPath", lower_path),
+            sz("Name", name),
+            dword("Size", size),
+        ])
+        for sha1, lower_path, name, size in entries
+    ]
     return build_hive(Key("amcache", subkeys=[
-        Key("Root", subkeys=[Key("InventoryApplicationFile", subkeys=[entry])])]))
+        Key("Root", subkeys=[Key("InventoryApplicationFile", subkeys=subkeys)])]))

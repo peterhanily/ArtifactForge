@@ -1,68 +1,108 @@
-"""The benchmark's own validity gates — no score is trustworthy until these pass.
+"""The benchmark's validity, from both directions.
 
-- The reference solver (real parsers) scores 100% -> the artifacts encode the ground truth.
-- Null / constant solvers score ~0% -> the scorer is not vacuously passing.
-- A corrupted answer key drops the reference score -> the scorer discriminates.
-- Batch scenarios are distinct and deterministic -> real scale, not duplicated data.
-- The public task view leaks no expected answers.
+The reference solver proves the answers are recoverable from the artifacts. The adversaries
+prove they are not recoverable any other way. Only the first of those was ever checked here,
+while a solver that opened zero files was scoring 100%.
 """
+import json
+import os
+
 import pytest
 
-from artifactforge.bench.adversary import constant_solve, null_solve
-from artifactforge.bench.benchmark import generate_batch, grade
+from artifactforge import suite
+from artifactforge.bench.adversary import blind_solve, constant_solve, listing_solve, null_solve
+from artifactforge.bench.benchmark import generate_suite, grade
 from artifactforge.bench.reference_solver import reference_solve
 
 pytest.importorskip("pefile")
 pytest.importorskip("regipy")
 pytest.importorskip("windowsprefetch")
 
+HOLDOUT_KEY = bytes.fromhex("5f" * 32)      # fixed so the test is deterministic, unpublished
 
-def _batch(tmp_path, n=6):
-    return generate_batch(n, str(tmp_path / "bench"))
+
+def _dev(tmp_path, n=4, name="dev"):
+    return generate_suite(n, str(tmp_path / name), key=suite.PUBLIC_DEV_KEY, kind="dev")
+
+
+def _holdout(tmp_path, n=4, name="holdout"):
+    return generate_suite(n, str(tmp_path / name), key=HOLDOUT_KEY, kind="holdout")
+
+
+def _score(tasks, solver):
+    c = t = 0
+    for task in tasks:
+        s = grade(task, solver(task.public()))
+        c += s.correct
+        t += s.total
+    return c / t
 
 
 def test_reference_solver_scores_100(tmp_path):
-    for task in _batch(tmp_path):
-        score = grade(task, reference_solve(task))
+    for task in _holdout(tmp_path):
+        score = grade(task, reference_solve(task.public()))
         assert score.accuracy == 1.0, (task.scenario_id, score.per_question)
 
 
-def test_null_and_constant_solvers_score_low(tmp_path):
-    for task in _batch(tmp_path):
-        pub = task.public()
-        assert grade(task, null_solve(pub)).accuracy == 0.0
-        # a trivial guesser must be far below the reference solver
-        assert grade(task, constant_solve(pub)).accuracy < 0.34
+def test_no_adversary_beats_a_holdout_suite(tmp_path):
+    tasks = _holdout(tmp_path)
+    assert _score(tasks, blind_solve) == 0.0
+    assert _score(tasks, listing_solve) == 0.0
+    assert _score(tasks, null_solve) == 0.0
+    assert _score(tasks, constant_solve) == 0.0
 
 
-def test_corrupted_answer_key_is_caught(tmp_path):
-    task = _batch(tmp_path, n=2)[0]
-    answers = reference_solve(task)
-    # flip one real answer; the grader must now mark it wrong (not a vacuous pass)
-    first = task.questions[0].id
-    answers[first] = "deadbeef" + "0" * 56
-    score = grade(task, answers)
-    assert score.per_question[first] is False and score.accuracy < 1.0
+def test_the_blind_adversary_does_beat_a_dev_suite(tmp_path):
+    """The control. A blind adversary that cannot cheat the suite built with the published
+    key is broken, and its zero against a hold-out suite would then prove nothing."""
+    assert _score(_dev(tmp_path), blind_solve) >= 0.5
+
+
+def test_every_question_spans_at_least_two_artifacts(tmp_path):
+    for task in _holdout(tmp_path):
+        for q in task.questions:
+            assert q.joins >= 2, f"{task.family}/{q.id} is answerable from one file alone"
+
+
+def test_public_task_carries_no_answer(tmp_path):
+    task = _holdout(tmp_path, n=2)[0]
+    blob = json.dumps(task.public(), default=lambda o: getattr(o, "__dict__", str(o)))
+    assert "expected" not in blob
+    for q in task.questions:
+        # Short answers (a run count of "3") appear as substrings of anything; the leak that
+        # matters is a derived value — a hash, a UUID, a URL, a path, a filename.
+        if len(str(q.expected)) >= 4:
+            assert str(q.expected) not in blob, q.id
+
+
+def test_the_answer_key_is_not_inside_the_served_directory(tmp_path):
+    root = str(tmp_path / "holdout")
+    tasks = _holdout(tmp_path)
+    paths = suite.suite_paths(root)
+    for t in tasks:
+        served = os.path.realpath(t.directory)
+        for private in ("answers", "content", "key"):
+            assert not os.path.realpath(paths[private]).startswith(served + os.sep)
+        assert not any(f.upper().startswith("JOIN") for f in os.listdir(served))
+    assert os.path.exists(os.path.join(paths["answers"], tasks[0].scenario_id + ".json"))
+
+
+def test_public_ids_reveal_nothing_and_differ_by_key(tmp_path):
+    dev = [t.scenario_id for t in _dev(tmp_path, n=4)]
+    hold = [t.scenario_id for t in _holdout(tmp_path, n=4)]
+    assert not set(dev) & set(hold), "two suites must not share a public identifier"
+    assert all(i.startswith("af1_") and "scenario" not in i for i in dev + hold)
+
+
+def test_grade_scores_junk_submissions_zero_without_raising(tmp_path):
+    task = _holdout(tmp_path, n=2)[0]
+    for junk in (None, "nonsense", [], 42, {"unknown": "key"}):
+        assert grade(task, junk).accuracy == 0.0
 
 
 def test_batch_is_distinct_and_deterministic(tmp_path):
-    a = _batch(tmp_path / "run1", n=8)
-    b = _batch(tmp_path / "run2", n=8)
-    # deterministic: same answer keys across independent runs
+    a = _dev(tmp_path, n=6, name="run1")
+    b = _dev(tmp_path, n=6, name="run2")
     assert [t.answer_key() for t in a] == [t.answer_key() for t in b]
-    # distinct: Windows dropped-hashes differ across scenarios
-    win_hashes = [t.answer_key()["dropped_sha256"] for t in a if t.family == "windows"]
-    assert len(set(win_hashes)) == len(win_hashes)
-
-
-def test_public_view_hides_answers(tmp_path):
-    task = _batch(tmp_path, n=2)[0]
-    pub = task.public()
-    blob = str(pub)
-    # the public view carries no "expected" field at all
-    assert all("expected" not in pq for pq in pub["questions"])
-    # derived answers (hashes, imphash, uuids) must not appear — those require reading artifacts
-    for q in task.questions:
-        if q.kind in ("hash", "imphash", "uuid"):
-            assert q.expected not in blob
-        assert any(pq["id"] == q.id for pq in pub["questions"])
+    hashes = [t.answer_key()["persisted_sha256"] for t in a if t.family == "windows"]
+    assert len(set(hashes)) == len(hashes)

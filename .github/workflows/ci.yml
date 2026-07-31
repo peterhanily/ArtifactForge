@@ -58,13 +58,13 @@ jobs:
       - name: Gate 2 — identity (must PASS)
         run: uv run artifactforge gate identity --n 4
 
-      # Gates 1, 3 and 4 are RED today for reasons named in fidelity-scorecard.json's
-      # honest_gaps. Each step below asserts the gate STILL FAILS. That way a gap can neither
-      # persist silently nor be closed silently: the moment one is genuinely fixed, this step
-      # turns red and forces the step and the scorecard baseline to be updated together.
-      # This is the same idiom as PacketForge's Gate 4, where sample 18 must keep failing
-      # because a pass would mean it had been quietly edited.
-      - name: Gate 1 — validity (known red — lief/libregf/pyscca oracles not yet wired)
+      # Gates 1 and 3 are RED today for reasons named in fidelity-scorecard.json's
+      # honest_gaps. Each step below asserts the gate STILL FAILS, so a gap can neither
+      # persist silently nor be closed silently: the moment one is genuinely fixed this step
+      # turns red and forces the step and the scorecard baseline to be updated together. Same
+      # idiom as PacketForge's Gate 4, where sample 18 must keep failing because a pass would
+      # mean it had been quietly edited.
+      - name: Gate 1 — validity (known red — lief/libregf oracles unwired, pyscca rejects .pf)
         run: |
           if uv run artifactforge gate validity --n 2; then
             echo "Gate 1 unexpectedly PASSES — make it a hard gate and update the baseline" >&2
@@ -78,12 +78,10 @@ jobs:
             exit 1
           fi
 
-      - name: Gate 4 — solvability (known red — the public id is still the generation seed)
-        run: |
-          if uv run artifactforge gate solvability --n 4; then
-            echo "Gate 4 unexpectedly PASSES — make it a hard gate and update the baseline" >&2
-            exit 1
-          fi
+      # A hold-out suite's answers must not be derivable, a dev suite's must be — the second
+      # half is the control that stops the first from passing vacuously.
+      - name: Gate 4 — solvability (must PASS)
+        run: uv run artifactforge gate solvability --n 4
 
       - name: Scorecard — no tracked metric may regress
         run: uv run artifactforge scorecard --check fidelity-scorecard.json
@@ -92,10 +90,11 @@ jobs:
         # The property everything else rests on: the same seed must produce the same bytes.
         # Generated twice into separate trees under a different PYTHONHASHSEED, TZ and locale.
         run: |
-          uv run python -c "from artifactforge.bench.benchmark import generate_batch; generate_batch(8, 'out/a')"
-          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C \
-            uv run python -c "from artifactforge.bench.benchmark import generate_batch; generate_batch(8, 'out/b')"
-          diff -r --exclude='.cache' out/a out/b && echo "byte-identical across runs"
+          uv run artifactforge bench new out/a --n 8 --kind dev
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge bench new out/b --n 8 --kind dev
+          diff -r out/a/scenarios out/b/scenarios
+          diff -r out/a/_answers out/b/_answers
+          echo "byte-identical across runs"
 
   # EvidenceForge is a CI-only dev tool, never a declared dependency. This job proves the
   # identity reverse-map still matches upstream's seed formulas. It must HARD FAIL if

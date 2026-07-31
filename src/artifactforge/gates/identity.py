@@ -4,46 +4,29 @@
 
 This is the keystone. The whole project exists because EvidenceForge computes a file's
 "hashes" as digests of a per-emitter seed string, so the same binary carries disagreeing
-hashes across sources and the file-hash pivot — the core move of DFIR — silently never
-works. ArtifactForge's answer is to synthesize the bytes once and let every artifact quote a
-real digest of them.
+hashes across sources and the file-hash pivot — the core move of DFIR — silently never works.
+ArtifactForge's answer is to synthesize the bytes once and let every artifact quote a real
+digest of them.
 
-The gate is therefore written to be falsifiable in the one way that matters: every value is
-re-derived from the FILES ON DISK, through a real parser, and only then compared. Nothing is
-compared against the value that produced it. The predecessor of this gate asserted
+The gate is written to be falsifiable in the one way that matters: every value is re-derived
+from the FILES ON DISK, through a real parser, and only then compared. Nothing is compared
+against the value that produced it. The predecessor of this gate asserted
 `amcache == "0000" + c.sha1` one line after assigning `amcache = "0000" + c.sha1`, and stayed
 green when the underlying hash was replaced with a placeholder string.
 
-Every check names the two artifacts it spans, because a check confined to one artifact
-cannot detect a broken pivot.
+The join is passed in rather than read from the scene, because the answer key does not live
+in a directory a solver can see. Every check names the two artifacts it spans: a check
+confined to one artifact cannot detect a broken pivot.
 """
 from __future__ import annotations
 
 import glob
 import hashlib
-import json
 import os
 import plistlib
 import sqlite3
 
 from artifactforge.gates import GateReport
-
-
-def load_join(scene_dir: str) -> dict:
-    """The scene's answer key. Kept as a parameter so it can live outside the served tree."""
-    with open(os.path.join(scene_dir, "JOIN_MANIFEST.json")) as f:
-        return json.load(f)
-
-
-def _find_by_magic(scene_dir: str, magic: bytes) -> str | None:
-    for name in sorted(os.listdir(scene_dir)):
-        path = os.path.join(scene_dir, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, "rb") as f:
-            if f.read(len(magic)) == magic:
-                return path
-    return None
 
 
 def _check(r: GateReport, spans: str, what: str, got, want):
@@ -52,8 +35,30 @@ def _check(r: GateReport, spans: str, what: str, got, want):
     if got == want:
         r.metrics["checks_joined"] = r.metrics.get("checks_joined", 0) + 1
         return True
-    r.fail(f"{spans}: {what} — disk says {got!r}, manifest says {want!r}")
+    r.fail(f"{spans}: {what} — evidence says {str(got)[:64]!r}, "
+           f"the scene claims {str(want)[:64]!r}")
     return False
+
+
+def _resident(scene_dir: str) -> dict:
+    out = {}
+    for name in sorted(os.listdir(scene_dir)):
+        path = os.path.join(scene_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        if data[:2] == b"MZ":
+            out[name.lower()] = data
+    return out
+
+
+def _q(scene_dir: str, name: str, sql: str):
+    con = sqlite3.connect(os.path.join(scene_dir, name))
+    try:
+        return con.execute(sql).fetchall()
+    finally:
+        con.close()
 
 
 def _windows(r: GateReport, scene_dir: str, join: dict):
@@ -61,115 +66,106 @@ def _windows(r: GateReport, scene_dir: str, join: dict):
     from regipy.registry import RegistryHive
     from windowsprefetch import Prefetch
 
-    pe_path = _find_by_magic(scene_dir, b"MZ")
-    if pe_path is None:
-        r.fail("scene: no PE on disk, so no hash-shaped field can be a digest of anything — "
-               "every identity claim in the manifest is unanswerable")
-        return
-    with open(pe_path, "rb") as f:
-        data = f.read()
+    files = _resident(scene_dir)
+    p, a = join["persisted"], join["amcache_match"]
 
-    _check(r, "disk->manifest", "sha256",
-           hashlib.sha256(data).hexdigest(), join["sha256"])
-    _check(r, "disk->manifest", "sha1",
-           hashlib.sha1(data).hexdigest(), join["sha1"])       # noqa: S324 - identity, not auth
-    _check(r, "disk->manifest", "md5",
-           hashlib.md5(data).hexdigest(), join["md5"])         # noqa: S324 - identity, not auth
-    _check(r, "pefile->manifest", "imphash",
-           pefile.PE(data=data).get_imphash(), join["imphash"])
+    for label, claim in (("persisted", p), ("amcache_match", a)):
+        data = files.get(claim["name"].lower())
+        if data is None:
+            r.fail(f"disk: the {label} binary {claim['name']!r} is not in the scene, so its "
+                   f"hashes are claims about a file nobody can check")
+            continue
+        _check(r, f"disk->{label}", "sha256", hashlib.sha256(data).hexdigest(), claim["sha256"])
+        _check(r, f"disk->{label}", "sha1",
+               hashlib.sha1(data).hexdigest(), claim["sha1"])         # noqa: S324 - identity
+        _check(r, f"pefile->{label}", "imphash",
+               pefile.PE(data=data).get_imphash(), claim["imphash"])
 
-    amcache = os.path.join(scene_dir, "Amcache.hve")
-    if os.path.exists(amcache):
-        iaf = RegistryHive(amcache).get_key("\\Root\\InventoryApplicationFile")
-        vals = {v.name: v.value for v in next(iaf.iter_subkeys()).get_values()}
-        _check(r, "Amcache->PE bytes", "FileId trailing SHA1",
-               vals["FileId"][4:], hashlib.sha1(data).hexdigest())  # noqa: S324
-        _check(r, "Amcache->manifest", "LowerCaseLongPath",
-               vals["LowerCaseLongPath"], join["exec_path"].lower())
+    # The registry->disk pivot: exactly one recorded FileId must belong to a resident file,
+    # and it must be the one the scene says it is.
+    by_sha1 = {hashlib.sha1(d).hexdigest(): n                         # noqa: S324 - identity
+               for n, d in files.items()}
+    iaf = RegistryHive(os.path.join(scene_dir, "Amcache.hve")).get_key(
+        "\\Root\\InventoryApplicationFile")
+    matches = sorted(by_sha1[v.value[4:]] for sub in iaf.iter_subkeys()
+                     for v in sub.get_values()
+                     if v.name == "FileId" and v.value[4:] in by_sha1)
+    _check(r, "Amcache->disk", "exactly one recorded hash belongs to a resident file",
+           matches, [a["name"].lower()])
+
+    # The persistence->disk pivot: exactly one autostart names a program that is here.
+    run = RegistryHive(os.path.join(scene_dir, "Software.run.hive")).get_key(
+        "\\Microsoft\\Windows\\CurrentVersion\\Run")
+    named = sorted(v.value for v in run.get_values()
+                   if v.value.replace("/", "\\").rsplit("\\", 1)[-1].lower() in files)
+    _check(r, "Run key->disk", "exactly one autostart names a resident program",
+           named, [p["path"]])
+
+    # The execution pivot: the persisted program's run count, and exactly one orphan.
+    prefetches = {}
+    for pf_path in sorted(glob.glob(os.path.join(scene_dir, "*.pf"))):
+        pf = Prefetch(pf_path)
+        prefetches[pf.executableName.lower()] = pf.runCount
+    if p["name"].lower() in prefetches:
+        _check(r, "prefetch->persisted", "run count",
+               prefetches[p["name"].lower()], p["run_count"])
     else:
-        r.fail("scene: no Amcache.hve, so the registry->disk hash pivot is absent")
-
-    run_hive = os.path.join(scene_dir, "Software.run.hive")
-    if os.path.exists(run_hive):
-        run = RegistryHive(run_hive).get_key("\\Microsoft\\Windows\\CurrentVersion\\Run")
-        paths = [v.value for v in run.get_values()]
-        _check(r, "Run key->manifest", "persisted path",
-               join["exec_path"] in paths, True)
-    else:
-        r.fail("scene: no Run hive, so the persistence->binary pivot is absent")
-
-    pfs = glob.glob(os.path.join(scene_dir, "*.pf"))
-    if pfs:
-        pf = Prefetch(pfs[0])
-        _check(r, "prefetch->manifest", "executed name",
-               pf.executableName.lower(), join["exec_name"].lower())
-        _check(r, "prefetch->Run key", "referenced path names the persisted binary",
-               any(join["exec_name"].upper() in ref.upper() for ref in pf.resources), True)
-    else:
-        r.fail("scene: no prefetch file, so there is no execution evidence to join")
+        r.fail("prefetch: the persisted program has no execution record to join to")
+    _check(r, "prefetch->disk", "exactly one execution record names an absent program",
+           sorted(n for n in prefetches if n not in files),
+           [join["orphan_execution"].lower()])
 
 
 def _macos(r: GateReport, scene_dir: str, join: dict):
-    qdb = os.path.join(scene_dir, "QuarantineEventsV2")
-    xattrs = glob.glob(os.path.join(scene_dir, "*.quarantine.xattr"))
-    if os.path.exists(qdb) and xattrs:
-        con = sqlite3.connect(qdb)
-        try:
-            db_uuid = con.execute(
-                "SELECT LSQuarantineEventIdentifier FROM LSQuarantineEvent").fetchone()[0]
-        finally:
-            con.close()
-        with open(xattrs[0]) as f:
-            xattr_uuid = f.read().split(";")[-1]
-        _check(r, "xattr->QuarantineEventsV2", "quarantine UUID", xattr_uuid, db_uuid)
-        _check(r, "QuarantineEventsV2->manifest", "quarantine UUID",
-               db_uuid, join["quarantine_uuid"])
+    s = join["subject"]
+
+    granted = {row[0] for row in _q(scene_dir, "TCC.db",
+                                    "SELECT client FROM access WHERE auth_value = 2")}
+    used = {row[0] for row in _q(scene_dir, "knowledgeC.db",
+                                 "SELECT ZVALUESTRING FROM ZOBJECT "
+                                 "WHERE ZSTREAMNAME = '/app/inFocus'")}
+    _check(r, "TCC->knowledgeC", "exactly one granted client was also used",
+           sorted(granted & used), [s["bundle_id"]])
+
+    xattr_path = os.path.join(scene_dir, f"{s['bundle_id']}.quarantine.xattr")
+    if os.path.exists(xattr_path):
+        with open(xattr_path) as f:
+            uuid = f.read().strip().split(";")[-1]
+        _check(r, "xattr->subject", "quarantine UUID", uuid, s["quarantine_uuid"])
+        rows = {row[0]: row for row in _q(
+            scene_dir, "QuarantineEventsV2",
+            "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
+            "LSQuarantineAgentName FROM LSQuarantineEvent")}
+        if uuid in rows:
+            _check(r, "xattr->QuarantineEventsV2", "download URL",
+                   rows[uuid][1], s["download_url"])
+            _check(r, "xattr->QuarantineEventsV2", "downloading agent",
+                   rows[uuid][2], s["agent"])
+        else:
+            r.fail("QuarantineEventsV2: the subject's xattr UUID matches no row, so the "
+                   "download pivot dead-ends")
     else:
-        r.fail("scene: quarantine xattr or QuarantineEventsV2 missing, so the macOS "
-               "download pivot is absent")
+        r.fail("scene: the subject has no quarantine xattr, so nothing links it to a download")
 
-    tcc = os.path.join(scene_dir, "TCC.db")
-    if os.path.exists(tcc):
-        con = sqlite3.connect(tcc)
-        try:
-            client = con.execute(
-                "SELECT client FROM access WHERE auth_value = 2").fetchone()[0]
-        finally:
-            con.close()
-        _check(r, "TCC->manifest", "granted client", client, join["bundle_id"])
-
-    kc = os.path.join(scene_dir, "knowledgeC.db")
-    if os.path.exists(kc):
-        con = sqlite3.connect(kc)
-        try:
-            used = con.execute(
-                "SELECT ZVALUESTRING FROM ZOBJECT WHERE ZSTREAMNAME = '/app/inFocus'"
-            ).fetchone()[0]
-        finally:
-            con.close()
-        _check(r, "knowledgeC->TCC", "the app that was used is the app that was granted",
-               used, join["bundle_id"])
-
-    plists = glob.glob(os.path.join(scene_dir, "*.plist"))
-    if plists:
-        with open(plists[0], "rb") as f:
+    plist_path = os.path.join(scene_dir, f"{s['bundle_id']}.plist")
+    if os.path.exists(plist_path):
+        with open(plist_path, "rb") as f:
             pl = plistlib.load(f)
-        _check(r, "LaunchAgent->manifest", "persisted program",
-               pl["ProgramArguments"][0], join["app_path"])
+        _check(r, "LaunchAgent->subject", "Label", pl["Label"], s["bundle_id"])
+        _check(r, "LaunchAgent->subject", "program", pl["ProgramArguments"][0], s["app_path"])
     else:
-        r.fail("scene: no LaunchAgent plist, so the macOS persistence pivot is absent")
+        r.fail("scene: the subject has no LaunchAgent, so the persistence pivot is absent")
 
 
-def run(scene_dir: str, join: dict | None = None) -> GateReport:
+def run(scene_dir: str, join: dict) -> GateReport:
     r = GateReport(2, "identity",
                    "is every hash-shaped field a genuine digest of one ContentStore blob?")
-    join = load_join(scene_dir) if join is None else join
-    if "sha256" in join:
+    if join.get("family") == "windows":
         _windows(r, scene_dir, join)
     else:
         _macos(r, scene_dir, join)
-        r.gap("macOS scenes carry no binary and therefore no hash-shaped field; the "
-              "keystone currently covers the Windows family only")
+        r.gap("macOS scenes carry no binary and therefore no hash-shaped field; the keystone "
+              "currently covers the Windows family only")
     joined = r.metrics.get("checks_joined", 0)
     total = r.metrics.get("checks_total", 0)
     r.denominator = f"{joined}/{total} cross-artifact identity checks hold"

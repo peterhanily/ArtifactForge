@@ -1,32 +1,54 @@
-"""Compose a coherent Windows crime scene from ONE canonical file identity.
+# Copyright (c) 2026 Peter Hanily
+# SPDX-License-Identifier: MIT
+"""Compose a scene: several artifacts, one incident, and exactly one thread through them.
 
-A single dropped binary appears as: the PE itself (real bytes + IMPHASH), a Run-key
-persistence value, an Amcache execution record (FileId == the PE's SHA1), and a prefetch
-file (execution evidence). Every hash-shaped field is a real digest of the one ContentStore
-entry, so the cross-artifact join holds by construction — and the join manifest is the
-machine-checkable answer key that ships in the box.
+A scene is deliberately noisy. A host with a single binary, a single registry value and a
+single execution record is not an investigation — every question about it is a lookup, and a
+benchmark built on it cannot tell whether the cross-artifact hash pivot works, because there
+is nothing to pivot between. That is not hypothetical: the previous scenes scored 100% after
+their Amcache-to-disk hash join had been deliberately destroyed.
+
+So each scene carries decoys, and the signals deliberately do not all point at the same file:
+
+  * five binaries on disk, of which one is what persistence launches and a *different* one is
+    the one Amcache's recorded hashes actually match,
+  * three Run-key values, only one naming a program that is present,
+  * eight Amcache rows, only one whose recorded SHA1 belongs to a resident file — including a
+    row for the persisted binary carrying a stale hash, exactly as a real Amcache would after
+    the file was replaced,
+  * four prefetch records, one of which names an executable that is no longer there.
+
+Nothing is written into the served directory directly. Artifacts are built into a staging
+area and copied in by allowlist, so what a solver can see equals what we intended it to see —
+by construction, rather than by filtering a listing after the fact.
 """
 from __future__ import annotations
 
-import json
+import hashlib
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
-from artifactforge.content.store import Content, ContentStore
+from artifactforge import pools
 from artifactforge.artifacts.hive import build_amcache_hive, build_run_hive
-from artifactforge.artifacts.macos import (build_knowledgec, build_launch_agent, build_quarantine_events,
-                           build_tcc, quarantine_xattr)
+from artifactforge.artifacts.macos import (
+    build_knowledgec,
+    build_launch_agent,
+    build_quarantine_events,
+    build_tcc,
+    quarantine_xattr,
+)
 from artifactforge.artifacts.prefetch import build_prefetch, prefetch_name_hash
+from artifactforge import suite
+from artifactforge.content import ContentStore
 from artifactforge.model import PINNED_UNIX, HostProfile, deterministic_uuid
 
 
 @dataclass
-class CrimeScene:
-    exec_path: str
-    content: Optional[Content] = None               # the dropped PE (Windows scenes)
-    artifacts: dict = field(default_factory=dict)   # filename -> filesystem path
-    join: dict = field(default_factory=dict)        # the answer key
+class Scene:
+    family: str
+    directory: str                                  # the served directory
+    artifacts: list = field(default_factory=list)   # exactly what a solver can see
+    join: dict = field(default_factory=dict)        # server-side: answers and how they join
 
 
 def _device_path(exec_path: str) -> str:
@@ -34,96 +56,171 @@ def _device_path(exec_path: str) -> str:
     return "\\VOLUME{01}" + tail.upper()
 
 
-def build_crime_scene(store: ContentStore, *, content_id: str, exec_path: str,
-                      run_value_name: str, run_count: int, out_dir: str) -> CrimeScene:
-    os.makedirs(out_dir, exist_ok=True)
-    c = store.materialize(content_id)
-    name = exec_path.replace("/", "\\").rsplit("\\", 1)[-1]
-    dev = _device_path(exec_path)
-
-    files = {
-        name: c.bytes,
-        "Software.run.hive": build_run_hive(run_value_name, exec_path),
-        "Amcache.hve": build_amcache_hive(c.sha1, exec_path.lower(), name, len(c.bytes)),
-        f"{name.upper()}-{prefetch_name_hash(dev):08X}.pf": build_prefetch(name, dev, run_count),
-    }
-    artifacts = {}
-    for fname, data in files.items():
-        p = os.path.join(out_dir, fname)
-        with open(p, "wb") as f:
-            f.write(data)
-        artifacts[fname] = p
-
-    join = {
-        "content_id": content_id,
-        "exec_path": exec_path,
-        "exec_name": name,
-        "run_count": run_count,
-        "sha256": c.sha256,
-        "sha1": c.sha1,
-        "md5": c.md5,
-        "imphash": c.imphash,
-        "amcache_file_id": "0000" + c.sha1,
-        "yara_marker": c.marker,
-        # where the one identity surfaces (the join the responder pivots on)
-        "appears_in": {
-            "pe_bytes": "sha256 == disk file",
-            "amcache": "InventoryApplicationFile.FileId[4:] == sha1",
-            "run_key": "CurrentVersion\\Run value data == exec_path",
-            "prefetch": "referenced file == exec_path",
-        },
-    }
-    with open(os.path.join(out_dir, "JOIN_MANIFEST.json"), "w") as f:
-        json.dump(join, f, indent=2)
-
-    return CrimeScene(content=c, exec_path=exec_path, artifacts=artifacts, join=join)
+def _absent_sha1(skey: bytes, tag: str) -> str:
+    """A hash-shaped value belonging to no file here — the decoy Amcache rows' whole job."""
+    return hashlib.sha1(skey + tag.encode()).hexdigest()          # noqa: S324 - identity
 
 
-def build_macos_crime_scene(profile: HostProfile, *, bundle_id: str, app_path: str,
-                            download_url: str, origin_url: str, agent: str, out_dir: str) -> CrimeScene:
-    """A coherent macOS scene from one app identity: downloaded (quarantine) -> granted TCC ->
-    used (knowledgeC) -> persisted (LaunchAgent). Joined on the quarantine UUID + bundle id."""
-    assert profile.os_family == "macos", "macOS scene needs a macOS profile"
-    os.makedirs(out_dir, exist_ok=True)
-    uuid = deterministic_uuid(profile.seed_tag() + ":" + bundle_id)
-    t = profile.mac_abs_time()
-    label = bundle_id
+def _write(staging: str, name: str, data: bytes) -> None:
+    os.makedirs(staging, exist_ok=True)
+    with open(os.path.join(staging, name), "wb") as f:
+        f.write(data)
 
-    files = {
-        "knowledgeC.db": build_knowledgec(bundle_id, t, t + 120),
-        "TCC.db": build_tcc(bundle_id, "kTCCServiceSystemPolicyAllFiles", t),
-        "QuarantineEventsV2": build_quarantine_events(uuid, agent, download_url, origin_url, t),
-        f"{label}.plist": build_launch_agent(label, app_path),
-    }
-    artifacts = {}
-    for fname, data in files.items():
-        p = os.path.join(out_dir, fname)
-        with open(p, "wb") as f:
-            f.write(data)
-        artifacts[fname] = p
-    # the quarantine xattr value (emitted as data — no real xattr is set on the host)
-    xattr = quarantine_xattr(uuid, agent, PINNED_UNIX)
-    xattr_path = os.path.join(out_dir, os.path.basename(app_path) + ".quarantine.xattr")
-    with open(xattr_path, "w") as f:
-        f.write(xattr)
-    artifacts["quarantine_xattr"] = xattr_path
+
+def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
+                        scene_dir: str, staging_dir: str) -> Scene:
+    temp = f"{profile.home_dir}\\AppData\\Local\\Temp"
+    prog = "C:\\Program Files"
+
+    persisted_name = suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)
+    amcache_name, *noise_names = suite.pick_many(skey, "resident", pools.BENIGN_NAMES, 4)
+    absent_name = suite.pick(skey, "absent",
+                             [n for n in pools.MALWARE_NAMES if n != persisted_name])
+
+    persisted_path = f"{temp}\\{persisted_name}"
+    amcache_path = f"{prog}\\{amcache_name}"
+
+    # --- the binaries. Two carry answers; the rest are the haystack. ------------------
+    resident = {}
+    for role, name in [("persisted", persisted_name), ("amcache-match", amcache_name),
+                       *[(f"noise{i}", n) for i, n in enumerate(noise_names)]]:
+        c = store.materialize("pe:" + suite.content_seed(skey, role))
+        resident[name] = c
+        _write(staging_dir, name, c.bytes)
+
+    persisted, matched = resident[persisted_name], resident[amcache_name]
+
+    # --- persistence: three autostarts, only one naming a program that is here --------
+    names = suite.pick_many(skey, "run-values", pools.RUN_VALUE_NAMES, 3)
+    absent_targets = [n for n in pools.BENIGN_NAMES if n not in resident]
+    run_values = [
+        (names[0], persisted_path),
+        (names[1], f"{prog}\\{suite.pick(skey, 'run-decoy-1', absent_targets)}"),
+        (names[2], f"{prog}\\{suite.pick(skey, 'run-decoy-2', absent_targets)}"),
+    ]
+    _write(staging_dir, "Software.run.hive", build_run_hive(run_values))
+
+    # --- Amcache: eight rows, exactly one hash belonging to a file that is still here --
+    rows = [(matched.sha1, amcache_path.lower(), amcache_name, len(matched.bytes))]
+    # The persisted binary IS recorded, but under the hash of the version Amcache saw — so
+    # following hashes leads somewhere different from following paths, which is the point.
+    rows.append((_absent_sha1(skey, "stale-persisted"), persisted_path.lower(),
+                 persisted_name, len(persisted.bytes) + 4096))
+    for i, n in enumerate(suite.pick_many(skey, "amcache-decoys", absent_targets, 6)):
+        rows.append((_absent_sha1(skey, f"amcache{i}"), f"{prog}\\{n}".lower(), n, 4096 * (i + 3)))
+    _write(staging_dir, "Amcache.hve", build_amcache_hive(rows))
+
+    # --- prefetch: four executions, one of a program that has since gone --------------
+    run_count = 1 + skey[0] % 9
+    executions = [
+        (persisted_name, persisted_path, run_count),
+        (amcache_name, amcache_path, 1 + skey[1] % 5),
+        (noise_names[0], f"{prog}\\{noise_names[0]}", 1 + skey[2] % 5),
+        (absent_name, f"{temp}\\{absent_name}", 1 + skey[3] % 5),
+    ]
+    pf_names = []
+    for name, path, count in executions:
+        dev = _device_path(path)
+        pf = f"{name.upper()}-{prefetch_name_hash(dev):08X}.pf"
+        _write(staging_dir, pf, build_prefetch(name, dev, count))
+        pf_names.append(pf)
+
+    allowlist = sorted([*resident, "Software.run.hive", "Amcache.hve", *pf_names])
+    artifacts = suite.stage(scene_dir, staging_dir, allowlist)
 
     join = {
+        "family": "windows",
         "os": f"{profile.os_family} {profile.version}",
-        "bundle_id": bundle_id,
-        "app_path": app_path,
-        "quarantine_uuid": uuid,
-        "quarantine_xattr": xattr,
-        "download_url": download_url,
-        "appears_in": {
-            "quarantine_events": "LSQuarantineEventIdentifier == UUID",
-            "quarantine_xattr": "xattr UUID field == LSQuarantineEventIdentifier",
-            "tcc": "access.client == bundle_id (granted permission)",
-            "knowledgeC": "ZOBJECT.ZVALUESTRING == bundle_id (app used)",
-            "launch_agent": "ProgramArguments[0] == app_path (persistence)",
+        "host": profile.hostname,
+        "user": profile.username,
+        "persisted": {"name": persisted_name, "path": persisted_path,
+                      "sha256": persisted.sha256, "sha1": persisted.sha1,
+                      "md5": persisted.md5, "imphash": persisted.imphash,
+                      "marker": persisted.marker, "run_count": run_count},
+        "amcache_match": {"name": amcache_name, "path": amcache_path,
+                          "sha256": matched.sha256, "sha1": matched.sha1,
+                          "file_id": "0000" + matched.sha1, "imphash": matched.imphash},
+        "orphan_execution": absent_name,
+        "decoys": {"binaries": len(resident), "run_values": len(run_values),
+                   "amcache_rows": len(rows), "prefetch": len(pf_names)},
+        "pivots": {
+            "persisted": "the one Run value naming a resident program -> that file on disk",
+            "amcache_match": "the one FileId whose SHA1 belongs to a resident file -> that file",
+            "run_count": "Run value -> resident program -> its prefetch record",
+            "orphan_execution": "the prefetch record naming a program absent from disk",
         },
     }
-    with open(os.path.join(out_dir, "JOIN_MANIFEST.json"), "w") as f:
-        json.dump(join, f, indent=2)
+    return Scene("windows", scene_dir, artifacts, join)
 
-    return CrimeScene(exec_path=app_path, artifacts=artifacts, join=join)
+
+def build_macos_scene(*, skey: bytes, profile: HostProfile,
+                      scene_dir: str, staging_dir: str) -> Scene:
+    support = f"{profile.home_dir}/Library/Application Support"
+    t = profile.mac_abs_time()
+
+    # Five candidate apps. Two hold an allowed TCC grant; only one of those was ever used.
+    bundles = suite.pick_many(skey, "bundles", pools.BUNDLES, 3)
+    benign = suite.pick_many(skey, "benign-bundles", pools.BENIGN_BUNDLES, 2)
+    subject, also_granted, persisted_only = bundles
+
+    def app_path(b):
+        return f"{support}/{b}/{b.rsplit('.', 1)[-1]}"
+
+    # --- quarantine: five downloads, each with its own UUID and origin ----------------
+    all_bundles = [subject, also_granted, persisted_only, *benign]
+    uuids, events = {}, []
+    for b in all_bundles:
+        u = deterministic_uuid(suite.content_seed(skey, f"quarantine:{b}"))
+        agent = suite.pick(skey, f"agent:{b}", pools.DOWNLOAD_AGENTS)
+        host = suite.pick(skey, f"dlhost:{b}", pools.DOWNLOAD_HOSTS)
+        url = f"https://{host}/{b}.dmg"
+        uuids[b] = (u, agent, url)
+        events.append((u, agent, url, f"https://{host}/downloads", t))
+        _write(staging_dir, f"{b}.quarantine.xattr",
+               quarantine_xattr(u, agent, PINNED_UNIX).encode())
+    _write(staging_dir, "QuarantineEventsV2", build_quarantine_events(events))
+
+    # --- TCC: four clients, two allowed. Only one of those appears in knowledgeC -------
+    tcc_rows = [
+        (subject, suite.pick(skey, "tcc-subject", pools.TCC_SERVICES), 2),
+        (also_granted, suite.pick(skey, "tcc-other", pools.TCC_SERVICES), 2),
+        (benign[0], "kTCCServiceAppleEvents", 0),
+        (persisted_only, "kTCCServiceCamera", 0),
+    ]
+    _write(staging_dir, "TCC.db", build_tcc([(c, s, a, t) for c, s, a in tcc_rows]))
+
+    # --- knowledgeC: three apps actually used -----------------------------------------
+    used = [subject, *benign]
+    _write(staging_dir, "knowledgeC.db",
+           build_knowledgec([(b, t + 60 * i, t + 60 * i + 120) for i, b in enumerate(used)]))
+
+    # --- persistence: three LaunchAgents, only one for an app with an allowed grant ----
+    agents = [subject, persisted_only, benign[1]]
+    for b in agents:
+        _write(staging_dir, f"{b}.plist", build_launch_agent(b, app_path(b)))
+
+    allowlist = sorted(["QuarantineEventsV2", "TCC.db", "knowledgeC.db",
+                        *[f"{b}.plist" for b in agents],
+                        *[f"{b}.quarantine.xattr" for b in all_bundles]])
+    artifacts = suite.stage(scene_dir, staging_dir, allowlist)
+
+    u, agent, url = uuids[subject]
+    join = {
+        "family": "macos",
+        "os": f"{profile.os_family} {profile.version}",
+        "host": profile.hostname,
+        "user": profile.username,
+        "subject": {"bundle_id": subject, "app_path": app_path(subject),
+                    "quarantine_uuid": u, "download_url": url, "agent": agent,
+                    "tcc_service": tcc_rows[0][1]},
+        "decoys": {"bundles": len(all_bundles), "tcc_rows": len(tcc_rows),
+                   "quarantine_rows": len(events), "launch_agents": len(agents),
+                   "also_granted": also_granted, "persisted_only": persisted_only},
+        "pivots": {
+            "subject": "the one TCC-allowed client that also appears in knowledgeC",
+            "download_url": "subject -> its quarantine xattr UUID -> QuarantineEventsV2 row",
+            "agent": "the same row's LSQuarantineAgentName",
+            "persistence": "subject -> the LaunchAgent whose Label matches it",
+        },
+    }
+    return Scene("macos", scene_dir, artifacts, join)

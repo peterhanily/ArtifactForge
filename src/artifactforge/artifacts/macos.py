@@ -37,41 +37,55 @@ def _sqlite_bytes(build) -> bytes:
             os.remove(path)
 
 
-def build_knowledgec(bundle_id: str, start_mac: int, end_mac: int) -> bytes:
-    """/private/var/db/CoreDuet/Knowledge/knowledgeC.db — app-in-focus usage (APOLLO-readable)."""
+def build_knowledgec(entries) -> bytes:
+    """/private/var/db/CoreDuet/Knowledge/knowledgeC.db — app-in-focus usage.
+
+    `entries` is a sequence of (bundle_id, start_mac, end_mac). A real knowledgeC holds
+    weeks of every app a user touched, so "which app was used" is only a question when
+    several were.
+    """
     def build(con):
         con.execute(
             "CREATE TABLE ZOBJECT (Z_PK INTEGER PRIMARY KEY, ZSTREAMNAME TEXT, "
             "ZVALUESTRING TEXT, ZSTARTDATE REAL, ZENDDATE REAL)")
-        con.execute("INSERT INTO ZOBJECT VALUES (1, '/app/inFocus', ?, ?, ?)",
-                    (bundle_id, float(start_mac), float(end_mac)))
+        for i, (bundle_id, start_mac, end_mac) in enumerate(entries, start=1):
+            con.execute("INSERT INTO ZOBJECT VALUES (?, '/app/inFocus', ?, ?, ?)",
+                        (i, bundle_id, float(start_mac), float(end_mac)))
     return _sqlite_bytes(build)
 
 
-def build_tcc(bundle_id: str, service: str, last_modified_mac: int) -> bytes:
-    """~/Library/Application Support/com.apple.TCC/TCC.db — a granted sensitive permission."""
+def build_tcc(rows) -> bytes:
+    """~/Library/Application Support/com.apple.TCC/TCC.db — permission grants and refusals.
+
+    `rows` is a sequence of (client, service, auth_value, last_modified_mac).
+    auth_value 2 is allowed, 0 is denied; a database containing only grants would make
+    "which app was allowed" a lookup rather than a question.
+    """
     def build(con):
         con.execute(
             "CREATE TABLE access (service TEXT, client TEXT, client_type INTEGER, "
             "auth_value INTEGER, auth_reason INTEGER, last_modified INTEGER)")
-        con.execute("INSERT INTO access VALUES (?, ?, 0, 2, 3, ?)",
-                    (service, bundle_id, last_modified_mac))  # auth_value 2 = allowed
+        for client, service, auth_value, last_modified in rows:
+            con.execute("INSERT INTO access VALUES (?, ?, 0, ?, 3, ?)",
+                        (service, client, auth_value, last_modified))
     return _sqlite_bytes(build)
 
 
-def build_quarantine_events(uuid: str, agent: str, data_url: str, origin_url: str,
-                            timestamp_mac: int) -> bytes:
-    """com.apple.LaunchServices.QuarantineEventsV2 — where a download came from.
+def build_quarantine_events(events) -> bytes:
+    """com.apple.LaunchServices.QuarantineEventsV2 — where each download came from.
 
-    LSQuarantineEventIdentifier equals the file's com.apple.quarantine xattr UUID.
+    `events` is a sequence of (uuid, agent, data_url, origin_url, timestamp_mac).
+    LSQuarantineEventIdentifier equals the file's com.apple.quarantine xattr UUID, which is
+    the join: the database says where things came from, the xattr says which thing.
     """
     def build(con):
         con.execute(
             "CREATE TABLE LSQuarantineEvent (LSQuarantineEventIdentifier TEXT PRIMARY KEY, "
             "LSQuarantineTimeStamp REAL, LSQuarantineAgentName TEXT, "
             "LSQuarantineDataURLString TEXT, LSQuarantineOriginURLString TEXT)")
-        con.execute("INSERT INTO LSQuarantineEvent VALUES (?, ?, ?, ?, ?)",
-                    (uuid, float(timestamp_mac), agent, data_url, origin_url))
+        for uuid, agent, data_url, origin_url, timestamp_mac in events:
+            con.execute("INSERT INTO LSQuarantineEvent VALUES (?, ?, ?, ?, ?)",
+                        (uuid, float(timestamp_mac), agent, data_url, origin_url))
     return _sqlite_bytes(build)
 
 

@@ -175,23 +175,53 @@ class Content:
     marker: str
 
 
+#: A content_id is "<format>:<anything>". The prefix selects the writer, and an unrecognised
+#: one raises rather than falling through to PE — a `macho:` id quietly yielding a Windows
+#: binary is the kind of bug that only surfaces in a parser months later.
+KNOWN_FORMATS = ("pe",)
+
+
 class ContentStore:
-    """content_id -> real bytes, content-addressed by sha256 (git-blob style)."""
+    """content_id -> real bytes, content-addressed by sha256 (git-blob style).
+
+    The cache is shared across every scenario in a suite, so the same logical file appearing
+    in two scenes is written once. That makes cache hits real, which is why reads verify:
+    a torn write from a full disk or two workers racing would otherwise be trusted forever
+    while `Content.sha256` kept reporting the value the bytes no longer have.
+    """
 
     def __init__(self, scenario_seed: str, cache_dir: str):
         self._root = _sub_seed(scenario_seed.encode(), "contentstore")
         self._cache = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
 
+    def _store(self, sha256: str, data: bytes) -> str:
+        """Write content-addressed, atomically, and re-verify anything already there."""
+        path = os.path.join(self._cache, sha256)
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() == sha256:
+                    return path
+            # Present but wrong: a torn write. Fall through and replace it.
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)                     # atomic within the same directory
+        return path
+
     def materialize(self, content_id: str) -> Content:
+        fmt = content_id.split(":", 1)[0]
+        if fmt not in KNOWN_FORMATS:
+            raise ValueError(
+                f"unknown content_id format {fmt!r} in {content_id!r}; "
+                f"known formats: {sorted(KNOWN_FORMATS)}")
         seed = _sub_seed(self._root, content_id)
         imports = _pick_imports(seed)
         data = _assemble_pe(seed, imports)
         sha256 = hashlib.sha256(data).hexdigest()
-        path = os.path.join(self._cache, sha256)
-        if not os.path.exists(path):
-            with open(path, "wb") as f:
-                f.write(data)
+        path = self._store(sha256, data)
         marker = "ARTIFACTFORGE-SYNTHETIC-" + _prng_bytes(_sub_seed(seed, "marker"), 8).hex()
         return Content(data, path, sha256, hashlib.sha1(data).hexdigest(),
                        hashlib.md5(data).hexdigest(), imphash_of(imports), marker)

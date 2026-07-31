@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "generator": {
     "artifactforge_version": "0.0.1",
-    "git_commit": "1beabd7",
+    "git_commit": "b43dc67",
     "sqlite_version": "3.50.4"
   },
   "gates": {
@@ -17,8 +17,8 @@
         "plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
         "sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
       ],
-      "oracle_reads_passed": 16,
-      "oracle_reads_total": 24
+      "oracle_reads_passed": 34,
+      "oracle_reads_total": 56
     },
     "identity": {
       "verdict": "pass",
@@ -26,8 +26,8 @@
       "gaps": [
         "macOS scenes carry no binary and therefore no hash-shaped field; the keystone currently covers the Windows family only"
       ],
-      "checks_total": 28,
-      "checks_joined": 28
+      "checks_total": 32,
+      "checks_joined": 32
     },
     "inertness": {
       "verdict": "fail",
@@ -37,25 +37,21 @@
         "plist: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated"
       ],
       "gaps": [],
-      "formats_marked": 6,
-      "formats_total": 16
+      "formats_marked": 14,
+      "formats_total": 34
     },
     "solvability": {
-      "verdict": "fail",
-      "fails": [
-        "the 'blind' adversary scores 100.0% against a 10% threshold \u2014 that many answers are obtainable without forensic work",
-        "the 'listing' adversary scores 20.0% against a 10% threshold \u2014 that many answers are obtainable without forensic work",
-        "no macos question requires joining two artifacts, so the benchmark cannot detect a broken cross-artifact pivot",
-        "no windows question requires joining two artifacts, so the benchmark cannot detect a broken cross-artifact pivot"
-      ],
+      "verdict": "pass",
+      "fails": [],
       "gaps": [],
       "reference_solver_score": 1.0,
-      "blind_solver_score": 1.0,
-      "listing_solver_score": 0.2,
+      "blind_solver_score": 0.0,
+      "listing_solver_score": 0.0,
       "null_solver_score": 0.0,
       "constant_solver_score": 0.0,
-      "join_questions_macos": 0,
-      "join_questions_windows": 0
+      "blind_control_score": 0.8889,
+      "join_questions_macos": 8,
+      "join_questions_windows": 10
     }
   },
   "honest_gaps": [
@@ -67,11 +63,7 @@
     "Gate 2 (identity): macOS scenes carry no binary and therefore no hash-shaped field; the keystone currently covers the Windows family only",
     "Gate 3 (inertness) FAILING: prefetch: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
     "Gate 3 (inertness) FAILING: sqlite: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
-    "Gate 3 (inertness) FAILING: plist: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated",
-    "Gate 4 (solvability) FAILING: the 'blind' adversary scores 100.0% against a 10% threshold \u2014 that many answers are obtainable without forensic work",
-    "Gate 4 (solvability) FAILING: the 'listing' adversary scores 20.0% against a 10% threshold \u2014 that many answers are obtainable without forensic work",
-    "Gate 4 (solvability) FAILING: no macos question requires joining two artifacts, so the benchmark cannot detect a broken cross-artifact pivot",
-    "Gate 4 (solvability) FAILING: no windows question requires joining two artifacts, so the benchmark cannot detect a broken cross-artifact pivot"
+    "Gate 3 (inertness) FAILING: plist: carries no in-band synthetic marker, so a copy that escapes its bundle cannot be recognised as generated"
   ],
   "verdict": "gap"
 }

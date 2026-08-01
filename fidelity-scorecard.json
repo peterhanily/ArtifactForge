@@ -1,9 +1,19 @@
 {
   "schema_version": "1.0",
   "generator": {
-    "artifactforge_version": "0.0.2",
-    "git_commit": "cad0e04",
-    "sqlite_version": "3.50.4"
+    "artifactforge_version": "0.0.3",
+    "git_commit": "63c0d0f",
+    "sqlite_version": "3.50.4",
+    "source": {
+      "schema": "artifactforge-source-provenance-v1",
+      "git_commit": "63c0d0f333adc4e4e22e1f79f9725f2f56b9265c",
+      "git_tree": "b634dc7b70b2538fee6f11866ab8bf4d8ea9fa19",
+      "worktree_clean": true,
+      "dirty_snapshot_sha256": null,
+      "untracked_file_count": 0,
+      "pyproject_sha256": "sha256:1e277c2a15a73b4b9ece275962898a6b50f6d9948c2aad9c15fe27b66f413562",
+      "uv_lock_sha256": "sha256:f7c0d6ee0f7279b38a45900da024b7761cc83f2483c3b605744802a6c97802de"
+    }
   },
   "gates": {
     "validity": {
@@ -14,7 +24,9 @@
         "sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
       ],
       "oracle_reads_passed": 760,
-      "oracle_reads_total": 760
+      "oracle_reads_total": 760,
+      "semantic_checks_passed": 180,
+      "semantic_checks_total": 180
     },
     "identity": {
       "verdict": "pass",
@@ -28,7 +40,9 @@
       "fails": [],
       "gaps": [],
       "formats_marked": 440,
-      "formats_total": 440
+      "formats_total": 440,
+      "binary_safety_checks_passed": 200,
+      "binary_safety_checks_total": 200
     },
     "solvability": {
       "verdict": "fail",

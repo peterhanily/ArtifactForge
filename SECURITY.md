@@ -17,15 +17,22 @@ categories below.
    Every generated binary reproduces the forensic *signal* — a real import table, a real
    symbol table, and real content or structural hashes — without a payload. The PE's `.text`
    section is a single `ret` followed by zero padding; the Mach-O writer emits an eight-byte
-   `__text` containing `mov w0, #0 ; ret`. Gate 3 parses and bounds-checks PE `.text`; its
-   current Mach-O check recognizes the permitted byte sequence but does not independently
-   enumerate every executable section.
+   `__text` containing `mov w0, #0 ; ret`. Gate 3 parses and bounds-checks both formats. For
+   PE it binds `AddressOfEntryPoint` to the sole executable `.text` section, admits only the
+   modeled system DLL imports, and rejects every data directory except imports—including TLS
+   and managed-code startup. For Mach-O it binds `LC_MAIN` to the sole executable instruction
+   section, admits only the writer's system-library/load-command/section profile, rejects
+   alternate startup mechanisms, and verifies that the CodeDirectory page hashes cover every
+   byte before the signature. Parseable mutations of each property are required to turn the
+   gate red.
 
    The Mach-O is a genuinely loadable, ad-hoc-signed arm64 executable, because an unsigned one
    is not loadable at all and would therefore not be a realistic artifact. It runs and returns
-   zero. If you can make anything this project emits do more than that — execute, connect,
-   read, write, or carry a usable secret — that is a bug and we want it before anyone else
-   does. See [`docs/inert-by-construction.md`](docs/inert-by-construction.md).
+   zero. The fixed 16-bit DOS stub only prints its conventional message and exits. If you can
+   make anything this project emits execute native code beyond those fixed return/print stubs,
+   perform file, network, persistence or process operations, or carry a usable secret, that is
+   a bug and we want it before anyone else does. See
+   [`docs/inert-by-construction.md`](docs/inert-by-construction.md).
 
 2. **A generated artifact could be mistaken for genuine evidence, or an indicator points at
    something real.**
@@ -52,6 +59,29 @@ somebody else's data, and it never goes away.
 
 Artifacts are generated for training a responder or evaluating an agent, and they belong in
 that context. If you publish results from them, say they are synthetic.
+
+## Scanner claims require an attestation
+
+A terminal line saying "0 detections" is not a publishable result. Local scanner observations
+must be produced by `scripts/scan-exposure.sh --output <record.json>` and must pass
+`scripts/scan-exposure.sh --check <record.json>`. The record format is
+[`scanner-attestation.schema.json`](scanner-attestation.schema.json); its stricter semantic
+checks live in `scripts/scanner_attestation.py` and are mutation-tested without requiring
+ClamAV or macOS tools on the default Linux test host.
+
+The checker fails closed unless the record is at most 30 days old and contains all required
+scanner results. Each result must identify the engine and rule version or fingerprint, bind to
+the exact file manifest and corpus SHA256, record its UTC timestamp and command/method, pass an
+applicable positive control, account for exclusions and errors, and state what the observation
+does not prove. A missing scanner, failed control, partially loaded rule corpus, scan error,
+unbound input, scanner or YARA-rule match, stale record or incompatible schema is a failure,
+never a skip.
+
+These scans are local. Producing an attestation does not relax the VirusTotal or
+threat-intelligence prohibition above, and even a fresh clean attestation is only evidence
+about exact bytes against dated signature snapshots — not proof of safety or inertness. The
+record is self-reported and unsigned, so it also does not independently authenticate the scan
+host or scanner executables.
 
 ## Scope
 

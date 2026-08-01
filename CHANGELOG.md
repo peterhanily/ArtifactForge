@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+## 0.0.3 - 2026-08-01
+
+### Added
+
+A fail-closed, machine-readable scanner-attestation format binds each observation to an exact
+recursive corpus manifest, engine and rules identity, UTC timestamp, invocation, positive
+control, coverage, exclusions and errors. ClamAV, XProtect YARA, community YARA and Gatekeeper
+have scanner-specific success rules; missing tools, stale records, partial rule loads and
+incomplete coverage are failures rather than skips. The community-YARA control is explicitly
+engine-only, with selected-rule coverage proven separately. Per-file externals are populated,
+transitive includes are refused unless their bytes can be manifested, and every rule match is
+red—there is no unbound rule-name allowlist that can relabel a hit as merely descriptive.
+
+A native macOS CI lane validates all committed Mach-O signatures and cdhashes with `codesign`,
+all LaunchAgent property lists with `plutil`, and plain plus quarantined Gatekeeper outcomes.
+Gatekeeper rejection is reported only after a signed platform positive control succeeds. Its
+canonical attestation binds the complete recursive scene, clean source commit and tree, host
+build, exact Apple tool bytes and build markers, and proves that source and scene stayed
+unchanged throughout the run.
+
+Release scorecards now bind their measurements to a full Git commit and tree, the exact
+`pyproject.toml` and `uv.lock` bytes, and a clean worktree. Dirty scorecard output is refused by
+default; the explicit non-release override records a digest over the complete tracked diff and
+every untracked byte.
+
+### Fixed
+
+SCCA v17 prefetch filenames and headers now carry the real XP/Server 2003 path hash. The old
+value stopped after the multiply-by-37 `ConvKey` intermediate and omitted both the XP
+randomisation constant and prime reduction. A published XP known-answer vector and an
+independent Gate 1 transcription prevent those two stages from collapsing again.
+
+### Changed
+
+Gate 1 now validates semantics after parsing. pefile and LIEF independently enumerate each
+PE's named imports, confirm pefile/VT-normalised IMPHASH values and agree with each other; a
+raw SCCA v17 verifier binds the referenced executable path to the header and on-disk filename.
+Parseable mutations prove both checks turn red.
+
+Gate 3 now parses the arm64 Mach-O entry point, executable segment and instruction sections,
+requires the sole reachable body to be `mov w0,#0; ret` plus zero padding, and independently
+recomputes CodeDirectory page hashes through the exact pre-signature coverage boundary.
+For PE it independently pins the full DOS header/stub, binds `AddressOfEntryPoint` to the sole
+executable `.text`, permits only the modeled system DLL imports and rejects every data directory
+except imports. Parser-valid mutations cover redirected DOS/native entry, pre-main library
+loading and Mach-O initializer-table substitution.
+
 ## 0.0.2 - 2026-08-01
 
 ### Added

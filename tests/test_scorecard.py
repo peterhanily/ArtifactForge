@@ -138,16 +138,52 @@ def test_committed_scorecard_has_exact_measurement_and_source_provenance(card):
     """The published card must identify both its corpus and a real matching source commit."""
     assert card["measurement"] == suite.scorecard_measurement_provenance(40)
 
-    commit = card["generator"]["git_commit"]
-    source = subprocess.run(
-        ["git", "show", f"{commit}:pyproject.toml"],
+    generator = card["generator"]
+    provenance = generator["source"]
+    assert provenance["schema"] == "artifactforge-source-provenance-v1"
+    commit = provenance["git_commit"]
+    assert generator["git_commit"] == commit[:7]
+    assert provenance["worktree_clean"] is True
+    assert provenance["dirty_snapshot_sha256"] is None
+    assert provenance["untracked_file_count"] == 0
+
+    def git_show(path):
+        return subprocess.run(
+            ["git", "show", f"{commit}:{path}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+
+    source_version = tomllib.loads(git_show("pyproject.toml").decode())["project"]["version"]
+    assert source_version == card["generator"]["artifactforge_version"]
+    assert provenance["pyproject_sha256"] == "sha256:" + hashlib.sha256(
+        git_show("pyproject.toml")
+    ).hexdigest()
+    assert provenance["uv_lock_sha256"] == "sha256:" + hashlib.sha256(
+        git_show("uv.lock")
+    ).hexdigest()
+    tree = subprocess.run(
+        ["git", "rev-parse", f"{commit}^{{tree}}"],
         cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
-    ).stdout
-    source_version = tomllib.loads(source)["project"]["version"]
-    assert source_version == card["generator"]["artifactforge_version"]
+    ).stdout.strip()
+    assert provenance["git_tree"] == tree
+
+
+def _clean_source_provenance():
+    return {
+        "schema": "artifactforge-source-provenance-v1",
+        "git_commit": "abcdef0123456789abcdef0123456789abcdef01",
+        "git_tree": "1" * 40,
+        "worktree_clean": True,
+        "dirty_snapshot_sha256": None,
+        "untracked_file_count": 0,
+        "pyproject_sha256": "sha256:" + "2" * 64,
+        "uv_lock_sha256": "sha256:" + "3" * 64,
+    }
 
 
 def test_scorecard_command_is_stable_and_prints_scoped_status(tmp_path, monkeypatch, capsys):
@@ -167,7 +203,8 @@ def test_scorecard_command_is_stable_and_prints_scoped_status(tmp_path, monkeypa
         name: (lambda args, name=name, number=number: run_gate(name, number, args))
         for number, name in enumerate(gates, 1)
     })
-    monkeypatch.setattr(cli_module, "_git_commit", lambda: "abcdef0")
+    source = _clean_source_provenance()
+    monkeypatch.setattr(cli_module, "_git_source_provenance", lambda: source)
 
     paths = [tmp_path / "first.json", tmp_path / "second.json"]
     for path in paths:
@@ -177,12 +214,86 @@ def test_scorecard_command_is_stable_and_prints_scoped_status(tmp_path, monkeypa
     assert paths[0].read_bytes() == paths[1].read_bytes()
     generated = json.loads(paths[0].read_text())
     assert generated["measurement"] == suite.scorecard_measurement_provenance(40)
+    assert generated["generator"]["source"] == source
     assert calls == [(name, True) for name in gates] * 2
 
     output = capsys.readouterr().out
     assert "generator assurance: gap" in output
     assert "experimental benchmark validity: fail" in output
     assert "aggregate (all gates): fail" in output
+
+
+def test_scorecard_output_refuses_dirty_source_unless_explicitly_allowed(
+        tmp_path, monkeypatch, capsys):
+    dirty = {
+        **_clean_source_provenance(),
+        "worktree_clean": False,
+        "dirty_snapshot_sha256": "sha256:" + "4" * 64,
+        "untracked_file_count": 2,
+    }
+    monkeypatch.setattr(cli_module, "_git_source_provenance", lambda: dirty)
+    monkeypatch.setattr(
+        cli_module,
+        "GATES",
+        {name: (lambda _args, name=name, gate=gate: GateReport(gate, name, name))
+         for gate, name in enumerate(("validity", "identity", "inertness", "solvability"), 1)},
+    )
+    output = tmp_path / "dirty.json"
+    args = SimpleNamespace(
+        n=1,
+        out=str(output),
+        check=None,
+        gen_dir=None,
+        scene=None,
+        allow_dirty=False,
+    )
+    assert cli_module.cmd_scorecard(args) == 2
+    assert not output.exists()
+    assert "refusing to write a scorecard from a dirty worktree" in capsys.readouterr().err
+
+    args.allow_dirty = True
+    assert cli_module.cmd_scorecard(args) == 0
+    generated = json.loads(output.read_text())
+    assert generated["generator"]["source"] == dirty
+
+
+def test_scorecard_refuses_when_source_changes_during_measurement(tmp_path, monkeypatch, capsys):
+    before = _clean_source_provenance()
+    after = {**before, "git_tree": "9" * 40}
+    snapshots = iter((before, after))
+    monkeypatch.setattr(cli_module, "_git_source_provenance", lambda: next(snapshots))
+    monkeypatch.setattr(cli_module, "GATES", {
+        name: (lambda _args, report=GateReport(index, name, "question"): report)
+        for index, name in enumerate(("validity", "identity", "inertness", "solvability"), 1)
+    })
+    args = SimpleNamespace(
+        n=1,
+        out=str(tmp_path / "card.json"),
+        check=None,
+        allow_dirty=False,
+        scene=None,
+        gen_dir=None,
+    )
+    assert cli_module.cmd_scorecard(args) == 2
+    assert not (tmp_path / "card.json").exists()
+    assert "source changed during measurement" in capsys.readouterr().err
+
+
+def test_dirty_source_digest_changes_with_the_tracked_diff():
+    first = cli_module._dirty_snapshot_sha256(b"first", [])
+    second = cli_module._dirty_snapshot_sha256(b"second", [])
+    assert first and second and first != second
+    assert cli_module._dirty_snapshot_sha256(b"", []) is None
+
+
+def test_dirty_source_digest_binds_every_untracked_byte(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_module, "_REPOSITORY_ROOT", tmp_path)
+    untracked = tmp_path / "new-source.py"
+    untracked.write_bytes(b"first")
+    first = cli_module._dirty_snapshot_sha256(b"", [untracked.name])
+    untracked.write_bytes(b"second")
+    second = cli_module._dirty_snapshot_sha256(b"", [untracked.name])
+    assert first and second and first != second
 
 
 def test_solvability_routes_scorecards_to_measurement_and_gates_to_private_holdout(
@@ -306,7 +417,7 @@ def test_package_version_is_consistent_with_release_metadata(card):
         packages = tomllib.load(f)["package"]
     lock_version = next(p["version"] for p in packages if p["name"] == "artifactforge")
 
-    assert project_version == "0.0.2"
+    assert project_version == "0.0.3"
     assert __version__ == project_version
     assert lock_version == project_version
     assert card["generator"]["artifactforge_version"] == project_version

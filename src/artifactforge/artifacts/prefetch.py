@@ -43,11 +43,20 @@ def _utf16_string(value: str) -> bytes:
 
 
 def prefetch_name_hash(full_path: str) -> int:
-    """A deterministic prefetch-style name hash (value is not verified by parsers)."""
-    h = 0
-    for ch in full_path.upper():
-        h = (h * 37 + ord(ch)) & 0xFFFFFFFF
-    return h
+    """Return the SCCA XP/Server 2003 hash used by format version 17.
+
+    Windows first uppercases the device path and encodes it as UTF-16LE.  The initial
+    multiply-by-37 loop produces only the ``ConvKey`` intermediate; the filename hash also
+    applies the XP randomisation constant and prime reduction.  Keeping those stages named
+    prevents the intermediate from being mistaken for the final hash again.
+    """
+    conv_key = 0
+    for byte in full_path.upper().encode("utf-16-le"):
+        conv_key = (37 * conv_key + byte) & 0xFFFFFFFF
+
+    randomised = (314159269 * conv_key) & 0xFFFFFFFF
+    magnitude = 0x100000000 - randomised if randomised > 0x80000000 else randomised
+    return magnitude % 1000000007
 
 
 def build_prefetch(exe_name: str, full_path: str, run_count: int) -> bytes:

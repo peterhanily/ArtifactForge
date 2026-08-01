@@ -35,8 +35,12 @@ import json
 # coverage with it. Re-measure before tightening any of these.
 _METRICS = [
     ("gates.validity.oracle_reads_passed",     "higher_better", 0, "validity: oracle reads passed"),
+    ("gates.validity.semantic_checks_passed",  "higher_better", 0, "validity: semantic checks passed"),
+    ("gates.validity.semantic_checks_total",   "higher_better", 0, "validity: semantic checks declared"),
     ("gates.identity.checks_joined",           "higher_better", 0, "identity: cross-artifact joins holding"),
     ("gates.inertness.formats_marked",         "higher_better", 0, "inertness: formats carrying a marker"),
+    ("gates.inertness.binary_safety_checks_passed", "higher_better", 0, "inertness: binary safety checks passed"),
+    ("gates.inertness.binary_safety_checks_total", "higher_better", 0, "inertness: binary safety checks declared"),
     ("gates.solvability.reference_solver_score", "higher_better", 0, "solvability: reference solver"),
     ("gates.solvability.adversarial_floor",    "lower_better",  0, "solvability: adversarial floor"),
     ("gates.solvability.footprint_solver_score", "lower_better", 0, "solvability: footprint adversary"),
@@ -100,7 +104,7 @@ def _status_block(reports, gate_names, *, experimental: bool) -> dict:
 
 
 def build_scorecard(reports, *, artifactforge_version: str, git_commit: str,
-                    sqlite_version: str, honest_gaps=None, measurement=None) -> dict:
+                    sqlite_version: str, honest_gaps=None, measurement=None, source=None) -> dict:
     """Assemble the committed artifact from a run of the gates."""
     reports = list(reports)
     gates = {r.name: r.as_scorecard_block() for r in reports}
@@ -114,6 +118,10 @@ def build_scorecard(reports, *, artifactforge_version: str, git_commit: str,
             "artifactforge_version": artifactforge_version,
             "git_commit": git_commit,
             "sqlite_version": sqlite_version,
+            "source": dict(source or {
+                "git_commit": git_commit,
+                "attestation_available": False,
+            }),
         },
         "gates": gates,
         "status": {

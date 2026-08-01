@@ -39,11 +39,11 @@ wrote 4 scenarios to suite (holdout suite)
   key: suite/_key/key.hex
        Lose it and this suite can never be regenerated or audited. Never commit it.
 
-$ ls suite/scenarios/af1_a5pq7iqoumv3uglr
-7zFM.exe                  Amcache.hve       javaw.exe    putty.exe
-7ZFM.EXE-577AB7E4.pf      certmgr_svc.exe   notepad.exe  PUTTY.EXE-F1C28886.pf
-CERTMGR_SVC.EXE-8773131B.pf                 Software.run.hive
-TASKENG_X.EXE-509F1868.pf
+$ ls suite/scenarios/af1_o272arbuftpknuil
+Amcache.hve                       CODE.EXE-39F3B2A8.pf   javaw.exe
+audacity.exe                      code.exe               JAVAW.EXE-1DA9F6E6.pf
+CHROME_HELPER.EXE-2DB20320.pf     cmd.exe                smartscrn.exe
+SMARTSCRN.EXE-0818EF6A.pf         Software.run.hive
 
 $ artifactforge bench solve suite --out answers.jsonl
 wrote 4 submissions to answers.jsonl
@@ -70,10 +70,11 @@ Answering anything about it requires reading two artifacts together, which is th
 ## What's in it
 
 - **Windows artifacts** — a synthetic PE with a real, seed-deterministic IMPHASH that pefile
-  computes; registry hives carrying Run-key persistence and Amcache installation records
+  and LIEF independently confirm from the import table; registry hives carrying Run-key
+  persistence and Amcache installation records
   (for declared resident answer-bearing records, `FileId` is derived from the emitted file's
   SHA1); uncompressed SCCA v17 prefetch that libyal's `libscca` opens, which means plaso reads
-  it.
+  it, with its XP path hash independently re-derived from the modeled device path.
 - **macOS artifacts** — a hand-assembled arm64 Mach-O with a real symhash and a real ad-hoc
   code signature whose cdhash `codesign -d` reports; knowledgeC, TCC and QuarantineEventsV2
   databases; the `com.apple.quarantine` xattr value as a sidecar file; LaunchAgent plists.
@@ -178,7 +179,10 @@ choice. The committed regression measurement uses a deterministic, public-keyed
 
 Those three numbers are the ones in `fidelity-scorecard.json`, measured at `--n 40`.
 Reproduce them exactly with `artifactforge scorecard --n 40`. The scorecard records the
-corpus derivation and marks it `reportable: false`: its published key makes it useful for
+full source commit and tree plus digests of `pyproject.toml` and `uv.lock`; release output is
+refused from a dirty worktree. `--allow-dirty` exists only for non-release investigation and
+binds the resulting card to the complete tracked diff and every untracked byte. It also records
+the corpus derivation and marks it `reportable: false`: its published key makes it useful for
 repeatable regression, never as a secret hold-out score. Real benchmark evaluation still uses
 a fresh key that never leaves the evaluator. Quoting a different corpus's figure here is how
 a document starts lying slowly.
@@ -203,7 +207,7 @@ files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.0.2, nothing published to PyPI. **Gates 1 to 3 have no
+Early and experimental, version 0.0.3, nothing published to PyPI. **Gates 1 to 3 have no
 failures; generator-assurance status is `gap` because two oracle gaps remain. Benchmark-validity
 status is `fail` because Gate 4 is red.** `fidelity-scorecard.json` at the repository root is
 the honest record — it ships whatever it actually reads, and right now that includes a

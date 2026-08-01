@@ -221,8 +221,21 @@ def _superblob(ident: str, code_limit: int, page_hashes, exec_seg_limit: int) ->
 
 def cdhash_of(blob: bytes) -> str:
     """CDHash as codesign(1) prints it: sha256 of the CodeDirectory blob, truncated to 20 bytes."""
-    cd_off = struct.unpack_from(">I", blob, 16)[0]
-    cd_len = struct.unpack_from(">I", blob, cd_off + 4)[0]
+    try:
+        magic, total, count = struct.unpack_from(">III", blob, 0)
+        if magic != CSMAGIC_EMBEDDED_SIGNATURE or not (12 + count * 8 <= total <= len(blob)):
+            return ""
+        offsets = [relative for slot, relative in
+                   (struct.unpack_from(">II", blob, 12 + index * 8)
+                    for index in range(count)) if slot == 0]
+        if len(offsets) != 1:
+            return ""
+        cd_off = offsets[0]
+        cd_magic, cd_len = struct.unpack_from(">II", blob, cd_off)
+        if cd_magic != CSMAGIC_CODEDIRECTORY or cd_len < 8 or cd_off + cd_len > total:
+            return ""
+    except struct.error:
+        return ""
     return hashlib.sha256(blob[cd_off:cd_off + cd_len]).hexdigest()[:40]
 
 
@@ -366,5 +379,28 @@ def cdhash_of_file(data: bytes) -> str:
     This is the value `codesign -d --verbose=4` prints as CDHash, and the identity Apple's
     own loader keys on — a second, independent handle on the same bytes alongside the SHA256.
     """
-    idx = data.find(struct.pack(">I", CSMAGIC_EMBEDDED_SIGNATURE))
-    return cdhash_of(data[idx:]) if idx >= 0 else ""
+    try:
+        magic, _cpu, _subtype, _filetype, ncmds, sizeofcmds, _flags, _reserved = \
+            struct.unpack_from("<IiiIIIII", data, 0)
+        if magic != MH_MAGIC_64 or 32 + sizeofcmds > len(data):
+            return ""
+        offset = 32
+        signatures = []
+        for _ in range(ncmds):
+            command, command_size = struct.unpack_from("<II", data, offset)
+            if command_size < 8 or offset + command_size > 32 + sizeofcmds:
+                return ""
+            if command == LC_CODE_SIGNATURE:
+                if command_size != 16:
+                    return ""
+                _command, _size, dataoff, datasize = struct.unpack_from("<IIII", data, offset)
+                signatures.append((dataoff, datasize))
+            offset += command_size
+        if offset != 32 + sizeofcmds or len(signatures) != 1:
+            return ""
+        dataoff, datasize = signatures[0]
+        if dataoff + datasize > len(data):
+            return ""
+    except struct.error:
+        return ""
+    return cdhash_of(data[dataoff:dataoff + datasize])

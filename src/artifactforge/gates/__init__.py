@@ -16,7 +16,7 @@ The sixth is the one that matters. A gate that has never been observed to fail p
 nothing, and this repository previously shipped tests that stayed green when the data they
 checked was replaced with the literal string GARBAGE-NOT-A-SHA1.
 
-  Gate 1  validity     Do the declared parser oracles read each classified artifact?
+  Gate 1  validity     Do parser and semantic oracles validate each classified artifact?
   Gate 2  identity     Do the declared answer-bearing pivots agree with emitted bytes?
   Gate 3  inertness    Are binaries payload-free and classified formats marked synthetic?
   Gate 4  solvability  Are the benchmark's answers recovered from evidence, or derivable?

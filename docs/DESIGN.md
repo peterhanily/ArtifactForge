@@ -74,7 +74,7 @@ scorecard's `honest_gaps` so they cannot be forgotten. Anything undeclared is a 
 
 ### Gate 1 — validity
 
-*Do the declared parser oracles read each classified artifact?*
+*Do declared parser and semantic oracles validate each classified artifact?*
 
 PE, Mach-O, registry hive and prefetch each require two independently implemented parsers,
 because one permissive parser can hide what a strict one rejects. Every prefetch file this
@@ -85,6 +85,13 @@ A missing oracle is a **failure, never a skip**: a skipped check exits 0 and rea
 like a passing one. Where no genuinely independent second implementation exists — SQLite
 databases and binary plists are read back by the library that wrote them — that is a declared
 gap, not silent credit.
+
+Opening a container is necessary but not sufficient for structural claims. For PE, pefile and
+LIEF independently enumerate the named import sequence, confirm pefile/VT-normalised IMPHASH
+semantics and then agree with each other. For v17 prefetch, a separate raw-structure verifier
+recomputes the XP path hash from the referenced UTF-16LE device path and binds it to the header
+and filename. Parseable mutations that remove the PE import directory or change the embedded
+prefetch hash turn this gate red.
 
 ### Gate 2 — identity
 
@@ -105,8 +112,11 @@ synthetic?*
 Generated binaries reproduce the forensic **signal** — a real import table, a real symbol
 table, real content and structural hashes — without a payload. PE `.text` is `ret` plus zero
 padding and the DOS stub is the fixed print-and-exit stub; Mach-O `__text` is
-`mov w0,#0 ; ret`. Gate 3 checks the emitted bytes, although its current Mach-O check recognizes
-the permitted byte sequence rather than independently enumerating every executable section.
+`mov w0,#0 ; ret`. For PE, Gate 3 independently pins the DOS profile, sole executable section,
+entry point, import-only data directories and modeled system DLLs. For Mach-O it fixes the
+load-command, library, segment and section profile, requires `LC_MAIN` to name the sole
+instruction entry, and independently verifies the CodeDirectory's page hashes and exact
+pre-signature coverage boundary.
 Every classified structured format carries an in-band `ARTIFACTFORGE` anchor. Plain sidecars,
 including the quarantine xattr value, are not counted by that marker gate. Domains must be RFC
 2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that might be
@@ -147,3 +157,9 @@ scorecard saying `pass` on day one would be the least believable thing in the re
 Regression is enforced by one declarative table, with tolerance 0 on every count: an artifact
 that used to be readable and now is not, or a join that used to hold and now does not, is a
 regression at any magnitude.
+
+A release scorecard is also a source attestation. It records the full Git commit and tree and
+digests of the package metadata and lock file, and the CLI refuses to write it from a dirty
+worktree. The explicit `--allow-dirty` escape hatch is for diagnosis, never release: its source
+record is marked unclean and binds the complete tracked binary diff plus every untracked path
+and byte to one digest.

@@ -21,8 +21,10 @@ and limitations documented in
   header, no relocations, no TLS. The internals do not resemble any real compiler's output,
   and pefile will note that a large fraction of the file is zero bytes.
 - **IMPHASH is real.** A genuine, seed-deterministic import table across common DLLs
-  (kernel32, advapi32, user32, ws2_32), so pefile computes a stable IMPHASH. The imported
-  functions are a plausible selection, not a real program's.
+  (kernel32, advapi32, user32, ws2_32). pefile and LIEF independently enumerate the DLL and
+  function sequence, each confirms pefile/VT-normalised IMPHASH semantics, and Gate 1 requires
+  their results to agree. The imported functions are a plausible selection, not a real
+  program's.
 - **`TimeDateStamp` is pinned to 0** so the bytes never depend on a clock.
 - **The MS-DOS header and stub are the standard MSVC ones**, byte for byte, including the
   "This program cannot be run in DOS mode." message. A PE without them is trivially
@@ -65,17 +67,18 @@ and limitations documented in
 ## prefetch
 
 - **Uncompressed SCCA v17, on a host that says Windows 10.** Format version 17 is the
-  Windows Vista and 7 layout. A real `10.0.19045` host emits version 30, MAM/LZXPRESS-
-  compressed, and a responder who checks the version against the `HostProfile` will see they
-  disagree. v17 is emitted because it is uncompressed and open-source parsers read it
-  directly; compression is out of scope, and version consistency between the profile and the
-  artifact is not enforced anywhere. This is the largest single fidelity gap in the Windows
-  set.
+  Windows XP and Server 2003 layout. A real `10.0.19045` host emits version 30,
+  MAM/LZXPRESS-compressed, and a responder who checks the version against the `HostProfile`
+  will see them disagree. v17 is emitted because it is uncompressed and open-source parsers
+  read it directly; compression is out of scope, and version consistency between the profile
+  and the artifact is not enforced anywhere. This is the largest single fidelity gap in the
+  Windows set.
 - **Single volume, no directory strings, no file references.** A real record carries the full
   directory list and the MFT references of everything the process touched.
-- **Bespoke name hash.** The hash embedded in the filename and header is the SCCA Vista
-  algorithm seeded with 0 rather than 314159, so it does not match what Windows would compute
-  for the same path.
+- **The SCCA XP path hash is real.** It hashes the upper-case UTF-16LE device path using the
+  v17-era algorithm; the multiply-by-37 `ConvKey` is only its intermediate value. Gate 1
+  independently re-parses the modeled path and binds the resulting hash to both the header
+  and on-disk filename.
 - **Pinned run time and volume serial.**
 - **Marked.** A reserved entry in the filename strings array.
 

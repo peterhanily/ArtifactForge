@@ -15,6 +15,7 @@ checked redness would pass without the mutation doing anything at all.
 import dataclasses
 import hashlib
 import os
+import struct
 
 import pytest
 
@@ -159,6 +160,46 @@ def test_inertness_reddens_when_the_code_section_is_not_inert(tmp_path):
     assert any("not inert" in f for f in new), new
 
 
+def test_inertness_reddens_when_pe_entry_point_skips_ret(tmp_path):
+    """MUTATION: keep a parseable PE and its inert bytes, but enter after the return."""
+    import pefile
+
+    task = _windows(tmp_path)
+    before = inertness.run(task.directory)
+    assert before.ok
+    path = _persisted_pe(task)
+    parsed = pefile.PE(path)
+    entry_offset = parsed.OPTIONAL_HEADER.get_field_absolute_offset("AddressOfEntryPoint")
+    with open(path, "r+b") as file:
+        file.seek(entry_offset)
+        file.write(struct.pack("<I", parsed.OPTIONAL_HEADER.AddressOfEntryPoint + 1))
+
+    assert pefile.PE(path).NT_HEADERS.Signature == 0x4550
+    after = inertness.run(task.directory)
+    assert (after.metrics["binary_safety_checks_passed"]
+            == after.metrics["binary_safety_checks_total"] - 1)
+    new = _new_fails(before, after)
+    assert any("AddressOfEntryPoint" in failure for failure in new), new
+
+
+def test_inertness_reddens_when_pe_imports_an_unmodeled_dll(tmp_path):
+    """MUTATION: a loaded DLL can run before entry, so its name is part of safety policy."""
+    import pefile
+
+    task = _windows(tmp_path)
+    before = inertness.run(task.directory)
+    path = _persisted_pe(task)
+    with open(path, "rb") as file:
+        data = file.read()
+    assert b"kernel32.dll" in data
+    with open(path, "wb") as file:
+        file.write(data.replace(b"kernel32.dll", b"evil0000.dll", 1))
+
+    assert pefile.PE(path).DIRECTORY_ENTRY_IMPORT[0].dll == b"evil0000.dll"
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("system DLL imports" in failure for failure in new), new
+
+
 def test_inertness_reddens_when_the_dos_stub_is_tampered_with(tmp_path):
     """MUTATION: replace the standard MS-DOS stub with different 16-bit code.
 
@@ -179,6 +220,22 @@ def test_inertness_reddens_when_the_dos_stub_is_tampered_with(tmp_path):
     assert any("MS-DOS stub" in f for f in new), new
 
 
+def test_inertness_reddens_when_dos_entry_registers_change(tmp_path):
+    """MUTATION: redirect 16-bit execution while retaining the familiar DOS-stub bytes."""
+    task = _windows(tmp_path)
+    before = inertness.run(task.directory)
+    path = _persisted_pe(task)
+    with open(path, "r+b") as file:
+        file.seek(0x14)  # e_ip
+        file.write(struct.pack("<H", 0x10))
+
+    import pefile
+
+    assert pefile.PE(path).NT_HEADERS.Signature == 0x4550
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("MS-DOS stub and header" in failure for failure in new), new
+
+
 def test_inertness_reddens_when_a_bundle_id_names_a_real_vendor(tmp_path):
     """MUTATION: give a LaunchAgent a real vendor's reverse-DNS identifier.
 
@@ -197,6 +254,194 @@ def test_inertness_reddens_when_a_bundle_id_names_a_real_vendor(tmp_path):
 
     new = _new_fails(before, inertness.run(task.directory))
     assert any("real vendor" in f for f in new), new
+
+
+def _subject_macho(task):
+    return os.path.join(task.directory, task.join["subject"]["bundle_id"])
+
+
+def _macho_command(data: bytes, wanted: int) -> int:
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    offset = 32
+    for _ in range(ncmds):
+        command, size = struct.unpack_from("<II", data, offset)
+        if command == wanted:
+            return offset
+        offset += size
+    raise AssertionError(f"load command {wanted:#x} not found")
+
+
+def _macho_text_offset(data: bytes) -> int:
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    offset = 32
+    for _ in range(ncmds):
+        command, size = struct.unpack_from("<II", data, offset)
+        if command == 0x19:  # LC_SEGMENT_64
+            nsects = struct.unpack_from("<I", data, offset + 64)[0]
+            section_offset = offset + 72
+            for _section in range(nsects):
+                name = data[section_offset:section_offset + 16].rstrip(b"\x00")
+                segment = data[section_offset + 16:section_offset + 32].rstrip(b"\x00")
+                if (segment, name) == (b"__TEXT", b"__text"):
+                    return struct.unpack_from("<I", data, section_offset + 48)[0]
+                section_offset += 80
+        offset += size
+    raise AssertionError("__TEXT,__text not found")
+
+
+def _macho_section_header_offset(data: bytes, wanted_segment: bytes, wanted_name: bytes) -> int:
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    offset = 32
+    for _ in range(ncmds):
+        command, size = struct.unpack_from("<II", data, offset)
+        if command == 0x19:  # LC_SEGMENT_64
+            nsects = struct.unpack_from("<I", data, offset + 64)[0]
+            section_offset = offset + 72
+            for _section in range(nsects):
+                name = data[section_offset:section_offset + 16].rstrip(b"\x00")
+                segment = data[section_offset + 16:section_offset + 32].rstrip(b"\x00")
+                if (segment, name) == (wanted_segment, wanted_name):
+                    return section_offset
+                section_offset += 80
+        offset += size
+    raise AssertionError(f"section {wanted_segment!r},{wanted_name!r} not found")
+
+
+def _rehash_macho_code_slots(data: bytearray) -> None:
+    signature_command = _macho_command(data, 0x1D)
+    signature_offset = struct.unpack_from("<I", data, signature_command + 8)[0]
+    count = struct.unpack_from(">I", data, signature_offset + 8)[0]
+    for index in range(count):
+        slot, relative_offset = struct.unpack_from(">II", data, signature_offset + 12 + index * 8)
+        if slot != 0:
+            continue
+        code_directory = signature_offset + relative_offset
+        hash_offset = struct.unpack_from(">I", data, code_directory + 16)[0]
+        n_code = struct.unpack_from(">I", data, code_directory + 28)[0]
+        code_limit = struct.unpack_from(">I", data, code_directory + 32)[0]
+        hash_size = data[code_directory + 36]
+        page_size = 1 << data[code_directory + 39]
+        for page in range(n_code):
+            start = page * page_size
+            digest = hashlib.sha256(data[start:min(start + page_size, code_limit)]).digest()
+            target = code_directory + hash_offset + page * hash_size
+            data[target:target + hash_size] = digest
+        return
+    raise AssertionError("CodeDirectory slot not found")
+
+
+def _assert_macho_remains_parseable(path):
+    """The mutation changes meaning, not the outer format read by Gate 1's two oracles."""
+    import lief
+    from macholib.MachO import MachO
+
+    assert lief.parse(path) is not None
+    assert MachO(path).headers
+
+
+def test_inertness_reddens_when_macho_entry_skips_the_exit_status_instruction(tmp_path):
+    """MUTATION: LC_MAIN points at ``ret`` while the permitted bytes remain elsewhere.
+
+    A substring search stays green under this mutation. A structural safety proof must bind
+    the declared entry point to the first instruction of the only executable section.
+    """
+    task = _macos(tmp_path, "macho-entry")
+    before = inertness.run(task.directory)
+    assert before.ok
+    assert (before.metrics["binary_safety_checks_passed"]
+            == before.metrics["binary_safety_checks_total"])
+    path = _subject_macho(task)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    main_offset = _macho_command(data, 0x80000028)  # LC_MAIN
+    entryoff = struct.unpack_from("<Q", data, main_offset + 8)[0]
+    struct.pack_into("<Q", data, main_offset + 8, entryoff + 4)
+    with open(path, "wb") as f:
+        f.write(data)
+
+    _assert_macho_remains_parseable(path)
+    after = inertness.run(task.directory)
+    assert (after.metrics["binary_safety_checks_passed"]
+            == after.metrics["binary_safety_checks_total"] - 1)
+    new = _new_fails(before, after)
+    assert any("LC_MAIN points" in failure for failure in new), new
+
+
+def test_inertness_reddens_when_macho_entry_code_changes_semantics(tmp_path):
+    """MUTATION: change ``mov w0,#0`` to the parseable ``mov w0,#1`` instruction."""
+    task = _macos(tmp_path, "macho-code")
+    before = inertness.run(task.directory)
+    assert before.ok
+    assert (before.metrics["binary_safety_checks_passed"]
+            == before.metrics["binary_safety_checks_total"])
+    path = _subject_macho(task)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    text_offset = _macho_text_offset(data)
+    data[text_offset:text_offset + 4] = b"\x20\x00\x80\x52"  # mov w0, #1
+    with open(path, "wb") as f:
+        f.write(data)
+
+    _assert_macho_remains_parseable(path)
+    after = inertness.run(task.directory)
+    assert (after.metrics["binary_safety_checks_passed"]
+            == after.metrics["binary_safety_checks_total"] - 1)
+    new = _new_fails(before, after)
+    assert any("entry bytes" in failure for failure in new), new
+
+
+def test_inertness_reddens_when_macho_signature_stops_covering_the_file(tmp_path):
+    """MUTATION: shorten CodeDirectory's codeLimit by one, leaving a parseable Mach-O."""
+    task = _macos(tmp_path, "macho-signature")
+    before = inertness.run(task.directory)
+    assert before.ok
+    assert (before.metrics["binary_safety_checks_passed"]
+            == before.metrics["binary_safety_checks_total"])
+    path = _subject_macho(task)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    signature_command = _macho_command(data, 0x1D)  # LC_CODE_SIGNATURE
+    signature_offset = struct.unpack_from("<I", data, signature_command + 8)[0]
+    count = struct.unpack_from(">I", data, signature_offset + 8)[0]
+    code_directory = None
+    for index in range(count):
+        slot, relative_offset = struct.unpack_from(">II", data, signature_offset + 12 + index * 8)
+        if slot == 0:
+            code_directory = signature_offset + relative_offset
+            break
+    assert code_directory is not None
+    struct.pack_into(">I", data, code_directory + 32, signature_offset - 1)
+    with open(path, "wb") as f:
+        f.write(data)
+
+    _assert_macho_remains_parseable(path)
+    after = inertness.run(task.directory)
+    assert (after.metrics["binary_safety_checks_passed"]
+            == after.metrics["binary_safety_checks_total"] - 1)
+    new = _new_fails(before, after)
+    assert any("coverage does not end" in failure for failure in new), new
+
+
+def test_inertness_reddens_when_macho_got_becomes_an_initializer_table(tmp_path):
+    """MUTATION: make bound pointers pre-main initializers, then repair signature hashes."""
+    task = _macos(tmp_path, "macho-initializer")
+    before = inertness.run(task.directory)
+    assert before.ok
+    path = _subject_macho(task)
+    with open(path, "rb") as file:
+        data = bytearray(file.read())
+    got = _macho_section_header_offset(data, b"__DATA_CONST", b"__got")
+    struct.pack_into("<I", data, got + 64, 0x9)  # S_MOD_INIT_FUNC_POINTERS
+    _rehash_macho_code_slots(data)
+    with open(path, "wb") as file:
+        file.write(data)
+
+    _assert_macho_remains_parseable(path)
+    after = inertness.run(task.directory)
+    assert (after.metrics["binary_safety_checks_passed"]
+            == after.metrics["binary_safety_checks_total"] - 1)
+    new = _new_fails(before, after)
+    assert any("section profile" in failure for failure in new), new
 
 
 # --- Gate 4: both directions, and the control -----------------------------------------

@@ -49,13 +49,12 @@ verdict — that currently reads `fail`, because of Gate 4 above.
   format.
   Candidates worth evaluating: `mac_apt`'s readers, Apple's `plutil` (macOS-only, so it cannot
   be the CI oracle), or a from-scratch bplist reader whose only job is to disagree.
-- **The prefetch name hash is bespoke.** It is the SCCA Vista algorithm seeded with 0 rather
-  than 314159, so it is not the value Windows would compute for the same path. libscca never
-  validates it, so nothing rejects the file — but anyone who recomputes the real algorithm
-  will notice, and it is listed in `KNOWN_TELLS.md` for that reason.
-
 ## Not built
 
+- **Windows 10 prefetch.** The current uncompressed SCCA v17 writer and XP path hash agree
+  with each other, but the modeled host reports Windows 10. A version-consistent replacement
+  requires a v30 layout plus deterministic MAM/LZXPRESS compression, with independent parser
+  and semantic mutation controls retained.
 - **Linux.** No ELF writer, no `HostProfile` constructor, no scene. The layering supports it —
   `content/` would gain `elf.py` beside `pe.py` and `macho.py`, and Gate 1 would need two ELF
   parsers, of which `pyelftools` and LIEF are the obvious pair. This is the largest missing

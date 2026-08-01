@@ -29,6 +29,10 @@ jobs:
         python-version: ["3.11", "3.12"]   # 3.11 is the declared floor — test it, don't assume it
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The committed scorecard cites its producer commit, normally the parent of the card
+          # commit. Its provenance test must be able to read that object in CI and PR merge refs.
+          fetch-depth: 0
       # uv is installed with pip rather than through astral-sh/setup-uv, for two reasons: the
       # action still targets Node 20 and so annotates every job with a deprecation warning,
       # and this removes a third-party action from the supply chain of a repository whose
@@ -66,7 +70,7 @@ jobs:
           PY
 
       - name: Lint
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check .
 
       - name: Tests (real parsers over freshly generated artifacts)
         run: uv run pytest -q -rs
@@ -146,6 +150,103 @@ jobs:
           diff -r out/a/scenarios out/b/scenarios
           diff -r out/a/_answers out/b/_answers
           echo "byte-identical across runs"
+
+  # Linux exercises the byte-level verifier on every supported Python. This native lane asks
+  # Apple's own tools the narrower questions only macOS can answer and retains their responses
+  # as JSON. A non-zero spctl result is called a rejection only when the platform positive
+  # control passes; an unavailable assessment service is recorded as inconclusive instead.
+  macos-native:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Native tools (missing means FAIL)
+        run: |
+          for tool in codesign plutil spctl what xattr; do
+            command -v "$tool"
+          done
+          sw_vers
+          uname -m
+
+      - name: Install uv and ArtifactForge
+        run: |
+          python3 -m pip install --quiet --user "uv==0.11.17"
+          USER_BASE="$(python3 -m site --user-base)"
+          echo "$USER_BASE/bin" >> "$GITHUB_PATH"
+          "$USER_BASE/bin/uv" --version
+          "$USER_BASE/bin/uv" python install 3.12
+          "$USER_BASE/bin/uv" venv --python 3.12
+          "$USER_BASE/bin/uv" pip install -e ".[dev]"
+
+      - name: Structural Mach-O safety mutations
+        run: |
+          uv run pytest -q -rs tests/test_macho.py tests/test_native_macos_attestation.py
+          uv run pytest -q -rs tests/test_gate_mutations.py -k macho
+
+      - name: Gate 3 over the five committed Mach-O binaries
+        run: >-
+          uv run artifactforge gate inertness
+          --scene samples/02-macos-quarantined-app
+
+      - name: Apple codesign, plutil and Gatekeeper attestation
+        run: |
+          uv run python scripts/attest_macos_native.py \
+            --scene samples/02-macos-quarantined-app \
+            --out native-macos-attestation.json
+          uv run python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("native-macos-attestation.json")
+          raw = path.read_bytes()
+          report = json.loads(raw)
+          canonical = (json.dumps(
+              report,
+              allow_nan=False,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ) + "\n").encode()
+          assert raw == canonical
+          assert report["schema"] == "artifactforge-native-macos-attestation-v2"
+          assert report["schema_version"] == 2
+          assert report["generated_at_utc"].endswith("Z")
+          assert report["verdict"] == "pass", report["failures"]
+          source = report["producer"]["source"]
+          assert source["worktree_clean"] is True
+          assert len(source["git_commit"]) == 40
+          assert len(source["git_tree"]) == 40
+          assert report["producer"]["source_post_attestation"]["unchanged"] is True
+          assert report["producer"]["github_run"]["git_sha"] == source["git_commit"]
+          assert report["platform"]["product_version"]["stdout"]
+          assert report["platform"]["build_version"]["stdout"]
+          scene = report["scene"]
+          assert not Path(scene["path"]).is_absolute()
+          assert scene["manifest"]["file_count"] == len(scene["manifest"]["files"])
+          assert scene["post_attestation"]["tree_sha256"] == scene["manifest"]["tree_sha256"]
+          assert scene["post_attestation"]["unchanged"] is True
+          validation_tools = report["tools"]["validation_tools"]
+          assert sorted(validation_tools) == ["codesign", "plutil", "spctl", "xattr"]
+          for evidence in validation_tools.values():
+              assert len(evidence["sha256"]) == 64
+              assert evidence["size"] > 0
+              assert evidence["version_evidence"]["apple_build_markers"]
+          assert len(report["code_signatures"]) == 5
+          assert len(report["property_lists"]) == 3
+          assert len(report["gatekeeper"]["assessments"]) == 10
+          assert not any(a["conclusion"] == "accepted_unexpectedly"
+                         for a in report["gatekeeper"]["assessments"])
+          print(report["gatekeeper"]["verdict"])
+          PY
+
+      - name: Retain native attestation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-attestation
+          path: native-macos-attestation.json
+          if-no-files-found: ignore
 
   # EvidenceForge is a CI-only development tool, never a declared dependency: it is not on
   # PyPI, so naming it would force a git URL into the metadata and hatchling refuses to build

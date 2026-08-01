@@ -1,99 +1,64 @@
 #!/usr/bin/env bash
-# What do real scanners make of what we generate?
+# Produce or check a machine-readable scanner attestation.
 #
-# Committing malware-shaped binaries to a public repository means they will be crawled,
-# downloaded and scanned. This runs whatever scanners are on the machine against a fresh
-# corpus. ClamAV has an EICAR control and XProtect a crafted hit plus near miss. The community
-# YARA path reports compilation and observed matches but does not yet enforce a dedicated
-# positive control; Gatekeeper likewise remains a manual observation. Do not describe either
-# as controlled until that changes.
-#
-# A missing scanner is reported as SKIPPED and the script still exits 0: this is a
-# pre-publication check run by a person, not a CI gate. Detections exit 1.
-# NOT pipefail. Every scanner here exits non-zero precisely when it DOES detect something —
-# clamscan 1, spctl 3 — so under pipefail a `scanner | grep -q` condition takes its status
-# from the scanner rather than from grep, and inverts. Output is captured into a variable and
-# tested afterwards, so the exit code of the scanner is never mistaken for the answer.
-set -u
+# A clean line on a terminal is not evidence. Run mode binds every result to an exact corpus
+# manifest, records engine/rule identity, command, UTC time, control, coverage, exclusions,
+# errors and non-proof boundary, then immediately applies the same fail-closed checker used by
+# check mode. Missing scanners, missing controls, partial rule loads and scan errors are red —
+# never SKIPPED. Default Linux tests use fixtures/fakes and do not require platform scanners.
+set -euo pipefail
 cd "$(dirname "$0")/.."
+
 AF=${AF:-.venv/bin/artifactforge}
 PY=${PY:-.venv/bin/python}
+
+usage() {
+  echo "usage: scripts/scan-exposure.sh --output ATTESTATION.json" >&2
+  echo "       scripts/scan-exposure.sh --check ATTESTATION.json [--corpus DIR]" >&2
+  echo "run mode also reads YARA_RULES=/path/to/community/rules" >&2
+}
+
+if [ "${1:-}" = "--check" ]; then
+  [ "$#" -ge 2 ] || { usage; exit 2; }
+  RECORD=$2
+  shift 2
+  exec "$PY" scripts/scanner_attestation.py check "$RECORD" "$@"
+fi
+
+if [ "${1:-}" != "--output" ] || [ "$#" -ne 2 ]; then
+  usage
+  exit 2
+fi
+OUTPUT=$2
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-FAILED=0
 
-echo "== building a corpus: a fresh 20-scenario batch plus the committed gallery =="
+echo "== building exact corpus: fresh 20-scenario batch plus committed gallery =="
 "$AF" bench new "$WORK/batch" --n 20 >/dev/null
 mkdir -p "$WORK/corpus"
-find "$WORK/batch/scenarios" -type f -exec cp {} "$WORK/corpus/" \; 2>/dev/null
-cp samples/*/* "$WORK/corpus/" 2>/dev/null
-rm -f "$WORK/corpus/README.md" "$WORK/corpus/ARTIFACT_ANSWERS.json"
-echo "   $(ls "$WORK/corpus" | wc -l | tr -d ' ') files"
+mkdir -p "$WORK/corpus/generated" "$WORK/corpus/gallery"
+cp -R "$WORK/batch/scenarios/." "$WORK/corpus/generated/"
+cp -R samples/. "$WORK/corpus/gallery/"
+find "$WORK/corpus" -type f \( \
+  -name README.md -o -name ARTIFACT_ANSWERS.json -o -name .DS_Store \
+\) -delete
 
-# ---------------------------------------------------------------- ClamAV
-echo
-echo "== ClamAV =="
-if command -v clamscan >/dev/null; then
-  # EICAR is the industry-standard test string: universally detected, harmless by design.
-  printf 'X5O!P%%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' \
-    > "$WORK/eicar.com"
-  CONTROL=$(clamscan --no-summary "$WORK/eicar.com" 2>&1)
-  if [[ "$CONTROL" == *FOUND* ]]; then
-    echo "   control: EICAR detected — the scanner works"
-    HITS=$(clamscan -r --no-summary "$WORK/corpus" 2>&1 | grep FOUND || true)
-    if [ -n "$HITS" ]; then
-      echo "$HITS" | sed 's/^/   DETECTION /'; FAILED=1
-    else
-      echo "   result:  0 detections across $(ls "$WORK/corpus" | wc -l | tr -d ' ') files"
-    fi
-  else
-    echo "   SKIPPED: clamscan did not detect EICAR, so a clean result would mean nothing."
-    echo "            Run freshclam to download signatures."
-  fi
-else
-  echo "   SKIPPED: clamscan not installed (brew install clamav && freshclam)"
+EXPECTED=$(find "$WORK/batch/scenarios" samples -type f \
+  ! -name README.md ! -name ARTIFACT_ANSWERS.json ! -name .DS_Store | wc -l | tr -d ' ')
+ACTUAL=$(find "$WORK/corpus" -type f | wc -l | tr -d ' ')
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  echo "corpus copy lost files: expected $EXPECTED, found $ACTUAL" >&2
+  exit 1
 fi
+echo "   $ACTUAL collision-free files"
 
-# ---------------------------------------------------------------- Apple XProtect
-echo
-echo "== Apple XProtect (the signature set macOS actually scans downloads with) =="
-"$PY" scripts/scan_yara.py --xprotect --corpus "$WORK/corpus" || FAILED=1
+# A missing rule checkout is passed as a nonexistent path. The producer records that as an
+# error result and the checker fails; it is never silently omitted from the required set.
+YARA_RULE_ROOT=${YARA_RULES:-"$WORK/missing-community-yara-rules"}
 
-# ---------------------------------------------------------------- community YARA
-echo
-echo "== community YARA rules =="
-if [ -d "${YARA_RULES:-}" ]; then
-  "$PY" scripts/scan_yara.py --rules "$YARA_RULES" --corpus "$WORK/corpus" || FAILED=1
-else
-  echo "   SKIPPED: set YARA_RULES to a checkout of github.com/Yara-Rules/rules"
-fi
-
-# ---------------------------------------------------------------- Gatekeeper
-echo
-echo "== Gatekeeper and codesign (macOS only) =="
-if command -v spctl >/dev/null && command -v codesign >/dev/null; then
-  BIN=$(for f in "$WORK"/corpus/*; do
-          [ "$(head -c4 "$f" | xxd -p)" = "cffaedfe" ] && echo "$f" && break
-        done)
-  if [ -n "$BIN" ]; then
-    cp "$BIN" "$WORK/gk" && chmod +x "$WORK/gk"
-    if codesign -v "$WORK/gk" 2>/dev/null; then
-      echo "   codesign: signature valid on disk"
-    else
-      echo "   codesign: INVALID — the in-process signature is wrong"; FAILED=1
-    fi
-    ASSESS=$(spctl -a -t execute "$WORK/gk" 2>&1)
-    if [[ "$ASSESS" == *rejected* ]]; then
-      echo "   spctl:    REJECTED in this run — a dated host observation, not a portable guarantee"
-    else
-      echo "   spctl:    $ASSESS"
-      echo "             ACCEPTED is unexpected for an ad-hoc signature; investigate"; FAILED=1
-    fi
-  fi
-else
-  echo "   SKIPPED: not macOS"
-fi
-
-echo
-[ "$FAILED" -eq 0 ] && echo "== no threat-naming finding from the scans that completed ==" || echo "== SOMETHING WAS FLAGGED =="
-exit "$FAILED"
+echo "== running required scanners and writing attestation =="
+"$PY" scripts/scanner_attestation.py run \
+  --corpus "$WORK/corpus" \
+  --yara-rules "$YARA_RULE_ROOT" \
+  --output "$OUTPUT"

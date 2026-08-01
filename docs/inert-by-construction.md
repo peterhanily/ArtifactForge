@@ -24,8 +24,14 @@ Concretely, the generated native code regions are:
 
 PE `.text` contains zero padding after its return; Mach-O `__text` is exactly the two listed
 instructions. Gate 3 reads what actually lands on disk. Its PE check parses `.text` and rejects
-non-zero bytes after `ret`; its current Mach-O check recognizes the permitted eight-byte
-sequence but does not independently enumerate every executable section.
+non-zero bytes after `ret`; its Mach-O check parses the load commands and sections, binds
+`LC_MAIN` to the start of the sole executable instruction section, rejects alternate entry
+points, and permits only zero padding after the two instructions. It also recomputes every
+CodeDirectory page hash and requires coverage to end exactly where `LC_CODE_SIGNATURE` begins.
+The PE check independently pins the complete DOS header/stub profile, sole executable section,
+entry point, import-only data-directory profile and modeled system DLL set. The Mach-O check
+likewise fixes the allowed load commands, segment protections, section types and Apple system
+libraries, so initializer tables and alternate pre-main mechanisms are red.
 
 The DOS stub is the standard one every Windows compiler has emitted for thirty years,
 reproduced byte for byte. It is included because a PE without it is trivially distinguishable
@@ -92,9 +98,10 @@ their present scope rather than treating a weaker check as proof of a stronger p
 
 | Property | Enforced by |
 |---|---|
-| The PE's `.text` is one `ret` and padding | `gates/inertness.py::_pe_code_is_inert` |
+| PE entry point reaches the sole executable `.text`, containing one `ret` and padding | `gates/inertness.py::_pe_code_is_inert` |
 | The PE's MS-DOS stub is the canonical one, byte for byte | same |
-| The permitted Mach-O sequence `mov w0,#0 ; ret` is present | `gates/inertness.py::_macho_code_is_inert` |
+| `LC_MAIN` reaches only `mov w0,#0 ; ret` and zero padding | `gates/inertness.py::_macho_code_is_inert` |
+| The Mach-O CodeDirectory covers every byte before its bounded signature region | `gates/inertness.py::_verify_macho_signature` |
 | Every classified structured format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
 | A format with no declared marker fails | same — an unknown format is a failure, not a skip |
 | No URL outside RFC 2606 | `gates/inertness.py::_indicator_hygiene` |
@@ -102,7 +109,12 @@ their present scope rather than treating a weaker check as proof of a stronger p
 | No bundle identifier under a real vendor's prefix | same, `_REAL_VENDOR_PREFIXES` |
 | Stripping a marker turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_synthetic_marker_is_stripped` |
 | Code past the `ret` turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_code_section_is_not_inert` |
+| Moving the PE entry point past `ret` turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_pe_entry_point_skips_ret` |
+| Replacing a modeled system DLL import with an arbitrary load-before-entry DLL turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_pe_imports_an_unmodeled_dll` |
+| Moving Mach-O `LC_MAIN`, changing its exit instruction, or shortening signature coverage turns Gate 3 red | the three `test_inertness_reddens_when_macho_*` mutations |
+| Reclassifying the Mach-O GOT as a pre-main initializer table turns Gate 3 red after signature repair | `tests/test_gate_mutations.py::test_inertness_reddens_when_macho_got_becomes_an_initializer_table` |
 | Tampering with the DOS stub turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_dos_stub_is_tampered_with` |
+| Redirecting the DOS entry registers while retaining the familiar message bytes turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_dos_entry_registers_change` |
 | A routable domain turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_an_indicator_could_be_real` |
 | A real vendor's bundle id turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_a_bundle_id_names_a_real_vendor` |
 
@@ -112,55 +124,53 @@ notice.
 
 ## What real scanners make of it
 
-Run with `scripts/scan-exposure.sh` against a fresh 20-scenario batch plus the committed
-gallery — 160 files. ClamAV is checked with EICAR, and XProtect with a crafted hit plus a
-one-condition near miss. The community YARA path records how many rule files and rules compile,
-and its descriptive matches show that rules ran, but it does not have a dedicated enforced
-positive-control rule. Gatekeeper and `codesign` are manual platform observations, not CI gates.
+Scanner claims now require a machine-readable attestation. Run the full local workflow with a
+community-rule checkout and an explicit output path:
 
-Measured 2026-07-31 on macOS 26.5.2 (arm64):
+```sh
+YARA_RULES=/path/to/Yara-Rules/rules \
+  scripts/scan-exposure.sh --output scanner-attestation.json
+scripts/scan-exposure.sh --check scanner-attestation.json
+```
 
-| Scanner | Control | Result |
-|---|---|---|
-| **ClamAV 1.5.3**, signature set 28078 (355,577 signatures, same day) | EICAR detected | **0 detections** across 160 files |
-| **Apple XProtect** 5353 — the 451-rule set macOS scans downloads with | a crafted file matches `XProtect_MACOS_71915a8`; a near-miss one condition short does not | **no threat-naming rule fired** |
-| **Yara-Rules community set** — 12,685 rules from 436 files | 436 files compiled; descriptive matches demonstrate active scanning, but are not a dedicated control | **no threat-naming rule fired**; 461 descriptive hits, below |
-| **Gatekeeper** (`spctl -a -t execute`) | manual observation; no positive control recorded | **rejected in this dated run**, with and without a quarantine xattr |
-| **`codesign -v`** | — | signature valid on disk; `codesign -d` reports the cdhash we computed by hand, for all five sample binaries |
+Pass `--corpus DIR` to check mode when the scanned corpus is still available; that recomputes
+every file digest and the canonical corpus-tree SHA256. Without the live directory, check mode
+still validates the record's internally bound file manifest, controls, coverage, timestamps and
+arithmetic. The schema is [`../scanner-attestation.schema.json`](../scanner-attestation.schema.json),
+with scanner-specific fail-closed rules in `scripts/scanner_attestation.py`.
 
-The Gatekeeper result is a dated manual observation, not a portable guarantee. In that run the
-Mach-O was real enough that Apple's own tooling parsed it, validated its ad-hoc signature and
-agreed with the hand-computed cdhash, while `spctl` rejected it as a download. Future claims
-about Gatekeeper need a functioning platform control because `spctl` can also return an
-inconclusive Code Signing subsystem error.
+One record is valid only when all four required observations meet their own evidence rule:
 
-### The 461 community-YARA hits, itemised
-
-None of them names a threat. They are *characteristic* rules — statements about what a file
-contains — and a genuine artifact of the same kind fires them identically:
-
-| Rule | Fires because |
+| Result | Required control and coverage |
 |---|---|
-| `domain`, `url`, `contains_base64` | the artifacts contain domain names and encoded strings, as they must |
-| `IsPE64`, `IsConsole`, `HasOverlay` | the PEs are 64-bit console binaries with an overlay, which is true |
-| `win_registry`, `win_files_operation`, `win_token`, `network_tcp_socket`, `Str_Win32_Winsock2_Library` | the import table names registry, file and winsock APIs, which is the point of having one |
-| `with_sqlite` | the macOS databases are SQLite |
-| `Big_Numbers1` | `Amcache.hve` contains long hex strings, which are the SHA1 `FileId`s a real Amcache also contains |
-| `Browsers` | `Amcache.hve` mentions `chrome.exe`, one of the benign decoy names |
-| `Misc_Suspicious_Strings` | a prefetch record for `CMD.EXE` contains the string `CMD.EXE` |
-| `HasModified_DOS_Message` | *fired on the first run; since fixed — see below* |
+| **ClamAV** | engine and signature versions; EICAR must be detected; ClamAV's own `Scanned files` count must equal the bound corpus count |
+| **XProtect YARA** | yara-python version and exact XProtect-rule-file fingerprint; the selected `XProtect_MACOS_71915a8` rule must match its harmless positive input and reject a one-condition near miss; every corpus file is scanned |
+| **Community YARA** | yara-python version and an exact manifest fingerprint of every selected rule file; a synthetic hit/near-miss controls the **engine only**; selected/loaded/failed rule-file accounting separately proves coverage, and any compile failure or rule match is red |
+| **Gatekeeper** | `spctl`/macOS policy version; a known host platform binary must first be accepted; `codesign -v` must validate the selected manifest-bound Mach-O; the target result must be an explicit rejection |
 
-`HasModified_DOS_Message` was the one hit that meant something. It fired on every PE because
-the DOS header ran straight into the PE header with no stub at all — a fingerprint of the
-generator rather than a property of the artifact. The canonical MSVC header and stub are now
-reproduced byte for byte and the rule no longer fires.
+The community control is intentionally not described as exercising the community corpus. It
+proves that the engine can compile and match a rule. The rule manifest, compile accounting and
+per-file scan coverage answer the separate question of what community rules actually loaded.
+Every match is red. A rule name is not a trustworthy severity policy: an arbitrary supplied
+corpus can call a rule `domain`, `keylogger`, or anything else, so the attester has no global
+name allowlist that can silently downgrade it. Per-file filename, relative path, extension,
+file type and MD5 externals are populated when the selected rules declare them. Transitive
+YARA includes are rejected because bytes outside the selected rule manifest would otherwise
+change compiled semantics without changing its fingerprint.
 
-Making a synthetic binary *less* distinguishable is a trade worth being explicit about. It is
-the right one here because the thing being removed was an accident, not a disclosure: the
-deliberate marking is the in-band `ARTIFACTFORGE` anchor, which every classified structured
-artifact carries and Gate 3 requires. Plain sidecars remain the disclosed exception.
-Distinguishability that comes from an honest marker is a safety property; distinguishability
-that comes from an incomplete header is just a bug that happened to be load-bearing.
+The Gatekeeper entry is explicitly a single-target, single-host observation, not a whole-corpus
+scan or portable policy guarantee. A non-zero `spctl` exit without the acceptance control and
+an explicit `rejected` result is an error, not evidence of rejection. The separate
+`macos-native` CI attestation covers platform parsing and signing checks; it does not substitute
+for this dated scanner attestation.
+
+Earlier prose quoted a 2026-07-31 scan without an exact corpus manifest/digest, complete argv,
+error/exclusion accounting, a real community-YARA control or a Gatekeeper acceptance control.
+Those numbers are therefore not carried forward as attested results and should not be quoted as
+controlled scanner evidence. No replacement record is fabricated here: a publishable result
+starts with a complete run on the host that actually has all four required scanners and rules.
+The resulting JSON is self-reported and unsigned; it binds the stated inputs and observations
+but does not independently authenticate that host or its scanner executables.
 
 ### VirusTotal
 
@@ -170,8 +180,8 @@ Uploading a file to VirusTotal publishes it and its hash to a third party perman
 [`SECURITY.md`](../SECURITY.md) tells everyone else not to submit these hashes to a
 threat-intelligence platform. Doing it ourselves to get a badge would be the same pollution
 the policy exists to prevent — a synthetic SHA256 that acquires a reputation is a small piece
-of noise in somebody else's data and it never goes away. The ClamAV and XProtect results above
-were local measurements against the dated signature versions recorded in the table.
+of noise in somebody else's data and it never goes away. The attestation workflow is local and
+does not upload corpus bytes or digests anywhere.
 
 ## What this does not protect against
 

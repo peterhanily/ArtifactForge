@@ -42,10 +42,10 @@ mspaint.exe              FileId=00005568530759d2e5c7...
 ### libscca (what plaso uses) — prefetch
 
 ```
-ONEDRIVE.EXE             run_count=2  hash=0xf7f76876
-PRINTSVC.EXE             run_count=2  hash=0xb6b06abd  <-- not on disk
-PUTTY.EXE                run_count=2  hash=0x73cc9234
-WINLOGON_H.EXE           run_count=9  hash=0x6d87f104
+ONEDRIVE.EXE             run_count=2  hash=0x029bf810
+PRINTSVC.EXE             run_count=2  hash=0x04283745  <-- not on disk
+PUTTY.EXE                run_count=2  hash=0x212f5e8d
+WINLOGON_H.EXE           run_count=9  hash=0x2be7f5a9
 ```
 
 ## The answers

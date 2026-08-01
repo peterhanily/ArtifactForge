@@ -21,6 +21,7 @@ import pytest
 from artifactforge.content import ContentStore
 from artifactforge.content.macho import build_macho, cdhash_of_file, pick_imports, symhash_of
 from artifactforge.content.seed import sub_seed
+from artifactforge.gates.inertness import _macho_code_is_inert
 
 lief = pytest.importorskip("lief")
 
@@ -76,6 +77,15 @@ def test_cdhash_is_the_digest_of_the_embedded_codedirectory(tmp_path):
         assert cdhash_of_file(f.read()) == c.cdhash
 
 
+def test_cdhash_locator_follows_lc_code_signature_not_a_magic_substring(tmp_path):
+    """A SuperBlob-shaped byte string outside __LINKEDIT must not redirect extraction."""
+    c = _store(tmp_path).materialize("macho:com.acme.updater:x")
+    data = bytearray(c.bytes)
+    marker_offset = data.index(c.marker.encode())
+    data[marker_offset:marker_offset + 4] = b"\xfa\xde\x0c\xc0"
+    assert cdhash_of_file(bytes(data)) == c.cdhash
+
+
 def test_both_mach_o_parsers_read_it(tmp_path):
     macholib = pytest.importorskip("macholib.MachO")
     c = _store(tmp_path).materialize("macho:com.acme.updater:x")
@@ -90,10 +100,13 @@ def test_both_mach_o_parsers_read_it(tmp_path):
     assert len(m.headers[0].commands) >= 13
 
 
-def test_the_code_section_is_two_instructions_and_nothing_else(tmp_path):
-    """`mov w0, #0 ; ret` — the arm64 analogue of the PE's single 0xC3."""
+def test_the_entry_point_is_two_instructions_and_the_signature_covers_it(tmp_path):
+    """The safety oracle binds LC_MAIN, __text and CodeDirectory—not a byte substring."""
     c = _store(tmp_path).materialize("macho:com.acme.updater:x")
-    assert b"\x00\x00\x80\x52\xc0\x03\x5f\xd6" in c.bytes
+    ok, detail = _macho_code_is_inert(c.bytes)
+    assert ok, detail
+    assert "LC_MAIN -> __TEXT,__text" in detail
+    assert "CodeDirectory covers every pre-signature byte" in detail
     assert c.marker.encode() in c.bytes
 
 

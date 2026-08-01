@@ -9,8 +9,10 @@ a check that cannot fail a build is a comment.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+from pathlib import Path
 import sqlite3
 import subprocess
 import sys
@@ -83,10 +85,14 @@ def _scene_dirs(args) -> list:
 
 
 def gate_validity(args) -> GateReport:
-    r = _merge(1, "validity", "do the declared parser oracles read each classified artifact?",
+    r = _merge(1, "validity", "do declared parser and semantic oracles validate each artifact?",
                [validity.run(d) for d in _scene_dirs(args)])
-    r.denominator = (f"{r.metrics.get('oracle_reads_passed', 0)}/"
-                     f"{r.metrics.get('oracle_reads_total', 0)} oracle reads succeeded")
+    r.denominator = (
+        f"{r.metrics.get('oracle_reads_passed', 0)}/"
+        f"{r.metrics.get('oracle_reads_total', 0)} oracle reads succeeded; "
+        f"{r.metrics.get('semantic_checks_passed', 0)}/"
+        f"{r.metrics.get('semantic_checks_total', 0)} semantic checks succeeded"
+    )
     return r
 
 
@@ -110,8 +116,12 @@ def gate_inertness(args) -> GateReport:
     r = _merge(3, "inertness",
                "are binaries payload-free and classified formats marked synthetic?",
                [inertness.run(d) for d in _scene_dirs(args)])
-    r.denominator = (f"{r.metrics.get('formats_marked', 0)}/"
-                     f"{r.metrics.get('formats_total', 0)} artifacts carry a synthetic marker")
+    r.denominator = (
+        f"{r.metrics.get('binary_safety_checks_passed', 0)}/"
+        f"{r.metrics.get('binary_safety_checks_total', 0)} binary safety checks pass; "
+        f"{r.metrics.get('formats_marked', 0)}/"
+        f"{r.metrics.get('formats_total', 0)} artifacts carry a synthetic marker"
+    )
     return r
 
 
@@ -130,12 +140,61 @@ GATES = {
 }
 
 
-def _git_commit() -> str:
-    try:
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, check=True).stdout.strip()
-    except Exception:                                     # noqa: BLE001 — not a git checkout
-        return "unknown"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _git(*arguments: str, text: bool = True):
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=_REPOSITORY_ROOT,
+        capture_output=True,
+        text=text,
+        check=True,
+    ).stdout
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _dirty_snapshot_sha256(diff: bytes, untracked: list[str]) -> str | None:
+    """Bind allowed dirty output to both the tracked diff and every untracked byte."""
+    if not diff and not untracked:
+        return None
+    digest = hashlib.sha256(b"artifactforge/scorecard/dirty-source/v1\0")
+    digest.update(len(diff).to_bytes(8, "big"))
+    digest.update(diff)
+    for relative in sorted(untracked):
+        path = _REPOSITORY_ROOT / relative
+        payload = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+        encoded = relative.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return "sha256:" + digest.hexdigest()
+
+
+def _git_source_provenance() -> dict:
+    """Describe the exact committed source, plus a content binding if it is dirty."""
+    commit = _git("rev-parse", "HEAD").strip()
+    tree = _git("rev-parse", "HEAD^{tree}").strip()
+    diff = _git("diff", "--binary", "HEAD", text=False)
+    raw_untracked = _git(
+        "ls-files", "--others", "--exclude-standard", "-z", text=False
+    )
+    untracked = [part.decode("utf-8") for part in raw_untracked.split(b"\0") if part]
+    dirty_digest = _dirty_snapshot_sha256(diff, untracked)
+    return {
+        "schema": "artifactforge-source-provenance-v1",
+        "git_commit": commit,
+        "git_tree": tree,
+        "worktree_clean": dirty_digest is None,
+        "dirty_snapshot_sha256": dirty_digest,
+        "untracked_file_count": len(untracked),
+        "pyproject_sha256": "sha256:" + _file_sha256(_REPOSITORY_ROOT / "pyproject.toml"),
+        "uv_lock_sha256": "sha256:" + _file_sha256(_REPOSITORY_ROOT / "uv.lock"),
+    }
 
 
 def cmd_gate(args) -> int:
@@ -154,13 +213,42 @@ def cmd_scorecard(args) -> int:
         render_measurement_compatibility,
         save,
     )
+    try:
+        source = _git_source_provenance()
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as exc:
+        print(f"cannot attest scorecard source: {exc}", file=sys.stderr)
+        return 2
+    if args.out and not source["worktree_clean"] and not getattr(args, "allow_dirty", False):
+        print(
+            "refusing to write a scorecard from a dirty worktree; commit the source or pass "
+            "--allow-dirty for an explicitly dirty, non-release record",
+            file=sys.stderr,
+        )
+        return 2
+
     # Scorecards are tracked measurements, so their corpus must reproduce. This mode never
     # affects ``gate solvability`` or ``bench new --kind holdout``: both retain fresh keys.
     args._scorecard_measurement_mode = True
     reports = [GATES[n](args) for n in ("validity", "identity", "inertness", "solvability")]
-    card = build_scorecard(reports, artifactforge_version=__version__,
-                           git_commit=_git_commit(), sqlite_version=sqlite3.sqlite_version,
-                           measurement=suite.scorecard_measurement_provenance(args.n))
+    try:
+        source_after = _git_source_provenance()
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as exc:
+        print(f"cannot re-attest scorecard source after measurement: {exc}", file=sys.stderr)
+        return 2
+    if source_after != source:
+        print(
+            "refusing scorecard result because the source changed during measurement",
+            file=sys.stderr,
+        )
+        return 2
+    card = build_scorecard(
+        reports,
+        artifactforge_version=__version__,
+        git_commit=source["git_commit"][:7],
+        sqlite_version=sqlite3.sqlite_version,
+        measurement=suite.scorecard_measurement_provenance(args.n),
+        source=source,
+    )
     if args.check:
         baseline = load(args.check)
         rows = regressions(baseline, card)
@@ -292,6 +380,11 @@ def main(argv=None) -> int:
     s.add_argument("--check", help="compare against this baseline; exit 1 on regression")
     s.add_argument("--n", type=int, default=4)
     s.add_argument("--gen-dir")
+    s.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="write an explicitly dirty, non-release record bound to the current diff",
+    )
     s.set_defaults(func=cmd_scorecard, scene=None)
 
     b = sub.add_parser("bench", help="build a benchmark suite")

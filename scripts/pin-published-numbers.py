@@ -32,10 +32,10 @@ TARGETS = [
     ("README.md", r"(?<=against a )(\d+(?:\.\d+)?%)(?= floor)", "chance"),
     ("README.md", r"(?<=parser-assisted completion\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "footprint"),
     ("README.md", r"(?<=visible candidates\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "chance"),
-    ("docs/ROADMAP.md", r"(?<=take the maximum — scores \*\*)(\d+(?:\.\d+)?%)(?=\*\*)", "footprint"),
-    ("docs/ROADMAP.md", r"(?<=against a \*\*)(\d+(?:\.\d+)?%)(?=\*\* chance floor)", "chance"),
-    ("docs/DESIGN.md", r"(?<=take the maximum — scores )(\d+(?:\.\d+)?%)", "footprint"),
-    ("docs/DESIGN.md", r"(?<=against a )(\d+(?:\.\d+)?%)(?= chance floor)", "chance"),
+    ("docs/ROADMAP.md", r"(?<=corpus it scores \*\*)(\d+(?:\.\d+)?%)(?=\*\* against)", "footprint"),
+    ("docs/ROADMAP.md", r"(?<=scorecard's \*\*)(\d+(?:\.\d+)?%)(?=\*\* chance floor)", "chance"),
+    ("docs/DESIGN.md", r"(?<=corpus it scores )(\d+(?:\.\d+)?%)(?= against)", "footprint"),
+    ("docs/DESIGN.md", r"(?<=scorecard's )(\d+(?:\.\d+)?%)(?= chance floor)", "chance"),
 ]
 
 

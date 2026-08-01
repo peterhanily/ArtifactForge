@@ -8,6 +8,7 @@ committed artifact instead. These are the three properties that make guarding it
 import hashlib
 import json
 import os
+import subprocess
 import tomllib
 from copy import deepcopy
 from types import SimpleNamespace
@@ -131,6 +132,22 @@ def test_scorecard_measurement_key_has_stable_disclosed_provenance():
     }
     assert provenance["key_derivation"]["seed_id"].startswith("sha256:")
     assert provenance["key_derivation"]["key_id"].startswith("sha256:")
+
+
+def test_committed_scorecard_has_exact_measurement_and_source_provenance(card):
+    """The published card must identify both its corpus and a real matching source commit."""
+    assert card["measurement"] == suite.scorecard_measurement_provenance(40)
+
+    commit = card["generator"]["git_commit"]
+    source = subprocess.run(
+        ["git", "show", f"{commit}:pyproject.toml"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    source_version = tomllib.loads(source)["project"]["version"]
+    assert source_version == card["generator"]["artifactforge_version"]
 
 
 def test_scorecard_command_is_stable_and_prints_scoped_status(tmp_path, monkeypatch, capsys):

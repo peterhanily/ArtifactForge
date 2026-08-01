@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "generator": {
     "artifactforge_version": "0.0.2",
-    "git_commit": "dc00ba9",
+    "git_commit": "cad0e04",
     "sqlite_version": "3.50.4"
   },
   "gates": {
@@ -36,12 +36,12 @@
         "the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
       ],
       "gaps": [],
-      "chance_floor": 0.0416,
+      "chance_floor": 0.042,
       "reference_solver_score": 1.0,
       "footprint_solver_score": 0.7273,
       "mechanical_solver_score": 0.2727,
       "blind_solver_score": 0.0,
-      "listing_solver_score": 0.0136,
+      "listing_solver_score": 0.0091,
       "null_solver_score": 0.0,
       "constant_solver_score": 0.0,
       "blind_control_score": 1.0,
@@ -72,7 +72,7 @@
         "solvability"
       ],
       "fails": [
-        "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold — that many answers are obtainable without forensic work"
+        "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
       ],
       "gaps": []
     }
@@ -83,5 +83,19 @@
     "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
   ],
   "verdict": "fail",
-  "verdict_scope": "all_gates"
+  "verdict_scope": "all_gates",
+  "measurement": {
+    "purpose": "reproducible-scorecard-measurement",
+    "suite_kind": "scorecard-measurement",
+    "scenario_count": 40,
+    "deterministic": true,
+    "reportable": false,
+    "suite_derivation_domain": "artifactforge/bench/v1",
+    "key_derivation": {
+      "algorithm": "HMAC-SHA256",
+      "domain": "artifactforge/scorecard/measurement-key/v1",
+      "seed_id": "sha256:bfef513b7964dc28fc977731a2f47446deed38c9de8ac5d78ac115e6aae2634d",
+      "key_id": "sha256:afcdc4a30f38cd368b7b09f0e11b08da9b5c2f68a5b644b96a77f749958538b6"
+    }
+  }
 }

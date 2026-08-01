@@ -1,0 +1,339 @@
+{
+  "method": {
+    "name": "artifactforge-evidenceforge-controlled-hash-witness",
+    "network_required": false,
+    "script": "scripts/measure_evidenceforge_witness.py",
+    "version": 1
+  },
+  "provenance": {
+    "evidenceforge": {
+      "git_commit": "c0c619992fa44418a20f9b7d9abbeae750695916",
+      "tag": "v1.13.1",
+      "version": "1.13.1"
+    },
+    "generation_command_template": "python -m evidenceforge generate integration/evidenceforge/scenarios/content-identity-witness-v1.13.1.yaml -o out",
+    "generation_runtime": {
+      "constraints_repository_path": "integration/evidenceforge/constraints-v1.13.1.txt",
+      "constraints_sha256": "bdfe9e7d6bb412657c33c0337578672b9bbde7a72782bd75be8b322446425b95",
+      "python_version": "3.12.13",
+      "upstream_uv_lock_sha256": "77b8622fe284a3d50972fe3cf0395c5bf9360862f4df0f31c8fd8cc14b10d9ea"
+    },
+    "output_tree": {
+      "canonicalization": "artifactforge-output-tree-v1",
+      "file_count": 17,
+      "files": [
+        {
+          "path": "COLLECTION_PROFILE.json",
+          "sha256": "cc3ce49ffba0a884bb102c1d132c1c4a882ca56d34c38bbb0b1b7f4a5fbba3c2",
+          "size": 3349
+        },
+        {
+          "path": "GROUND_TRUTH.json",
+          "sha256": "4792e4184f62d5ce7039f6bb2848d974a37d121201186da44e2d85ae94e2da64",
+          "size": 5837
+        },
+        {
+          "path": "GROUND_TRUTH.md",
+          "sha256": "8d871d794e25fc9ca0675d6e7c8477a1c856185261d35a8e383a91c9421075b6",
+          "size": 2748
+        },
+        {
+          "path": "OBSERVATION_MANIFEST.json",
+          "sha256": "799d936c33a37eb55287157044d7ed80b4f802f0dbd1a3ec654c3c61d9aea1da",
+          "size": 2211
+        },
+        {
+          "path": "OUTPUT_TARGET.txt",
+          "sha256": "01666ec060466c14b9fa06c613fbac449163f2a2017558fe16526209ab78c6b0",
+          "size": 8
+        },
+        {
+          "path": "data/DC-01.artifactforge.test/windows_event_security.xml",
+          "sha256": "1e8be7b38a2607853566b81ce6f71ef489d9f126ae6c781c131e5fd0868c6ea0",
+          "size": 58635
+        },
+        {
+          "path": "data/WS-AF-01.artifactforge.test/windows_event_security.xml",
+          "sha256": "bb1effe1730b4abb03128040913cb0ab1cf44dd71b87e1178e9f7cd62c47e7e7",
+          "size": 286240
+        },
+        {
+          "path": "data/WS-AF-01.artifactforge.test/windows_event_sysmon.xml",
+          "sha256": "92e7e0f5ec99da6ca8fd01115178b2425c4afa6a1cf9c15cb85523d6878d8def",
+          "size": 235574
+        },
+        {
+          "path": "data/ZEEK-AF-01/conn.json",
+          "sha256": "70fbbc149b1678cb68ac26f9340e418d91eb228e9523214e98751a53b42f6f5e",
+          "size": 54698
+        },
+        {
+          "path": "data/ZEEK-AF-01/dhcp.json",
+          "sha256": "3241561ab067a32433f50c3285a8147b0130f1fccac14c7754e8154028c547ff",
+          "size": 1139
+        },
+        {
+          "path": "data/ZEEK-AF-01/dns.json",
+          "sha256": "924884d33aea0cfd66298ee7d9254bfae7cf4f4a085eb6880803482af0549da2",
+          "size": 22365
+        },
+        {
+          "path": "data/ZEEK-AF-01/files.json",
+          "sha256": "5cac26f90058632092f6705c54124e8502d15735e3e481ac549757b9019a3f70",
+          "size": 27585
+        },
+        {
+          "path": "data/ZEEK-AF-01/http.json",
+          "sha256": "68f0bee44ea39fc1994b902a6d22eb513fda7125f6b1b126c23b149aadecd88e",
+          "size": 3213
+        },
+        {
+          "path": "data/ZEEK-AF-01/ocsp.json",
+          "sha256": "4cab3299a8cbad3103318f24628ec4664495e6c215e0e4ff7d9cd1579295a82d",
+          "size": 1278
+        },
+        {
+          "path": "data/ZEEK-AF-01/pe.json",
+          "sha256": "498388517020a108467c598bf7297de87a32a40dd6239b52b279c334cfa4ed5e",
+          "size": 805
+        },
+        {
+          "path": "data/ZEEK-AF-01/ssl.json",
+          "sha256": "70b037790c47351484d5d9acaf4a053b24cbd2b2d1b2b1b728101042c67aa0be",
+          "size": 18380
+        },
+        {
+          "path": "data/ZEEK-AF-01/x509.json",
+          "sha256": "961c4fdcb6a2e673e68114172db8b09b955fad668cc11309d605721a7e8742dd",
+          "size": 32215
+        }
+      ],
+      "total_bytes": 756280,
+      "tree_sha256": "6754e59cb6bcb2af9afbb94b93e6c1378568d539d69f45aa9e38ce37414f58b8"
+    },
+    "producer_attestation": {
+      "automatically_detected_from_output": false,
+      "bound_output_tree_sha256": "6754e59cb6bcb2af9afbb94b93e6c1378568d539d69f45aa9e38ce37414f58b8",
+      "limitation": "EvidenceForge output has no producer-commit field. The explicit external attestation is bound to these exact output bytes.",
+      "pin_validation": "exact version and git commit match",
+      "source": "required CLI arguments"
+    },
+    "scenario": {
+      "duration": "2h",
+      "git_blob_sha1": "27c238953bcbbf62fd28016aa11f3ca952a23a8b",
+      "name": "content-identity-witness-v1-13-1",
+      "repository_path": "integration/evidenceforge/scenarios/content-identity-witness-v1.13.1.yaml",
+      "sha256": "9869c71144d43ed471588ce7e423eb5f4b092fcfc5fc17204ee9a63d5b57f2e5",
+      "warmup": "1h"
+    },
+    "scenario_fixture_unmodified": true
+  },
+  "qualification": {
+    "basis": [
+      "One ground-truth storyline cluster writes an HTTP response to output_file.",
+      "The next record in that cluster executes process_name == output_file.",
+      "Zeek files.log is joined to the exact HTTP row by conn UID and response FUID.",
+      "Sysmon downloader EID 1 and file-create EID 11 join by PID and ProcessGuid.",
+      "The executed-image EID 1 is selected by exact path and ground-truth PID.",
+      "Both emitted SHA1 values reproduce their distinct v1.13.1 seed formulas.",
+      "Pair selection never reads a digest field.",
+      "Transfer-only, process-only, and same-basename records are negative controls."
+    ],
+    "claim_boundary": "This proves one modeled logical file receives different SHA1 values across Zeek and Sysmon in unmodified EvidenceForge v1.13.1. It does not prove two digests disagree over shared materialized bytes, because EvidenceForge emits logs and does not materialize the transferred/executed file. Whether the logical-file join is required remains an upstream design decision.",
+    "positive_same_logical_file_pair_demonstrated": true,
+    "serialized_cross_event_content_identity_field": null,
+    "shared_materialized_bytes_demonstrated": false
+  },
+  "record_id": "evidenceforge-v1.13.1-controlled-content-identity-witness",
+  "schema_version": 1,
+  "witness": {
+    "cross_emitter_join": {
+      "algorithm": "sha1",
+      "equal": false,
+      "sysmon_sha1": "025ee09748833e745cd43c1d333d6910958f3919",
+      "zeek_sha1": "35a96017abff36254a0d4a6399c9fbe0cbd8b6a2"
+    },
+    "negative_controls": {
+      "materialized_controlled_filename_present": false,
+      "same_basename_different_path": true,
+      "sysmon": {
+        "digest_blind_selection": true,
+        "process_only_execution_observed": true,
+        "process_only_file_create_absent": true,
+        "transfer_only_execution_absent": true,
+        "transfer_only_file_create_observed": true,
+        "transfer_only_process_guid": "{3fcd1b1e-5a63-6643-d800-0010ec4c92b3}"
+      },
+      "zeek_file": {
+        "analyzers": [
+          "SHA1"
+        ],
+        "digest_blind_selection": true,
+        "digest_fields_used_for_selection": [],
+        "file_fuid": "FgUC6OwOmdkq5ojxV3M",
+        "file_time_epoch": 1715690085.327726,
+        "host": "203.0.113.20",
+        "http_time_epoch": 1715690085.195726,
+        "http_uid": "CTC0dOxlcgNmV4KuS6",
+        "mime_type": "application/x-msdownload",
+        "missing_bytes": 0,
+        "overflow_bytes": 0,
+        "receiver_hosts": [
+          "192.0.2.10"
+        ],
+        "response_body_len": 123679176,
+        "response_ip": "203.0.113.20",
+        "seed_formula_verified": true,
+        "seed_material": "http:203.0.113.20:/af-controlled.exe:123679176:application/x-msdownload",
+        "seen_bytes": 123679176,
+        "sha1": "0ddc6cacced15e7e0b389cec64b6f581afdd4066",
+        "source": "HTTP",
+        "source_ip": "192.0.2.10",
+        "timedout": false,
+        "transmitter_hosts": [
+          "203.0.113.20"
+        ],
+        "uri": "/af-controlled.exe"
+      }
+    },
+    "pair_selection": {
+      "digest_blind": true,
+      "digest_fields_used": [],
+      "ground_truth_keys": [
+        "storyline_id",
+        "record_id",
+        "actor",
+        "system",
+        "network_url",
+        "output_file",
+        "process_name",
+        "pid"
+      ],
+      "sysmon_keys": [
+        "EventID",
+        "Image",
+        "ProcessId",
+        "ProcessGuid",
+        "TargetFilename",
+        "User"
+      ],
+      "zeek_keys": [
+        "id.orig_h",
+        "id.resp_h",
+        "host",
+        "uri",
+        "method",
+        "status_code",
+        "uid",
+        "fuid",
+        "tx_hosts",
+        "rx_hosts"
+      ]
+    },
+    "relation": {
+      "actor": "SYSTEM",
+      "download_before_execution": true,
+      "download_process_id": 6632,
+      "download_process_image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "download_record_id": "controlled-download-execute#0",
+      "executed_image": "C:\\Windows\\System32\\af-controlled.exe",
+      "execution_process_id": 6648,
+      "execution_record_id": "controlled-download-execute#1",
+      "ground_truth_download_time": "2024-05-14T12:20:15Z",
+      "ground_truth_execution_time": "2024-05-14T12:20:45Z",
+      "negative_controls": {
+        "process_only_image": "C:\\Windows\\System32\\whoami.exe",
+        "process_only_image_not_downloaded": true,
+        "process_only_process_id": 6732,
+        "transfer_only_output": "C:\\Windows\\Temp\\af-controlled.exe",
+        "transfer_only_output_not_executed": true,
+        "transfer_only_process_id": 6692,
+        "transfer_only_process_image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "transfer_only_same_basename_different_path": true,
+        "transfer_only_url": "http://203.0.113.20/af-controlled.exe"
+      },
+      "network_url": "http://203.0.113.10/af-controlled.exe",
+      "output_file": "C:\\Windows\\System32\\af-controlled.exe",
+      "output_path_equals_executed_image": true,
+      "same_actor_system_activity_cluster": true,
+      "storyline_id": "controlled-download-execute",
+      "system": "WS-AF-01"
+    },
+    "sysmon_process": {
+      "digest_blind_selection": true,
+      "digest_fields_used_for_selection": [],
+      "downloader_event_id": 1,
+      "downloader_image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "downloader_process_guid": "{3fcd1b1e-5700-6643-7b00-001026138962}",
+      "downloader_process_id": 6632,
+      "downloader_time": "2024-05-14T12:20:16.3606449Z",
+      "file_create_event_id": 11,
+      "file_create_process_guid": "{3fcd1b1e-5700-6643-7b00-001026138962}",
+      "file_create_process_id": 6632,
+      "file_create_target": "C:\\Windows\\System32\\af-controlled.exe",
+      "file_create_time": "2024-05-14T12:20:18.2730050Z",
+      "host_log": "data/WS-AF-01.artifactforge.test/windows_event_sysmon.xml",
+      "seed_formula_verified": true,
+      "seed_material": "c:\\windows\\system32\\af-controlled.exe:-:-:-:-",
+      "sha1": "025ee09748833e745cd43c1d333d6910958f3919",
+      "sha256": "015140d5ed2983f234a6cd52dc9fd632be0e01871df2c3f3b5389f8380d9091a",
+      "target_event_id": 1,
+      "target_image": "C:\\Windows\\System32\\af-controlled.exe",
+      "target_process_guid": "{3fcd1b1e-571d-6643-b800-0010a1a070ce}",
+      "target_process_id": 6648,
+      "target_time": "2024-05-14T12:20:45.8769464Z"
+    },
+    "timeline": {
+      "epoch_seconds": {
+        "ground_truth_download": 1715689215.0,
+        "ground_truth_execution": 1715689245.0,
+        "sysmon_downloader_eid1": 1715689216.360644,
+        "sysmon_file_create_eid11": 1715689218.273005,
+        "sysmon_target_eid1": 1715689245.876946,
+        "zeek_files": 1715689217.485389,
+        "zeek_http": 1715689217.377389
+      },
+      "ordered": true,
+      "sequence": [
+        "ground_truth_download",
+        "sysmon_downloader_eid1",
+        "zeek_http",
+        "zeek_files",
+        "sysmon_file_create_eid11",
+        "ground_truth_execution",
+        "sysmon_target_eid1"
+      ]
+    },
+    "zeek_file": {
+      "analyzers": [
+        "SHA1"
+      ],
+      "digest_blind_selection": true,
+      "digest_fields_used_for_selection": [],
+      "file_fuid": "FTG1ZnCDgGXeYqGO1",
+      "file_time_epoch": 1715689217.485389,
+      "host": "203.0.113.10",
+      "http_time_epoch": 1715689217.377389,
+      "http_uid": "CrJl52hZh8qByBOALQ",
+      "mime_type": "application/x-msdownload",
+      "missing_bytes": 0,
+      "overflow_bytes": 0,
+      "receiver_hosts": [
+        "192.0.2.10"
+      ],
+      "response_body_len": 123679176,
+      "response_ip": "203.0.113.10",
+      "seed_formula_verified": true,
+      "seed_material": "http:203.0.113.10:/af-controlled.exe:123679176:application/x-msdownload",
+      "seen_bytes": 123679176,
+      "sha1": "35a96017abff36254a0d4a6399c9fbe0cbd8b6a2",
+      "source": "HTTP",
+      "source_ip": "192.0.2.10",
+      "timedout": false,
+      "transmitter_hosts": [
+        "203.0.113.10"
+      ],
+      "uri": "/af-controlled.exe"
+    }
+  }
+}

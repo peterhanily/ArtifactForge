@@ -1,0 +1,28 @@
+# EvidenceForge v1.13.1 runtime closure exported from its committed uv.lock.
+# Source commit: c0c619992fa44418a20f9b7d9abbeae750695916
+# Upstream uv.lock SHA256: 77b8622fe284a3d50972fe3cf0395c5bf9360862f4df0f31c8fd8cc14b10d9ea
+# Export command: uv export --locked --no-dev --no-hashes (with the local -e . removed)
+annotated-doc==0.0.4
+annotated-types==0.7.0
+cffi==2.1.0 ; platform_python_implementation != 'PyPy'
+click==8.4.2
+colorama==0.4.6 ; sys_platform == 'win32'
+cryptography==49.0.0
+jinja2==3.1.6
+json-logic-qubit==0.9.1
+markdown-it-py==4.0.0
+markupsafe==3.0.3
+mdurl==0.1.2
+pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
+pydantic==2.13.4
+pydantic-core==2.46.4
+pygments==2.20.0
+python-dotenv==1.2.2
+pytz==2026.3.post1
+pyyaml==6.0.3
+rich==15.0.0
+shellingham==1.5.4
+six==1.17.0
+typer==0.27.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-01
+
+### Added
+
+A controlled EvidenceForge v1.13.1 scenario now models an HTTP response written to an exact
+path and the later execution of that path. Its verifier selects the pair without reading hash
+fields, requires ground-truth, Zeek UID/FUID, Sysmon PID/ProcessGuid and timeline agreement,
+recomputes both emitter-local SHA1 seed formulas, and binds every generated output byte to a
+canonical measurement record. Transfer-only, process-only and same-basename/different-path
+controls plus identity-field mutations prevent accidental pairing.
+
+The CI job pins CPython 3.12.13 and the runtime dependency closure exported from EvidenceForge's
+own committed `uv.lock`, rather than resolving transitive dependencies afresh on every run.
+
+An upstream-ready issue draft and an opt-in content-identity RFC distinguish modeled logical
+content from materialized bytes, preserve legacy output by default, keep downloader-process and
+response-body roles separate, and document certificate, OCSP and byte-backed SMTP exceptions.
+Two checksum-bound review patches implement the narrow plaintext-HTTP-to-process prototype and
+the independent Event 1/Event 7 Description correction. They clean-apply in order to the pinned
+source and pass 508 targeted plus 4,829 runnable upstream unit tests; they are not applied or
+continuously tested by ArtifactForge CI and have not been proposed upstream.
+
+### Fixed
+
+The earlier EvidenceForge issue draft's stock cardinalities, unclosed code fence, SHA256-only
+"either algorithm" reproducer, and blanket seed-string characterization are replaced by a
+pinned stock measurement and the controlled positive witness. The legacy Sysmon Event 1/Event
+7 Description seed-layout mismatch is tracked separately from the cross-emitter RFC.
+
 ## 0.2.0 - 2026-08-01
 
 ### Added

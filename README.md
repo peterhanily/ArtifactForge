@@ -155,6 +155,19 @@ closes the chain by deriving version and commit from the installed distribution,
 fresh run, and byte-comparing the complete record. Public prose counts are regression-tested
 against that JSON.
 
+A separate controlled scenario closes the stock run's pairing gap. It models one exact HTTP
+download-to-path followed by execution of that same path, plus a same-basename/different-path
+transfer and an unrelated execution as negative controls. Selection is digest-blind and
+requires the ground-truth storyline, exact paths and PIDs, Zeek UID/FUID, Sysmon PID/ProcessGuid
+and an ordered Event 1 → HTTP/files → Event 11 → Event 1 timeline. On the pinned output, Zeek's
+complete HTTP response SHA1 is `35a96017abff36254a0d4a6399c9fbe0cbd8b6a2`; the later Sysmon
+process-image SHA1 is `025ee09748833e745cd43c1d333d6910958f3919`. Both reproduce their
+v1.13.1 seed formulas, but do not join. This demonstrates one **modeled logical file**, not
+shared materialized bytes. The fixture, output-tree-bound record, issue draft, opt-in design
+RFC and clean-applying review patches live under
+[`integration/evidenceforge/`](integration/evidenceforge/) and
+[`measurements/`](measurements/evidenceforge-v1.13.1-controlled-content-identity.json).
+
 `tests/ef_contract/test_golden_formulas.py` calls EvidenceForge's own `_generate_hashes` and
 requires our transcription of it to agree exactly, so drift in a private upstream surface
 breaks in one file rather than silently returning wrong identities.
@@ -222,7 +235,7 @@ files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.2.0, nothing published to PyPI. **Gates 1 to 3 pass;
+Early and experimental, version 0.3.0, nothing published to PyPI. **Gates 1 to 3 pass;
 generator-assurance status is `pass`. Benchmark-validity status is `fail` because Gate 4 is
 red.** `fidelity-scorecard.json` at the repository root is
 the honest record — it ships whatever it actually reads, and right now that includes a
@@ -232,5 +245,5 @@ friction if that ever became useful.
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and the gate discipline,
 [`docs/fixture-core.md`](docs/fixture-core.md) for the public fixture contract,
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is not built, and
-[`integration/evidenceforge/`](integration/evidenceforge/) for a sketch of what an upstream
-contribution would involve — which has not been proposed to anyone.
+[`integration/evidenceforge/`](integration/evidenceforge/) for the controlled witness and an
+upstream-ready proposal — which has not been posted or proposed to anyone.

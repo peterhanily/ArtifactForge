@@ -1,0 +1,67 @@
+diff --git a/src/evidenceforge/generation/emitters/sysmon.py b/src/evidenceforge/generation/emitters/sysmon.py
+index b4496ac..14974df 100644
+--- a/src/evidenceforge/generation/emitters/sysmon.py
++++ b/src/evidenceforge/generation/emitters/sysmon.py
+@@ -902,8 +902,8 @@ class SysmonEventEmitter(LogEmitter):
+             file_identity = rendered_identity[:5]
+             seed = f"{normalized_image}:{':'.join(str(part) for part in file_identity)}"
+         elif host is not None and not isinstance(host, str):
+-            fv, _desc, prod, company, orig = cls._get_pe_metadata(image, host)
+-            seed = f"{normalized_image}:{fv}:{prod}:{company}:{orig}"
++            fv, desc, prod, company, orig = cls._get_pe_metadata(image, host)
++            seed = f"{normalized_image}:{fv}:{desc}:{prod}:{company}:{orig}"
+         sha1 = hashlib.sha1(seed.encode(), usedforsecurity=False).hexdigest().upper()
+         md5 = hashlib.md5(seed.encode(), usedforsecurity=False).hexdigest().upper()
+         sha256 = hashlib.sha256(seed.encode(), usedforsecurity=False).hexdigest().upper()
+diff --git a/tests/unit/test_sysmon_hash_description.py b/tests/unit/test_sysmon_hash_description.py
+new file mode 100644
+index 0000000..a1696f4
+--- /dev/null
++++ b/tests/unit/test_sysmon_hash_description.py
+@@ -0,0 +1,46 @@
++# Copyright (c) 2026 Peter Hanily
++# SPDX-License-Identifier: MIT
++
++"""Regression coverage for Sysmon PE-metadata hash seed consistency."""
++
++from types import SimpleNamespace
++
++import pytest
++
++from evidenceforge.generation.emitters.sysmon import SysmonEventEmitter
++
++
++def test_eid1_and_eid7_hash_seed_includes_description(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Identical rendered metadata produces one hash in both Sysmon call shapes."""
++
++    image = r"C:\Program Files\Example\payload.dll"
++    metadata = (
++        "1.2.3.4",
++        "Example payload module",
++        "Example Product",
++        "Example Company",
++        "payload.dll",
++    )
++    monkeypatch.setattr(
++        SysmonEventEmitter,
++        "_get_pe_metadata",
++        classmethod(lambda cls, image_path, host: metadata),
++    )
++    host = SimpleNamespace(hostname="WS-01")
++
++    eid1 = SysmonEventEmitter._generate_hashes(image, host)
++    eid7 = SysmonEventEmitter._generate_hashes(image, host, rendered_identity=metadata)
++    changed_description = (
++        metadata[0],
++        "Different description",
++        *metadata[2:],
++    )
++
++    assert eid1 == eid7
++    assert eid1 != SysmonEventEmitter._generate_hashes(
++        image,
++        host,
++        rendered_identity=changed_description,
++    )

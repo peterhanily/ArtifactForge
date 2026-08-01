@@ -88,12 +88,18 @@ the portable CI oracle.
 
 ## EvidenceForge
 
-- **The upstream contribution.** Sketched in
-  [`integration/evidenceforge/`](../integration/evidenceforge/), not proposed to anyone. The
-  next step is a one-paragraph issue asking whether it would be wanted, not code.
-- **Zeek-side reconciliation.** Constrained by an unmodified v1.13.1 branch-office run:
+- **The upstream contribution.** A controlled scenario, output-tree-bound measurement,
+  mutation-tested verifier, issue draft, role-specific content-identity RFC and two validated
+  review patches now live in
+  [`integration/evidenceforge/`](../integration/evidenceforge/). Nothing has been posted or
+  pushed upstream. The remaining external step is maintainer feedback on whether an explicit,
+  opt-in logical-content relationship belongs in EvidenceForge at all.
+- **Zeek-side reconciliation.** The unmodified v1.13.1 branch-office run established the
+  population boundary:
   `files.json` has 722 rows, 525 certificate and 197 non-certificate. No non-certificate row
   carries SHA256; 21 carry SHA1, representing 16 distinct values. The same-algorithm Sysmon
-  and Zeek sets are disjoint, but their basenames are also disjoint, so the stock run is not a
-  same-file positive witness. Any proposed SHA1 join needs a controlled transfer-to-execution
-  case before it can be described as repairing an observed broken pivot.
+  and Zeek sets are disjoint, but their basenames are also disjoint. The controlled witness now
+  supplies the positive transfer-to-execution pair: exact ground-truth path equality, dual
+  Zeek UID/FUID correlation, Sysmon PID/ProcessGuid correlation, timeline ordering and three
+  negative controls all pass before its unequal SHA1 values are compared. It proves a modeled
+  logical-file nonjoin, not disagreement over common materialized bytes.

@@ -318,16 +318,18 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/uv" --version
       - name: Python
-        run: uv python install 3.12
+        run: uv python install 3.12.13
 
       - name: Install ArtifactForge + EvidenceForge (pinned)
         # The distribution is `evidence-forge`; the import name is `evidenceforge`. Naming the
         # import here makes uv exit 1 with "Package metadata name does not match given name" —
         # which is what stopped this workflow from ever reaching pytest.
         run: |
-          uv venv --python 3.12
+          uv venv --python 3.12.13
           uv pip install -e ".[dev]"
-          uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@${{ env.EF_TAG }}"
+          uv pip install \
+            --constraint integration/evidenceforge/constraints-v1.13.1.txt \
+            "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@${{ env.EF_TAG }}"
 
       - name: EvidenceForge version (fail fast if broken)
         run: uv run python -c "import evidenceforge; print(evidenceforge.__file__)"
@@ -339,6 +341,10 @@ jobs:
             "https://raw.githubusercontent.com/Cisco-Talos/EvidenceForge/${{ env.EF_TAG }}/scenarios/branch-office-example/scenario.yaml"
           uv run python -m evidenceforge generate scenario.yaml -o ef-out
           test -f ef-out/GROUND_TRUTH.json
+          uv run python -m evidenceforge generate \
+            integration/evidenceforge/scenarios/content-identity-witness-v1.13.1.yaml \
+            -o ef-witness-out
+          test -f ef-witness-out/GROUND_TRUTH.json
 
       - name: Verify pinned EvidenceForge measurement
         run: |
@@ -372,6 +378,45 @@ jobs:
           uv run python scripts/measure_evidenceforge.py check \
             measurements/evidenceforge-v1.13.1-branch-office-example.json \
             --run-root ef-out
+
+      - name: Verify controlled content-identity witness
+        run: |
+          uv run python - <<'PY'
+          import importlib.metadata
+          import json
+          import platform
+          import subprocess
+          import sys
+
+          distribution = importlib.metadata.distribution("evidence-forge")
+          direct_url = json.loads(distribution.read_text("direct_url.json"))
+          subprocess.run(
+              [
+                  sys.executable,
+                  "scripts/measure_evidenceforge_witness.py",
+                  "measure",
+                  "ef-witness-out",
+                  "--scenario",
+                  "integration/evidenceforge/scenarios/"
+                  "content-identity-witness-v1.13.1.yaml",
+                  "--evidenceforge-version",
+                  distribution.version,
+                  "--evidenceforge-commit",
+                  direct_url["vcs_info"]["commit_id"],
+                  "--python-version",
+                  platform.python_version(),
+                  "--output",
+                  "ef-witness-measurement.json",
+              ],
+              check=True,
+          )
+          PY
+          diff -u \
+            measurements/evidenceforge-v1.13.1-controlled-content-identity.json \
+            ef-witness-measurement.json
+          uv run python scripts/measure_evidenceforge_witness.py check \
+            measurements/evidenceforge-v1.13.1-controlled-content-identity.json \
+            --run-root ef-witness-out
 
       - name: Contract — must RUN, not skip
         env:

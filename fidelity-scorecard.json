@@ -1,18 +1,18 @@
 {
   "schema_version": "1.0",
   "generator": {
-    "artifactforge_version": "0.3.0",
-    "git_commit": "37d8322",
+    "artifactforge_version": "0.3.1",
+    "git_commit": "56951da",
     "sqlite_version": "3.50.4",
     "source": {
       "schema": "artifactforge-source-provenance-v1",
-      "git_commit": "37d83228333376a6ae03d137f82727b07bfcfaf0",
-      "git_tree": "c07874158f016b3cb9c9a237a093f58f3a69964c",
+      "git_commit": "56951da6aa0c2c5dc361ced6adfdd3597aa754ee",
+      "git_tree": "0a269e10100953c7089b02589e900485c100a76c",
       "worktree_clean": true,
       "dirty_snapshot_sha256": null,
       "untracked_file_count": 0,
-      "pyproject_sha256": "sha256:ead603dcd788ea418bd51700335520974cf28be23e9cba996d6e14c085d3d405",
-      "uv_lock_sha256": "sha256:64be576e7a7827ccd8896b5a23af26e445844b6c85452668c3328e5c4d0dcdec"
+      "pyproject_sha256": "sha256:89cdea38f4f651b558dc0ebce3dd2b3a64bd3730ef9d1f373d00c2f15eb7f6f5",
+      "uv_lock_sha256": "sha256:3b86ba117df50a903a1cf784f37b88cb8cec508b59ae0132522b480d83fd5cae"
     }
   },
   "gates": {

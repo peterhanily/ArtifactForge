@@ -1,32 +1,29 @@
 {
   "schema_version": "1.0",
   "generator": {
-    "artifactforge_version": "0.1.0",
-    "git_commit": "94b5396",
+    "artifactforge_version": "0.2.0",
+    "git_commit": "02b3e73",
     "sqlite_version": "3.50.4",
     "source": {
       "schema": "artifactforge-source-provenance-v1",
-      "git_commit": "94b539658fd54a28f0be10afc40322e96a4bceab",
-      "git_tree": "143b67a8b1afd5d8caf6093c8d9926b3764cc10e",
+      "git_commit": "02b3e73cb23f604c7f97945635b05ec9e8ffeb30",
+      "git_tree": "26c46f63862fc56370a0703437c3d83aa834bd04",
       "worktree_clean": true,
       "dirty_snapshot_sha256": null,
       "untracked_file_count": 0,
-      "pyproject_sha256": "sha256:da2e052e1bd8e8b7a6e8d942f4edd5a4d9a29233b49f3e7cba3da001db36a4e6",
-      "uv_lock_sha256": "sha256:4e6a481ad559515d2fc006a2ed074862120aa7c082dc9f2bd69835a3b42cc932"
+      "pyproject_sha256": "sha256:3564a4b9f302a09685eaa04b0bc14acf2475dea63a63273dfbef4b97efe22087",
+      "uv_lock_sha256": "sha256:96be173a70433642a3adfff103f788d1a7f01c9559ce2449c16824dcef5aa77a"
     }
   },
   "gates": {
     "validity": {
       "verdict": "pass",
       "fails": [],
-      "gaps": [
-        "plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
-        "sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
-      ],
-      "oracle_reads_passed": 760,
-      "oracle_reads_total": 760,
-      "semantic_checks_passed": 180,
-      "semantic_checks_total": 180
+      "gaps": [],
+      "oracle_reads_passed": 880,
+      "oracle_reads_total": 880,
+      "semantic_checks_passed": 420,
+      "semantic_checks_total": 420
     },
     "identity": {
       "verdict": "pass",
@@ -66,7 +63,7 @@
   },
   "status": {
     "generator_assurance": {
-      "verdict": "gap",
+      "verdict": "pass",
       "experimental": false,
       "gates": [
         "validity",
@@ -74,10 +71,7 @@
         "inertness"
       ],
       "fails": [],
-      "gaps": [
-        "Gate 1 (validity): plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
-        "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
-      ]
+      "gaps": []
     },
     "benchmark_validity": {
       "verdict": "fail",
@@ -92,8 +86,6 @@
     }
   },
   "honest_gaps": [
-    "Gate 1 (validity): plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
-    "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap",
     "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
   ],
   "verdict": "fail",

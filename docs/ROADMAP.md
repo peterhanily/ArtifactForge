@@ -33,22 +33,21 @@ What the repair looks like, in order:
    presence test, a name, or a position in a stored sequence.
 
 Until that lands the benchmark is experimental and no score from it should be reported. The
-generator's Gates 1 to 3 have no failures, though generator assurance remains `gap` while the
-SQLite and plist second-oracle gaps are open.
+generator's Gates 1 to 3 pass and generator assurance is `pass`; benchmark validity remains a
+separate failing status.
 
-## Open gaps in what already ships
+## Closed measuring-apparatus gaps
 
-These are the two declared gaps in `fidelity-scorecard.json`. They are limits of the measuring
-apparatus rather than failures of the thing measured, which is why they do not set the
-verdict — that currently reads `fail`, because of Gate 4 above.
+The v0.2.0 work closed the former SQLite and binary-plist second-reader gaps. Deliberately
+narrow first-party byte readers now pair with `sqlite3` and `plistlib` over one bounded
+snapshot, require type-exact consensus, and then apply named macOS semantic profiles. This is
+independent implementation, not outside governance or general-format coverage: interior or
+overflow SQLite b-trees and binary-plist values outside the emitted subset remain rejected.
+The serialized quarantine xattr is still a plain sidecar, not a parser-gated format.
 
-- **No independent oracle for SQLite or plists.** `sqlite3` and `plistlib` write and read
-  their own formats, so knowledgeC, TCC, QuarantineEventsV2 and the LaunchAgent plists have no
-  outside opinion on them. PE, Mach-O, registry hive and prefetch each have two independently
-  implemented parsers; the serialized quarantine xattr is a plain sidecar, not a parser-gated
-  format.
-  Candidates worth evaluating: `mac_apt`'s readers, Apple's `plutil` (macOS-only, so it cannot
-  be the CI oracle), or a from-scratch bplist reader whose only job is to disagree.
+Any future expansion of either writer must expand both the raw reader and its parser-valid
+mutation controls in the same change. Apple's `plutil` remains useful native attestation, not
+the portable CI oracle.
 ## Not built
 
 - **Windows 10 prefetch.** The current uncompressed SCCA v17 writer and XP path hash agree

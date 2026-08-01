@@ -78,6 +78,8 @@ Answering anything about it requires reading two artifacts together, which is th
 - **macOS artifacts** — a hand-assembled arm64 Mach-O with a real symhash and a real ad-hoc
   code signature whose cdhash `codesign -d` reports; knowledgeC, TCC and QuarantineEventsV2
   databases; the `com.apple.quarantine` xattr value as a sidecar file; LaunchAgent plists.
+  SQLite and binary-plist bytes are independently decoded by bounded first-party raw readers,
+  compared type-for-type with `sqlite3`/`plistlib`, then checked against exact macOS profiles.
   EvidenceForge cannot produce any of this — its `os_category` is windows or linux, with no
   macOS at all.
 - **One identity behind the answer-bearing file pivots.** `ContentStore` synthesizes each
@@ -114,6 +116,8 @@ uv run artifactforge scorecard            # every gate, and what it measured
 See [`docs/fixture-core.md`](docs/fixture-core.md) for the schema, lifecycle, exit-code and
 integrity boundaries. `windows-loose-v1` is deliberately not branded Windows 10: its loose
 artifact set currently combines NT6-era paths with XP-family SCCA v17 prefetch semantics.
+The raw-reader subset and semantic extension rule are documented in
+[`docs/macos-oracles.md`](docs/macos-oracles.md).
 
 EvidenceForge is not a declared runtime or development dependency. Two isolated CI jobs install
 it for the pinned contract and the default-branch drift canary; the standalone test job does
@@ -164,13 +168,14 @@ resident-file Amcache `FileId`, or corrupting a quarantine UUID turns Gate 2 red
 claim that every stale or absent decoy `FileId` names bytes shipped in the scene. Determinism is
 real: a batch regenerates byte-identical across processes, hash seeds, timezones and locales.
 
-**Artifact fidelity — partial, and measured.** PE, Mach-O, registry hive and prefetch are each
-opened by two independently implemented parsers. The macOS SQLite databases and binary plists
-are different: `sqlite3` and `plistlib` write and read their own output, so those formats have
-no outside opinion. The quarantine xattr value is a plain sidecar rather than a separately
-parsed format. The SQLite and plist limitations are declared gaps in
-`fidelity-scorecard.json`; they do not set a gate verdict. (The headline currently reads
-`fail`, because of Gate 4 below.) Beyond that, every format has real limitations and
+**Artifact fidelity — partial, and measured.** Every classified structured format is opened
+by two independently implemented parsers. For SQLite and binary plists, the second
+implementation is a deliberately narrow, bounded raw reader maintained here—not an external
+endorsement. Each parser pair receives the same immutable byte snapshot; Gate 1 separately
+requires type-exact consensus and the exact knowledgeC, TCC, QuarantineEventsV2 or LaunchAgent
+profile. The quarantine xattr value remains a plain sidecar rather than a separately parsed
+format. Generator assurance is `pass`; the aggregate headline reads `fail` because Gate 4
+is red. Beyond that, every format has real limitations and
 [`KNOWN_TELLS.md`](KNOWN_TELLS.md) lists them: minimal registry hives with ASCII-only key names,
 uncompressed prefetch where Windows 10 compresses, and a Mach-O using an older linker idiom
 than any current clang emits.
@@ -209,18 +214,17 @@ Fixing it means deleting questions rather than patching the generator: for
 `persisted_sha256` the declared pivot is "the one Run value naming a resident program", and
 balancing the scene so decoys are mentioned equally makes the reference solver itself fail.
 The question and the leak are the same object. Until that lands the benchmark is
-**experimental** and no score from it should be reported. The generator's three gates have no
-failures; its assurance status still reads `gap` because the SQLite and plist second-oracle
-gaps remain.
+**experimental** and no score from it should be reported. The generator's three gates pass;
+its assurance status is `pass`. That does not make the experimental benchmark valid.
 
 **What it is not.** Not disk images, not memory, not EVTX, not a live host. The tier is loose
 files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.1.0, nothing published to PyPI. **Gates 1 to 3 have no
-failures; generator-assurance status is `gap` because two oracle gaps remain. Benchmark-validity
-status is `fail` because Gate 4 is red.** `fidelity-scorecard.json` at the repository root is
+Early and experimental, version 0.2.0, nothing published to PyPI. **Gates 1 to 3 pass;
+generator-assurance status is `pass`. Benchmark-validity status is `fail` because Gate 4 is
+red.** `fidelity-scorecard.json` at the repository root is
 the honest record — it ships whatever it actually reads, and right now that includes a
 failure. MIT licensed, deliberately, so any part of it could be merged upstream without
 friction if that ever became useful.

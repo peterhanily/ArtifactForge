@@ -6,8 +6,8 @@ has them.
 
 This file is enforced. `tests/test_known_tells.py` fails if a format the code can emit has no
 section here, and equally if a section here names no emitted format — so it cannot drift out
-of date silently. It is the prose half of `fidelity-scorecard.json`, whose `honest_gaps` array
-carries the same information in a form a machine can read.
+of date silently. This is the broader fidelity disclosure; `fidelity-scorecard.json` carries
+the narrower machine-measured gate failures and declared assurance gaps.
 
 Generated binaries are payload-free by construction, under the precise executable-code checks
 and limitations documented in
@@ -94,17 +94,23 @@ Covers knowledgeC, TCC and QuarantineEventsV2.
   PE, Mach-O, registry hive, prefetch record, plist and answer key is byte-identical across
   both operating system and architecture. The version in use is recorded in
   `fidelity-scorecard.json` and beside each sample.
-- **Not independently validated.** `sqlite3` both writes and reads these files, so it is not
-  an independent oracle. Gate 1 records this as a declared gap rather than counting it as
-  validation.
+- **Deliberately narrow second reader.** Gate 1 pairs `sqlite3` with a first-party byte reader
+  covering only 4096-byte rollback-mode databases whose schema objects own leaf table/index
+  roots. It rejects WAL, freelists, pointer maps, interior pages, overflow and schema SQL
+  outside the emitted grammar. The pair must agree type-for-type before exact knowledgeC,
+  TCC or QuarantineEventsV2 semantics are credited. This is independent implementation, not
+  external validation or general SQLite support.
 - **Pinned timestamps and rowids.** Mac absolute time from the scenario, never a clock.
 - **Marked.** A reserved `artifactforge_synthetic` table.
 
 ## plist
 
 - **LaunchAgent only**, with a minimal key set and a pinned `StartInterval`.
-- **Not independently validated.** `plistlib` both writes and reads it — the same gap as
-  SQLite, declared the same way.
+- **Deliberately narrow second reader.** Gate 1 pairs `plistlib` with a bounded first-party
+  `bplist00` decoder and requires a type-exact object-graph match before checking the exact
+  six-key LaunchAgent profile. Unsupported tokens, noncanonical widths, cycles, aliases of
+  containers and resource-limit violations are red; this is not general property-list support
+  or external validation.
 - **Marked.** A reserved `artifactforge_synthetic` key. launchd ignores keys it does not know.
 
 ## Not emitted at all

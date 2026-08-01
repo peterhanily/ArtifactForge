@@ -35,6 +35,7 @@ import json
 # coverage with it. Re-measure before tightening any of these.
 _METRICS = [
     ("gates.validity.oracle_reads_passed",     "higher_better", 0, "validity: oracle reads passed"),
+    ("gates.validity.oracle_reads_total",      "higher_better", 0, "validity: oracle reads declared"),
     ("gates.validity.semantic_checks_passed",  "higher_better", 0, "validity: semantic checks passed"),
     ("gates.validity.semantic_checks_total",   "higher_better", 0, "validity: semantic checks declared"),
     ("gates.identity.checks_joined",           "higher_better", 0, "identity: cross-artifact joins holding"),

@@ -52,12 +52,14 @@ jobs:
 
       - name: Oracle versions (fail fast if broken)
         # A silently-missing oracle turns a real gate into a skipped test, and a skipped test
-        # exits 0. Print every oracle's version so a broken install fails here, loudly, rather
-        # than downstream as a green run that checked nothing.
+        # exits 0. Print every external oracle's version and import both shipped raw readers
+        # so a broken install fails here, loudly, rather than downstream as a green run that
+        # checked nothing.
         run: |
           uv run python - <<'PY'
           import sqlite3
           import lief, macholib, pefile, pyregf, pyscca, regipy, windowsprefetch, yara
+          from artifactforge.gates.oracles import loads_binary_plist, loads_sqlite
           print("pefile          ", pefile.__version__)
           print("lief            ", lief.__version__)
           print("macholib        ", macholib.__version__)
@@ -67,6 +69,7 @@ jobs:
           print("libscca         ", pyscca.get_version())
           print("yara-python     ", yara.__version__)
           print("sqlite3         ", sqlite3.sqlite_version)
+          print("shipped raw     ", loads_sqlite.__name__, loads_binary_plist.__name__)
           PY
 
       - name: Lint
@@ -102,9 +105,16 @@ jobs:
           wheel-smoke/bin/artifactforge fixture verify wheel-fixture
           wheel-smoke/bin/python - <<'PY'
           from importlib.resources import files
+          from pathlib import Path
+          from artifactforge.gates.oracles import load_binary_plist, load_sqlite
 
           names = sorted(path.name for path in files("artifactforge.fixture.schemas").iterdir())
           assert names == ["fixture-manifest-v1.schema.json", "fixture-spec-v1.schema.json"]
+          payload = Path("wheel-fixture/artifacts")
+          databases = [payload / name for name in ("knowledgeC.db", "TCC.db", "QuarantineEventsV2")]
+          plists = sorted(payload.glob("*.plist"))
+          assert all(load_sqlite(path).tables for path in databases)
+          assert len(plists) == 3 and all(load_binary_plist(path) for path in plists)
           print(names)
           PY
 
@@ -114,9 +124,10 @@ jobs:
       - name: Gate 2 — identity (must PASS)
         run: uv run artifactforge gate identity --n 40
 
-      # PE, Mach-O, hive and prefetch each have two independently implemented readers. SQLite
-      # and plist use their standard-library writer as reader and remain declared gaps. A
-      # missing required oracle fails here rather than skipping.
+      # Every classified format has two implementations. SQLite and binary plists pair their
+      # standard-library parser with a bounded first-party raw reader over the same byte
+      # snapshot, then require typed consensus and an exact semantic profile. A missing
+      # required oracle fails here rather than skipping.
       - name: Gate 1 — validity (must PASS)
         run: uv run artifactforge gate validity --n 40
 
@@ -156,13 +167,16 @@ jobs:
           diff -r -x 'knowledgeC.db' -x 'TCC.db' -x 'QuarantineEventsV2' \
             samples.committed samples
           echo "every non-SQLite artifact is byte-identical across OS and architecture"
-          # The excluded three still have to be valid, or the exclusion would hide a break.
+          # The excluded three still have to satisfy both implementations, or the exclusion
+          # would hide a break.
           for db in knowledgeC.db TCC.db QuarantineEventsV2; do
             uv run python -c "
           import sqlite3, sys
+          from artifactforge.gates.oracles import load_sqlite
           con = sqlite3.connect('samples/02-macos-quarantined-app/$db')
           assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
           assert con.execute(\"SELECT count(*) FROM sqlite_master WHERE type='table'\").fetchone()[0] >= 2
+          assert load_sqlite('samples/02-macos-quarantined-app/$db').tables
           print('  $db ok')"
           done
 

@@ -84,8 +84,9 @@ v17 and the XP/Server 2003 prefetch filename hash. This profile name travels in 
 until a v30 writer and deterministic MAM/LZXPRESS compression exist.
 
 `macos-14-loose-v1` emits the current arm64 Mach-O, SQLite databases, LaunchAgent plists and
-quarantine sidecars. The SQLite and plist independent-oracle gaps remain disclosed in the
-fidelity scorecard.
+quarantine sidecars. Gate 1 gives each SQLite database and binary plist two implementations
+over one bounded byte snapshot, requires type-exact consensus, and applies its named semantic
+profile. The second readers deliberately accept only the subset this profile emits.
 
 ## Integrity is not authenticity
 

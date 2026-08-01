@@ -75,9 +75,9 @@ def test_committed_status_keeps_benchmark_red_without_failing_generator(card):
     generator = card["status"]["generator_assurance"]
     benchmark = card["status"]["benchmark_validity"]
 
-    assert generator["verdict"] == "gap"
+    assert generator["verdict"] == "pass"
     assert not generator["fails"]
-    assert generator["gaps"]
+    assert not generator["gaps"]
     assert benchmark["verdict"] == "fail"
     assert benchmark["fails"]
     assert card["gates"]["solvability"]["verdict"] == "fail"
@@ -417,7 +417,7 @@ def test_package_version_is_consistent_with_release_metadata(card):
         packages = tomllib.load(f)["package"]
     lock_version = next(p["version"] for p in packages if p["name"] == "artifactforge")
 
-    assert project_version == "0.1.0"
+    assert project_version == "0.2.0"
     assert __version__ == project_version
     assert lock_version == project_version
     assert card["generator"]["artifactforge_version"] == project_version

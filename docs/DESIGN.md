@@ -100,9 +100,12 @@ project emitted was accepted by `windowsprefetch` and refused by `pyscca` — th
 plaso is built on — for as long as `windowsprefetch` was the only oracle installed.
 
 A missing oracle is a **failure, never a skip**: a skipped check exits 0 and reads exactly
-like a passing one. Where no genuinely independent second implementation exists — SQLite
-databases and binary plists are read back by the library that wrote them — that is a declared
-gap, not silent credit.
+like a passing one. SQLite and binary plists pair the standard-library implementation with
+small raw readers derived directly from the published container layouts. Both implementations
+receive one bounded immutable snapshot, return type-tagged observations, and must agree on the
+complete modeled object graph before either format's semantic profile can pass. Those raw
+readers are independently implemented, but maintained in this repository; that is not an
+external validation or a claim about SQLite/plist features outside their strict emitted subset.
 
 Opening a container is necessary but not sufficient for structural claims. For PE, pefile and
 LIEF independently enumerate the named import sequence, confirm pefile/VT-normalised IMPHASH
@@ -110,6 +113,13 @@ semantics and then agree with each other. For v17 prefetch, a separate raw-struc
 recomputes the XP path hash from the referenced UTF-16LE device path and binds it to the header
 and filename. Parseable mutations that remove the PE import directory or change the embedded
 prefetch hash turn this gate red.
+
+For the macOS databases, container consensus covers schema SQL, root-page ownership, typed
+rows, order, duplicates and primary-key index entries; the profile then fixes the marker plus
+knowledgeC, TCC or QuarantineEventsV2 meanings. Binary-plist consensus is type-exact—boolean
+`true` cannot collapse into integer `1`—and the LaunchAgent profile fixes its six keys,
+filename/label, program path, persistence settings and disclosure. Parser-only and
+meaning-only mutations prove both layers turn red independently.
 
 ### Gate 2 — identity
 

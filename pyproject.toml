@@ -1,6 +1,6 @@
 [project]
 name = "artifactforge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic, parser-gated synthetic forensic artifacts with byte-derived identity."
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -10,8 +10,9 @@ license-files = ["LICENSE"]
 dependencies = []
 
 [project.optional-dependencies]
-# Real DFIR parsers used only as CI oracles (consistency-by-construction), never to generate.
-# Two independently implemented parsers for PE, Mach-O, hive and prefetch, because one
+# External DFIR parsers are dev-only CI oracles, never generation dependencies. The SQLite
+# and bplist raw readers ship in the zero-dependency package. Two implementations cover every
+# classified format because one
 # permissive parser hides what a strict one rejects: every prefetch file this project emitted
 # was accepted by `windowsprefetch` and refused by libyal's `pyscca` — which plaso is built on — for as long
 # as `windowsprefetch` was the only oracle installed.
@@ -19,6 +20,8 @@ dependencies = []
 #   Mach-O    lief + macholib
 #   registry  regipy + libregf
 #   prefetch  windowsprefetch + libscca
+#   SQLite    sqlite3 + the bounded first-party raw reader
+#   bplist    plistlib + the bounded first-party raw reader
 dev = [
     "pytest>=8",
     "pefile",

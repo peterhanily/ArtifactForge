@@ -249,8 +249,8 @@ def test_inertness_reddens_when_a_bundle_id_names_a_real_vendor(tmp_path):
     task = _macos(tmp_path, "vendor")
     before = inertness.run(task.directory)
 
-    with open(os.path.join(task.directory, "com.apple.Notes.plist"), "wb") as f:
-        f.write(build_launch_agent("com.apple.Notes", "/tmp/x"))
+    with open(os.path.join(task.directory, "com.apple.notes.plist"), "wb") as f:
+        f.write(build_launch_agent("com.apple.notes", "/tmp/x"))
 
     new = _new_fails(before, inertness.run(task.directory))
     assert any("real vendor" in f for f in new), new
@@ -494,6 +494,124 @@ def test_solvability_reddens_when_the_blind_adversary_is_broken(tmp_path):
 
 def _macos(tmp_path, name="m"):
     return next(t for t in _suite(tmp_path, name) if t.family == "macos")
+
+
+def test_validity_reddens_when_raw_sqlite_header_constraints_are_violated(tmp_path):
+    """MUTATION: reserved header byte 72 is non-zero; sqlite3 still accepts the database."""
+    task = _macos(tmp_path, "sqlite-header")
+    before = validity.run(task.directory)
+    assert before.ok
+    path = os.path.join(task.directory, "knowledgeC.db")
+    with open(path, "rb") as file:
+        data = bytearray(file.read())
+    data[72] = 1
+    assert validity._read_sqlite3(bytes(data)).tables
+    with open(path, "wb") as file:
+        file.write(data)
+
+    new = _new_fails(before, validity.run(task.directory))
+    assert any("sqlite-raw rejected" in failure for failure in new), new
+
+
+def test_validity_reddens_when_unallocated_sqlite_bytes_hide_payload(tmp_path):
+    """MUTATION: sqlite3 ignores non-zero page slack; the exact raw profile must not."""
+    task = _macos(tmp_path, "sqlite-slack")
+    before = validity.run(task.directory)
+    assert before.ok
+    path = os.path.join(task.directory, "knowledgeC.db")
+    with open(path, "rb") as file:
+        data = bytearray(file.read())
+    page = 4096
+    header = page
+    cell_count = int.from_bytes(data[header + 3:header + 5], "big")
+    pointer_end = header + 8 + 2 * cell_count
+    content_start = page + int.from_bytes(data[header + 5:header + 7], "big")
+    payload = b"PAYLOAD-UNALLOCATED-NOT-PARSED"
+    assert pointer_end + len(payload) < content_start
+    data[pointer_end:pointer_end + len(payload)] = payload
+    assert validity._read_sqlite3(bytes(data)).tables
+    with open(path, "wb") as file:
+        file.write(data)
+
+    new = _new_fails(before, validity.run(task.directory))
+    assert any("sqlite-raw rejected" in failure for failure in new), new
+
+
+def test_validity_reddens_when_bplist_reserved_trailer_bytes_are_nonzero(tmp_path):
+    """MUTATION: plistlib accepts a trailer value outside the canonical raw subset."""
+    task = _macos(tmp_path, "plist-trailer")
+    before = validity.run(task.directory)
+    assert before.ok
+    name = f"{task.join['subject']['bundle_id']}.plist"
+    path = os.path.join(task.directory, name)
+    with open(path, "rb") as file:
+        data = bytearray(file.read())
+    data[-32] = 1
+    assert validity._read_plistlib(bytes(data)).value["RunAtLoad"] is True
+    with open(path, "wb") as file:
+        file.write(data)
+
+    new = _new_fails(before, validity.run(task.directory))
+    assert any("bplist-raw rejected" in failure for failure in new), new
+
+
+def test_validity_reddens_on_tcc_meaning_even_when_both_parsers_agree(tmp_path):
+    """MUTATION: auth_value 1 is valid SQLite but outside the modeled TCC semantics."""
+    import sqlite3
+
+    task = _macos(tmp_path, "tcc-profile")
+    before = validity.run(task.directory)
+    assert before.ok
+    path = os.path.join(task.directory, "TCC.db")
+    con = sqlite3.connect(path)
+    try:
+        # 0 and 1 both use a zero-byte SQLite serial payload, preserving canonical tiling.
+        con.execute("UPDATE access SET auth_value=1 WHERE rowid=3")
+        con.commit()
+    finally:
+        con.close()
+
+    new = _new_fails(before, validity.run(task.directory))
+    assert any("macos-sqlite-profile" in failure for failure in new), new
+    assert not any("sqlite-consensus" in failure or "rejected it" in failure for failure in new)
+
+
+def test_validity_reddens_on_plist_type_even_when_both_parsers_agree(tmp_path):
+    """MUTATION: integer 1 compares equal to True in Python but is not a plist boolean."""
+    import plistlib
+
+    task = _macos(tmp_path, "plist-profile")
+    before = validity.run(task.directory)
+    assert before.ok
+    name = f"{task.join['subject']['bundle_id']}.plist"
+    path = os.path.join(task.directory, name)
+    with open(path, "rb") as file:
+        value = plistlib.load(file)
+    value["RunAtLoad"] = 1
+    with open(path, "wb") as file:
+        plistlib.dump(value, file, fmt=plistlib.FMT_BINARY, sort_keys=True)
+
+    new = _new_fails(before, validity.run(task.directory))
+    assert any("launchagent-profile" in failure for failure in new), new
+    assert not any("bplist-consensus" in failure or "rejected it" in failure for failure in new)
+
+
+def test_validity_reddens_when_sqlite_artifact_names_are_swapped(tmp_path):
+    """MUTATION: both databases remain valid, but their names now assert the wrong profile."""
+    task = _macos(tmp_path, "sqlite-names")
+    before = validity.run(task.directory)
+    assert before.ok
+    left = os.path.join(task.directory, "TCC.db")
+    right = os.path.join(task.directory, "knowledgeC.db")
+    temporary = os.path.join(task.directory, ".swap.db")
+    os.replace(left, temporary)
+    os.replace(right, left)
+    os.replace(temporary, right)
+
+    new = _new_fails(before, validity.run(task.directory))
+    profile_failures = [failure for failure in new if "macos-sqlite-profile" in failure]
+    assert len(profile_failures) == 2, new
+    assert not any("sqlite-consensus" in failure or "rejected it" in failure for failure in new)
 
 
 def test_identity_reddens_when_the_macho_no_longer_matches_the_scene(tmp_path):

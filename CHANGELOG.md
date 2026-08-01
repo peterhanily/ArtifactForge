@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-01
+
+### Added
+
+Gate 1 now has independent raw readers for the exact SQLite and `bplist00` subsets emitted by
+the macOS profile. The SQLite reader covers canonical varints and records, schema/root-page
+ownership, leaf table and index b-trees, rowid aliases, REAL affinity and primary-key index
+correspondence. The binary-plist reader covers the canonical bounded scalar, array and
+dictionary forms used by LaunchAgents. Both are standard-library-only and import neither the
+format writer nor its standard parser.
+
+Typed consensus is separate from semantic-profile validation. knowledgeC, TCC,
+QuarantineEventsV2 and LaunchAgent profiles now fix their schemas, value types, row/key counts,
+time and URL bounds, marker data, index coverage, filename/label identity and persistence
+semantics. Parser-valid meaning mutations and standard-parser-valid raw-format mutations turn
+the two layers red independently.
+
+### Security
+
+SQLite/plist parser pairs consume one bounded immutable snapshot, preventing pathname swaps
+from splicing two different files into a false consensus. Standard-parser reads are bounded
+before allocation; plist graph traversal rejects cycles, shared containers and logical
+expansion beyond its profile budget. SQLite generation retains the exclusive inode SQLite
+writes and reads that descriptor after close, so pathname replacement fails closed.
+
+Public macOS builders now consume at most nine candidate rows before enforcing their eight-row
+leaf limit, reject ambiguous bool/numeric inputs, non-finite or oversized values, duplicate
+identities, non-HTTPS/control-bearing quarantine values, non-normal LaunchAgent paths and
+non-profile persistence settings. LaunchAgent labels are bounded lowercase reverse-DNS
+identifiers.
+
+### Changed
+
+Generator-assurance status is now `pass`: all classified structured formats have two parser
+implementations and every declared Gate 1 semantic profile is green. Benchmark-validity
+remains `fail`; closing parser gaps does not repair Gate 4's structural shortcut.
+
+Fixture Core keeps schema/ABI v1 and valid v1 recipe payload bytes are unchanged, but
+verification deliberately requires the manifest's exact generator version. A fixture or
+archive created by 0.1.0 must therefore be verified with 0.1.0, or rebuilt under 0.2.0 before
+0.2.0 will accept it.
+
 ## 0.1.0 - 2026-08-01
 
 ### Added

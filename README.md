@@ -1,5 +1,7 @@
 # ArtifactForge
 
+[![CI](https://github.com/peterhanily/ArtifactForge/actions/workflows/ci.yml/badge.svg)](https://github.com/peterhanily/ArtifactForge/actions/workflows/ci.yml)
+
 Deterministic, **parser-validated** synthetic forensic artifacts — the files a responder finds
 on a host once they dig in — consistent with the incident model of
 [EvidenceForge](https://github.com/Cisco-Talos/EvidenceForge), which generates the logs.

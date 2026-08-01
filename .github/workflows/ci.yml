@@ -28,8 +28,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]   # 3.11 is the declared floor — test it, don't assume it
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
       - name: Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
@@ -149,8 +149,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
       - name: Python
         run: uv python install 3.12
 
@@ -193,8 +193,8 @@ jobs:
     timeout-minutes: 20
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
       - run: uv python install 3.12
       - name: Install against EvidenceForge main
         run: |

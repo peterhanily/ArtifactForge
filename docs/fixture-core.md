@@ -62,9 +62,12 @@ The input schemas are `artifactforge-fixture-spec-v1` and
 non-normalised text, floats and unsafe paths. JSON written by ArtifactForge is UTF-8,
 sorted-key, compact, no-NaN JSON with exactly one trailing line feed.
 
-Payload paths are printable-ASCII POSIX-relative names. Absolute paths, dot components,
-backslashes, control characters, symbolic links, special files and case-fold collisions are
-rejected. A tree digest covers the canonical, sorted list of each path, size and SHA-256.
+Payload paths are printable-ASCII POSIX-relative names. Nested and dot-prefixed components
+such as `.config/autostart/tool.desktop` are ordinary members; the literal components `.` and
+`..` are not. Absolute paths, empty/dot/traversal components, backslashes, control characters,
+symbolic links, special files, unbound empty directories, case-fold collisions and
+file/directory ancestor collisions are rejected. A tree digest covers the canonical, sorted
+list of each file path, size and SHA-256.
 
 The scene key uses a fixture-specific HMAC domain and never reuses benchmark derivation. The
 seed is public by design: fixtures are reproducible QA assets, not secret hold-outs.

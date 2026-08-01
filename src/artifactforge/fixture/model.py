@@ -24,6 +24,7 @@ from artifactforge.fixture.canonical import (
     load_canonical_json,
     load_json_strict,
 )
+from artifactforge.inventory import InventoryError, validate_relative_path
 
 SPEC_SCHEMA = "artifactforge-fixture-spec-v1"
 SPEC_PURPOSE = "public-reproducible-fixture"
@@ -109,20 +110,10 @@ def _labelled_sha256(value: object, where: str) -> str:
 
 def validate_artifact_path(path: object) -> str:
     """Validate one printable-ASCII, relative POSIX payload path without normalising it."""
-    if not isinstance(path, str) or not path:
-        raise FixtureValidationError("artifact path must be a non-empty string")
-    if any(ord(character) < 0x20 or ord(character) > 0x7E for character in path):
-        raise FixtureValidationError(f"artifact path must be printable ASCII: {path!r}")
-    if path.startswith("/"):
-        raise FixtureValidationError(f"artifact path must be relative: {path!r}")
-    if "\\" in path:
-        raise FixtureValidationError(f"artifact path must use POSIX separators: {path!r}")
-    parts = path.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        raise FixtureValidationError(
-            f"artifact path must not contain empty, '.' or '..' components: {path!r}"
-        )
-    return path
+    try:
+        return validate_relative_path(path)
+    except InventoryError as exc:
+        raise FixtureValidationError(str(exc)) from exc
 
 
 @dataclass(frozen=True)

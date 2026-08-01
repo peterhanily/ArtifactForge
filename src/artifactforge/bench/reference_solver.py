@@ -16,24 +16,41 @@ Parser imports are lazy, so `import artifactforge` never requires the dev oracle
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
+from pathlib import Path
 import plistlib
 import sqlite3
 
+from artifactforge.inventory import InventoryFile, captured_regular_tree
 
-def _resident(directory: str) -> dict:
+
+SUPPORTED_FAMILIES = frozenset(("windows", "macos"))
+
+
+def _named(files: tuple[InventoryFile, ...], name: str) -> InventoryFile:
+    """Resolve one artifact by basename while refusing recursive ambiguity."""
+    matches = [file for file in files if file.name == name]
+    if len(matches) != 1:
+        locations = [file.relative_path for file in matches]
+        raise ValueError(
+            f"expected exactly one artifact named {name!r}, found {len(matches)}: {locations}"
+        )
+    return matches[0]
+
+
+def _resident(files: tuple[InventoryFile, ...]) -> dict:
     """lowercased filename -> (path, bytes) for every PE actually present in the scene."""
     out = {}
-    for name in sorted(os.listdir(directory)):
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, "rb") as f:
-            data = f.read()
+    for file in files:
+        data = file.data
+        if data is None:
+            raise AssertionError("reference-solver snapshot contains no bytes")
         if data[:2] == b"MZ":
-            out[name.lower()] = (path, data)
+            name = file.name.lower()
+            if name in out:
+                raise ValueError(f"resident PE basename is ambiguous: {file.name!r}")
+            out[name] = (file.path, data)
     return out
 
 
@@ -41,16 +58,16 @@ def _basename(win_path: str) -> str:
     return win_path.replace("/", "\\").rsplit("\\", 1)[-1].lower()
 
 
-def _solve_windows(d: str) -> dict:
+def _solve_windows(files_snapshot: tuple[InventoryFile, ...]) -> dict:
     import pefile
     from regipy.registry import RegistryHive
     from windowsprefetch import Prefetch
 
-    files = _resident(d)
+    files = _resident(files_snapshot)
     a = {}
 
     # Pivot 1: of the Run key's autostarts, exactly one names a program that is here.
-    run = RegistryHive(os.path.join(d, "Software.run.hive")).get_key(
+    run = RegistryHive(os.fspath(_named(files_snapshot, "Software.run.hive").path)).get_key(
         "\\Microsoft\\Windows\\CurrentVersion\\Run")
     persisted = [v.value for v in run.get_values() if _basename(v.value) in files]
     if len(persisted) != 1:
@@ -62,15 +79,17 @@ def _solve_windows(d: str) -> dict:
 
     # Pivot 2: the prefetch record for that same program carries its run count.
     prefetches = {}
-    for pf_path in sorted(glob.glob(os.path.join(d, "*.pf"))):
-        pf = Prefetch(pf_path)
+    for file in files_snapshot:
+        if not file.name.endswith(".pf"):
+            continue
+        pf = Prefetch(os.fspath(file.path))
         prefetches[pf.executableName.lower()] = pf
     a["persisted_run_count"] = prefetches[pname].runCount
 
     # Pivot 3: hash every resident file, then find the one Amcache row that matches.
     by_sha1 = {hashlib.sha1(data).hexdigest(): data                 # noqa: S324 - identity
                for _, data in files.values()}
-    iaf = RegistryHive(os.path.join(d, "Amcache.hve")).get_key(
+    iaf = RegistryHive(os.fspath(_named(files_snapshot, "Amcache.hve").path)).get_key(
         "\\Root\\InventoryApplicationFile")
     matched = [by_sha1[v.value[4:]]
                for sub in iaf.iter_subkeys()
@@ -90,20 +109,21 @@ def _solve_windows(d: str) -> dict:
 
 
 def _query(path: str, sql: str):
-    con = sqlite3.connect(path)
+    uri = Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
+    con = sqlite3.connect(uri, uri=True)
     try:
         return con.execute(sql).fetchall()
     finally:
         con.close()
 
 
-def _solve_macos(d: str) -> dict:
+def _solve_macos(files: tuple[InventoryFile, ...]) -> dict:
     a = {}
 
     # Pivot 1: allowed by TCC *and* actually used, per knowledgeC.
-    granted = {r[0] for r in _query(os.path.join(d, "TCC.db"),
+    granted = {r[0] for r in _query(os.fspath(_named(files, "TCC.db").path),
                                     "SELECT client FROM access WHERE auth_value = 2")}
-    used = {r[0] for r in _query(os.path.join(d, "knowledgeC.db"),
+    used = {r[0] for r in _query(os.fspath(_named(files, "knowledgeC.db").path),
                                  "SELECT ZVALUESTRING FROM ZOBJECT "
                                  "WHERE ZSTREAMNAME = '/app/inFocus'")}
     subjects = sorted(granted & used)
@@ -113,24 +133,30 @@ def _solve_macos(d: str) -> dict:
     a["granted_and_used_bundle"] = subject
 
     # Pivot 2: that app's quarantine xattr names the download event.
-    with open(os.path.join(d, f"{subject}.quarantine.xattr")) as f:
-        uuid = f.read().strip().split(";")[-1]
-    rows = _query(os.path.join(d, "QuarantineEventsV2"),
+    xattr = _named(files, f"{subject}.quarantine.xattr").data
+    if xattr is None:
+        raise AssertionError("reference-solver snapshot contains no bytes")
+    uuid = xattr.decode().strip().split(";")[-1]
+    rows = _query(os.fspath(_named(files, "QuarantineEventsV2").path),
                   "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
                   "LSQuarantineAgentName FROM LSQuarantineEvent")
     row = next(r for r in rows if r[0] == uuid)
     a["subject_download_url"], a["subject_quarantine_agent"] = row[1], row[2]
 
     # Pivot 3: the LaunchAgent whose Label is that bundle id.
-    with open(os.path.join(d, f"{subject}.plist"), "rb") as f:
-        a["subject_persistence_path"] = plistlib.load(f)["ProgramArguments"][0]
+    launch_agent = _named(files, f"{subject}.plist").data
+    if launch_agent is None:
+        raise AssertionError("reference-solver snapshot contains no bytes")
+    a["subject_persistence_path"] = plistlib.loads(launch_agent)["ProgramArguments"][0]
 
     # Pivot 4: that app's binary, read with a real Mach-O parser.
     import lief
-    with open(os.path.join(d, subject), "rb") as f:
-        data = f.read()
+    binary_file = _named(files, subject)
+    data = binary_file.data
+    if data is None:
+        raise AssertionError("reference-solver snapshot contains no bytes")
     a["subject_binary_sha256"] = hashlib.sha256(data).hexdigest()
-    binary = lief.parse(os.path.join(d, subject))
+    binary = lief.parse(os.fspath(binary_file.path))
     undefined = sorted(sym.name for sym in binary.symbols
                        if sym.is_external and not sym.has_export_info
                        and sym.name.startswith("_"))
@@ -141,4 +167,10 @@ def _solve_macos(d: str) -> dict:
 
 def reference_solve(public) -> dict:
     """Answer a PublicTask by reading its artifacts. Never sees an expected value."""
-    return (_solve_windows if public.family == "windows" else _solve_macos)(public.directory)
+    solvers = {"windows": _solve_windows, "macos": _solve_macos}
+    try:
+        solver = solvers[public.family]
+    except KeyError as exc:
+        raise ValueError(f"unsupported benchmark family: {public.family!r}") from exc
+    with captured_regular_tree(public.directory) as files:
+        return solver(files)

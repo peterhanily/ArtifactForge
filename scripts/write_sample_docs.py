@@ -18,7 +18,6 @@ makes it obvious.
 from __future__ import annotations
 
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -30,6 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from artifactforge import suite  # noqa: E402
 from artifactforge.disclosure import NOTICE  # noqa: E402
+from artifactforge.inventory import InventoryFile, inventory_regular_files  # noqa: E402
 
 BANNER = {
     "synthetic": True,
@@ -44,33 +44,44 @@ BANNER = {
 # version the gates ran under.
 
 
+def _named(files: tuple[InventoryFile, ...], name: str) -> InventoryFile:
+    matches = [file for file in files if file.name == name]
+    if len(matches) != 1:
+        raise ValueError(
+            f"sample artifact basename {name!r} resolves to "
+            f"{[file.relative_path for file in matches]}"
+        )
+    return matches[0]
+
+
 def _windows_readings(d: str) -> list:
     import pefile
     import pyscca
     from regipy.registry import RegistryHive
     out = []
+    files = inventory_regular_files(d, capture_bytes=True)
 
     binaries = {}
-    for name in sorted(os.listdir(d)):
-        path = os.path.join(d, name)
-        with open(path, "rb") as f:
-            head = f.read(2)
-        if head == b"MZ":
-            with open(path, "rb") as f:
-                binaries[name] = f.read()
+    binary_names = set()
+    for file in files:
+        data = file.data
+        assert data is not None
+        if data[:2] == b"MZ":
+            binaries[file.relative_path] = data
+            binary_names.add(file.name.lower())
 
     out.append(("pefile — every binary present", "\n".join(
         f"{name:24s} sha256={hashlib.sha256(data).hexdigest()[:16]}...  "
         f"imphash={pefile.PE(data=data).get_imphash()}"
         for name, data in binaries.items())))
 
-    run = RegistryHive(os.path.join(d, "Software.run.hive")).get_key(
+    run = RegistryHive(os.fspath(_named(files, "Software.run.hive").path)).get_key(
         "\\Microsoft\\Windows\\CurrentVersion\\Run")
     out.append(("regipy — Run key: three autostarts, one naming a program that is here",
                 "\n".join(f"{v.name:24s} {v.value}" for v in run.get_values())))
 
     by_sha1 = {hashlib.sha1(x).hexdigest(): n for n, x in binaries.items()}   # noqa: S324
-    iaf = RegistryHive(os.path.join(d, "Amcache.hve")).get_key(
+    iaf = RegistryHive(os.fspath(_named(files, "Amcache.hve").path)).get_key(
         "\\Root\\InventoryApplicationFile")
     rows = []
     for sub in iaf.iter_subkeys():
@@ -82,11 +93,13 @@ def _windows_readings(d: str) -> list:
                 "\n".join(rows)))
 
     lines = []
-    for pf_path in sorted(glob.glob(os.path.join(d, "*.pf"))):
+    for file in files:
+        if not file.name.endswith(".pf"):
+            continue
         f = pyscca.file()
-        f.open(pf_path)
+        f.open(os.fspath(file.path))
         try:
-            resident = "" if f.get_executable_filename().lower() in binaries else \
+            resident = "" if f.get_executable_filename().lower() in binary_names else \
                 "  <-- not on disk"
             lines.append(f"{f.get_executable_filename():24s} run_count={f.get_run_count()}  "
                          f"hash=0x{f.get_prefetch_hash():08x}{resident}")
@@ -100,26 +113,27 @@ def _macos_readings(d: str) -> list:
     import lief
     import plistlib
     out = []
+    files = inventory_regular_files(d, capture_bytes=True)
 
     binaries = []
-    for name in sorted(os.listdir(d)):
-        path = os.path.join(d, name)
-        with open(path, "rb") as f:
-            if f.read(4) != b"\xcf\xfa\xed\xfe":
-                continue
-        b = lief.parse(path)
+    for file in files:
+        data = file.data
+        assert data is not None
+        if data[:4] != b"\xcf\xfa\xed\xfe":
+            continue
+        b = lief.parse(os.fspath(file.path))
         undefined = sorted(s.name for s in b.symbols
                            if s.is_external and not s.has_export_info
                            and s.name.startswith("_"))
         binaries.append(
-            f"{name:26s} {str(b.header.cpu_type).split('.')[-1]:8s} "
+            f"{file.relative_path:26s} {str(b.header.cpu_type).split('.')[-1]:8s} "
             f"cmds={b.header.nb_cmds}  symhash="
             f"{hashlib.md5(','.join(undefined).encode()).hexdigest()}")     # noqa: S324
     out.append(("LIEF — every Mach-O present, with the symhash recomputed from its symbol "
                 "table", "\n".join(binaries)))
 
     def q(name, sql):
-        con = sqlite3.connect(os.path.join(d, name))
+        con = sqlite3.connect(os.fspath(_named(files, name).path))
         try:
             return con.execute(sql).fetchall()
         finally:
@@ -139,9 +153,12 @@ def _macos_readings(d: str) -> list:
                     "LSQuarantineDataURLString FROM LSQuarantineEvent"))))
 
     lines = []
-    for path in sorted(glob.glob(os.path.join(d, "*.plist"))):
-        with open(path, "rb") as f:
-            pl = plistlib.load(f)
+    for file in files:
+        if not file.name.endswith(".plist"):
+            continue
+        data = file.data
+        assert data is not None
+        pl = plistlib.loads(data)
         lines.append(f"{pl['Label']:26s} {pl['ProgramArguments'][0]}")
     out.append(("plistlib — LaunchAgents", "\n".join(lines)))
     return out

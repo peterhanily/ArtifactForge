@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-08-01
+
+### Added
+
+Loose-file scenes now support canonical nested and dot-prefixed relative POSIX paths. One
+shared scene inventory covers staging, Gates 1–3, sample documentation and committed-sample
+checks; Fixture Core shares the path grammar while retaining its descriptor-bound recursive
+verifier. The scene inventory rejects traversal aliases, duplicate and case-folding paths,
+file/directory ancestor conflicts, links, special files, unbound empty directories and trees
+outside explicit file, byte and depth limits.
+
+### Security
+
+Scene builders write through pinned directory descriptors and refuse linked intermediate
+components. Staging captures every allowlisted source byte first, constructs and verifies a
+private sibling tree, pins its inode and parent through publication, then rechecks the
+published bytes. A no-replace rename prevents overwrites; failed publications owned by the
+stager are removed. Gates 1 and 2 capture the source tree once through no-follow descriptors
+and run pathname-only parsers against a private, frozen copy. Snapshot cleanup is likewise
+descriptor-bound and never chmods through a replaced link. Gate 3 uses the same captured bytes
+directly and no longer exempts a file merely because its leaf is named `JOIN_MANIFEST.json`.
+
+### Changed
+
+Windows and macOS artifact bytes, fixture recipes and payload-tree digests are unchanged.
+The deterministic 40-scene scorecard measurements are also unchanged: 880/880 Gate 1 reads,
+420/420 semantic checks, 400/400 Gate 2 joins, 200/200 binary checks, 440/440 markers, and the
+same deliberately failing 72.7% Gate 4 adversarial floor.
+
 ## 0.3.0 - 2026-08-01
 
 ### Added

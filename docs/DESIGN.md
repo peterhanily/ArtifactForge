@@ -36,8 +36,11 @@ disk. Deliberate stale and absent Amcache decoys are outside that content-blob c
 Dependencies point one way:
 
     model <- content <- artifacts <- compose <- fixture / bench <- cli
+    inventory ---------------------> compose / fixture / bench / gates
 
 - `model` — hosts, profiles, pinned times. Depends on nothing.
+- `inventory` — canonical recursive loose-file paths, bounded no-follow capture and exclusive
+  scene publication. Depends only on the standard library.
 - `content` — file bytes and their identity. The ContentStore lives here.
 - `artifacts` — pure builders for the structured formats and plain sidecar values; classified
   formats are validated by their declared readers.
@@ -63,6 +66,11 @@ exact sorted inventory of payload paths, sizes and SHA-256 values. Verification 
 manifest, re-inventories the tree, and independently regenerates the complete payload. An
 optional assurance pass runs Gates 1 and 3; Gate 2 is not claimed because the fixture manifest
 deliberately omits the private scene join.
+
+Nested and dot-prefixed components are ordinary artifact paths. The shared grammar rejects
+literal `.`/`..`, empty components, links, special files, empty directories, case-folding and
+file/ancestor conflicts. Scene capture additionally rejects resource-limit violations before
+a scene can be certified.
 
 The benchmark boundary is absolute: fixture manifests set `benchmark_eligible` to false and
 must never appear under a suite's served `scenarios/` tree. Their hashes and seed are public,
@@ -100,8 +108,12 @@ project emitted was accepted by `windowsprefetch` and refused by `pyscca` — th
 plaso is built on — for as long as `windowsprefetch` was the only oracle installed.
 
 A missing oracle is a **failure, never a skip**: a skipped check exits 0 and reads exactly
-like a passing one. SQLite and binary plists pair the standard-library implementation with
-small raw readers derived directly from the published container layouts. Both implementations
+like a passing one. Before any oracle runs, Gate 1 captures the bounded recursive tree through
+held no-follow descriptors and materializes a private frozen snapshot. Its directories are
+read/execute-only while the oracles run, and descriptor-bound cleanup never follows a replaced
+link. SQLite and binary plists pair
+the standard-library implementation with small raw readers derived directly from the published
+container layouts. Both implementations
 receive one bounded immutable snapshot, return type-tagged observations, and must agree on the
 complete modeled object graph before either format's semantic profile can pass. Those raw
 readers are independently implemented, but maintained in this repository; that is not an
@@ -126,8 +138,9 @@ meaning-only mutations prove both layers turn red independently.
 *Do the declared answer-bearing identities and cross-artifact pivots agree with the emitted
 bytes?*
 
-The keystone. Each declared value in the gate's scope is re-derived from the files on disk,
-through a real parser where the value is structural, and only then compared. Every check names
+The keystone. Gate 2 also works from one bounded no-follow capture and private snapshot. Each
+declared value in the gate's scope is re-derived from those bytes, through a real parser where
+the value is structural, and only then compared. Every check names
 the artifacts it spans, because a check confined to one artifact cannot detect a broken pivot.
 The gate does not claim that stale or absent decoy Amcache `FileId`s correspond to bytes shipped
 in the scene.
@@ -145,8 +158,10 @@ entry point, import-only data directories and modeled system DLLs. For Mach-O it
 load-command, library, segment and section profile, requires `LC_MAIN` to name the sole
 instruction entry, and independently verifies the CodeDirectory's page hashes and exact
 pre-signature coverage boundary.
-Every classified structured format carries an in-band `ARTIFACTFORGE` anchor. Plain sidecars,
-including the quarantine xattr value, are not counted by that marker gate. Domains must be RFC
+Every classified structured format anywhere in the recursive tree—including beneath a dot
+directory—carries an in-band `ARTIFACTFORGE` anchor. Plain sidecars, including the quarantine
+xattr value, are not counted by that marker gate, but are still inspected for indicator
+hygiene. Domains must be RFC
 2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that might be
 real.
 

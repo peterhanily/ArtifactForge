@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -22,6 +23,14 @@ from artifactforge import __version__
 from artifactforge import suite
 from artifactforge.bench.benchmark import generate_suite
 from artifactforge.gates import GateReport, identity, inertness, solvability, validity
+from artifactforge.inventory import (
+    InventoryError,
+    canonical_relative_paths,
+    inventory_regular_files,
+)
+
+
+_SCENARIO_ID = re.compile(r"af1_[a-z2-7]{16}")
 
 
 def _merge(gate: int, name: str, question: str, reports) -> GateReport:
@@ -293,15 +302,99 @@ def cmd_bench_new(args) -> int:
 def _load_suite(root: str):
     """Read a suite back from disk: what a solver sees, and what the grader knows."""
     from artifactforge.bench.benchmark import PublicQuestion, PublicTask
-    with open(suite.suite_paths(root)["public"]) as f:
+
+    paths = suite.suite_paths(root)
+    with open(paths["public"]) as f:
         public = json.load(f)
+    if not isinstance(public, dict):
+        raise ValueError("public suite document must be a JSON object")
+    scenarios = public.get("scenarios")
+    if not isinstance(scenarios, list):
+        raise ValueError("public suite scenarios must be a JSON list")
+
+    validated = []
+    seen_scenario_ids = set()
+    for index, entry in enumerate(scenarios):
+        if not isinstance(entry, dict):
+            raise ValueError(f"public suite scenario {index} must be a JSON object")
+        scenario_id = entry.get("scenario_id")
+        if not isinstance(scenario_id, str) or _SCENARIO_ID.fullmatch(scenario_id) is None:
+            raise ValueError(
+                f"public suite scenario {index} has an invalid scenario_id: {scenario_id!r}"
+            )
+        if scenario_id in seen_scenario_ids:
+            raise ValueError(f"public suite has duplicate scenario_id {scenario_id!r}")
+        seen_scenario_ids.add(scenario_id)
+
+        family = entry.get("family")
+        if not isinstance(family, str) or not family:
+            raise ValueError(f"scenario {scenario_id!r} family must be a non-empty string")
+        questions_raw = entry.get("questions")
+        if not isinstance(questions_raw, list):
+            raise ValueError(f"scenario {scenario_id!r} questions must be a JSON list")
+        for question_index, question in enumerate(questions_raw):
+            if not isinstance(question, dict):
+                raise ValueError(
+                    f"scenario {scenario_id!r} question {question_index} must be a JSON object"
+                )
+            for field in ("id", "prompt", "kind"):
+                if not isinstance(question.get(field), str):
+                    raise ValueError(
+                        f"scenario {scenario_id!r} question {question_index} "
+                        f"field {field!r} must be a string"
+                    )
+            joins = question.get("joins")
+            if type(joins) is not int or joins < 1:
+                raise ValueError(
+                    f"scenario {scenario_id!r} question {question_index} "
+                    "field 'joins' must be a positive integer"
+                )
+
+        published_raw = entry.get("artifacts")
+        if not isinstance(published_raw, list):
+            raise ValueError(
+                f"scenario {scenario_id!r} published artifacts must be a JSON list"
+            )
+        try:
+            published = canonical_relative_paths(published_raw, require_sorted=True)
+        except InventoryError as exc:
+            raise ValueError(
+                f"scenario {scenario_id!r} has an invalid published artifact inventory: {exc}"
+            ) from exc
+        if not published:
+            raise ValueError(
+                f"scenario {scenario_id!r} published artifact inventory must not be empty"
+            )
+        validated.append((scenario_id, family, questions_raw, published))
+
     tasks = []
-    for entry in public["scenarios"]:
+    for scenario_id, family, questions_raw, published in validated:
+        directory = os.path.join(paths["scenarios"], scenario_id)
+        try:
+            observed = tuple(
+                file.relative_path for file in inventory_regular_files(directory)
+            )
+        except InventoryError as exc:
+            raise ValueError(
+                f"scenario {scenario_id!r} served artifact tree is unsafe: {exc}"
+            ) from exc
+        if published != observed:
+            missing = sorted(set(published) - set(observed))
+            extra = sorted(set(observed) - set(published))
+            differences = []
+            if missing:
+                differences.append("missing: " + ", ".join(missing))
+            if extra:
+                differences.append("extra: " + ", ".join(extra))
+            raise ValueError(
+                f"scenario {scenario_id!r} published artifact inventory does not match "
+                f"the served tree ({'; '.join(differences)})"
+            )
+
         tasks.append(PublicTask(
-            entry["scenario_id"], entry["family"],
-            os.path.join(suite.suite_paths(root)["scenarios"], entry["scenario_id"]),
+            scenario_id, family, directory,
             [PublicQuestion(q["id"], q["prompt"], q["kind"], q["joins"])
-             for q in entry["questions"]]))
+             for q in questions_raw]))
     return public, tasks
 
 

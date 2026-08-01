@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 from artifactforge.disclosure import MARKER, NOTICE, RESERVED_NAME
 from artifactforge.gates import GateReport
 from artifactforge.gates.oracles import loads_binary_plist, loads_sqlite
+from artifactforge.inventory import InventoryError, captured_regular_tree
 
 # format -> the oracles that must all read it, plus any declared gap in that oracle set.
 ORACLES = {
@@ -203,7 +204,12 @@ def _classify_head(head: bytes, path: str) -> str | None:
 def classify(path: str) -> str | None:
     """Which format is this file? Magic first, extension only as a tiebreak."""
     with open(path, "rb") as f:
-        return _classify_head(f.read(16), path)
+        return classify_bytes(f.read(16), path)
+
+
+def classify_bytes(data: bytes, path: str) -> str | None:
+    """Classify an already-captured file without reopening a mutable scene path."""
+    return _classify_head(data[:16], path)
 
 
 # --- one reader per oracle. Each returns a short detail value, or raises. ---
@@ -982,17 +988,14 @@ def _classify_and_snapshot(path: str) -> tuple[str | None, bytes | None, str | N
     return fmt, snapshot, None
 
 
-def run(scene_dir: str) -> GateReport:
-    r = GateReport(1, "validity",
-                   "do declared parser and semantic oracles validate each artifact?")
+def _run_files(r: GateReport, files) -> tuple[int, int, int, int, set[str]]:
     checked = passed = 0
     semantic_checked = semantic_passed = 0
     seen_formats = set()
 
-    for name in sorted(os.listdir(scene_dir)):
-        path = os.path.join(scene_dir, name)
-        if not os.path.isfile(path) or name.startswith("."):
-            continue
+    for file in files:
+        name = file.relative_path
+        path = os.fspath(file.path)
         if name.endswith(_SIDECAR_SUFFIXES):
             continue
         fmt, snapshot, snapshot_error = _classify_and_snapshot(path)
@@ -1045,12 +1048,29 @@ def run(scene_dir: str) -> GateReport:
                 continue
             semantic_passed += 1
             r.metrics.setdefault("semantics", {})[f"{name}:{validator_name}"] = detail
+    return checked, passed, semantic_checked, semantic_passed, seen_formats
+
+
+def run(scene_dir: str) -> GateReport:
+    r = GateReport(1, "validity",
+                   "do declared parser and semantic oracles validate each artifact?")
+    inventory_failed = False
+    try:
+        with captured_regular_tree(scene_dir) as files:
+            checked, passed, semantic_checked, semantic_passed, seen_formats = _run_files(
+                r, files
+            )
+    except InventoryError as exc:
+        inventory_failed = True
+        checked = passed = semantic_checked = semantic_passed = 0
+        seen_formats = set()
+        r.fail(f"scene inventory is unsafe: {exc}")
 
     for fmt in sorted(seen_formats):
         if ORACLES[fmt]["gap"]:
             r.gap(f"{fmt}: {ORACLES[fmt]['gap']}")
 
-    if checked == 0:
+    if checked == 0 and not inventory_failed:
         # A gate that classified no artifact has not passed; it has not run. Reporting PASS
         # with 0/0 and exiting 0 is the exact vacuous success this project is built to catch,
         # and it did it to itself.

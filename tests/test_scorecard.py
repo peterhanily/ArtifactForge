@@ -417,7 +417,7 @@ def test_package_version_is_consistent_with_release_metadata(card):
         packages = tomllib.load(f)["package"]
     lock_version = next(p["version"] for p in packages if p["name"] == "artifactforge")
 
-    assert project_version == "0.3.0"
+    assert project_version == "0.3.1"
     assert __version__ == project_version
     assert lock_version == project_version
     assert card["generator"]["artifactforge_version"] == project_version

@@ -87,9 +87,18 @@ Answering anything about it requires reading two artifacts together, which is th
   them. The selected Amcache-to-disk and answer-key-to-disk joins reuse that identity. Deliberate
   stale and absent Amcache decoys do not claim to be resident file bytes.
 - **Fixture Core v1.** A strict public recipe builds `fixture.json` plus an exact `artifacts/`
-  payload; verification re-hashes and regenerates every byte, inspection and semantic diff are
-  stable interfaces, and release emits a deterministic checked USTAR archive. Fixture
-  manifests publish hashes and seeds, so they are explicitly ineligible for benchmark use.
+  payload; hidden and nested relative paths are ordinary first-class members. Verification
+  re-hashes and regenerates every byte, inspection and semantic diff are stable interfaces,
+  and release emits a deterministic checked USTAR archive. Fixture manifests publish hashes
+  and seeds, so they are explicitly ineligible for benchmark use.
+- **One recursive scene-tree contract.** Staging, Gates 1–3, sample documentation and sample
+  checks use a canonical relative-POSIX inventory; Fixture Core shares its path grammar while
+  retaining its stricter descriptor-bound publication verifier. Dot directories are included;
+  links, special files, empty directories, path aliases, case-fold and file/ancestor collisions
+  are rejected. Scene capture also enforces count/depth/size ceilings. Scenes are built
+  privately and atomically published with no replacement; path-only parsers receive a bounded,
+  frozen private copy made from one immutable byte capture rather than reopening the caller's
+  tree.
 - **A benchmark for investigation, not recall — experimental, with benchmark-validity status
   red because Gate 4 fails.** Deterministic scenes with decoys, questions that each span two
   artifacts, and answers derived from a suite key the solver never sees. The keyed-suite half
@@ -184,7 +193,9 @@ real: a batch regenerates byte-identical across processes, hash seeds, timezones
 **Artifact fidelity — partial, and measured.** Every classified structured format is opened
 by two independently implemented parsers. For SQLite and binary plists, the second
 implementation is a deliberately narrow, bounded raw reader maintained here—not an external
-endorsement. Each parser pair receives the same immutable byte snapshot; Gate 1 separately
+endorsement. Gate 1 first captures the complete bounded scene through held, no-follow file
+descriptors and gives pathname-only parsers a frozen private copy of that immutable capture;
+each parser pair thus observes the same bytes. Gate 1 separately
 requires type-exact consensus and the exact knowledgeC, TCC, QuarantineEventsV2 or LaunchAgent
 profile. The quarantine xattr value remains a plain sidecar rather than a separately parsed
 format. Generator assurance is `pass`; the aggregate headline reads `fail` because Gate 4
@@ -235,7 +246,7 @@ files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.3.0, nothing published to PyPI. **Gates 1 to 3 pass;
+Early and experimental, version 0.3.1, nothing published to PyPI. **Gates 1 to 3 pass;
 generator-assurance status is `pass`. Benchmark-validity status is `fail` because Gate 4 is
 red.** `fidelity-scorecard.json` at the repository root is
 the honest record — it ships whatever it actually reads, and right now that includes a

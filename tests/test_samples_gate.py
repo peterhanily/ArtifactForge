@@ -18,6 +18,7 @@ import os
 import pytest
 
 from artifactforge.gates import identity, inertness, validity
+from artifactforge.inventory import inventory_regular_files
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLES = sorted(glob.glob(os.path.join(ROOT, "samples", "*", "")))
@@ -90,15 +91,15 @@ def test_the_sample_readme_quotes_the_bytes_that_are_committed(sample):
     """The pasted parser output has to describe these files, not an earlier generation."""
     with open(os.path.join(sample, "README.md")) as f:
         readme = f.read()
-    for path in sorted(glob.glob(os.path.join(sample, "*"))):
-        name = os.path.basename(path)
+    for file in inventory_regular_files(sample, capture_bytes=True):
+        name = file.relative_path
         if name in ("README.md", "ARTIFACT_ANSWERS.json"):
             continue
-        with open(path, "rb") as f:
-            head = f.read(4)
+        data = file.data
+        assert data is not None
+        head = data[:4]
         if head[:2] == b"MZ" or head == b"\xcf\xfa\xed\xfe":
-            with open(path, "rb") as f:
-                digest = hashlib.sha256(f.read()).hexdigest()
+            digest = hashlib.sha256(data).hexdigest()
             assert name in readme, f"{name} is committed but the README does not mention it"
             if head[:2] == b"MZ":
                 assert digest[:16] in readme, f"{name}'s digest in the README is stale"

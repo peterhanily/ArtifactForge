@@ -29,7 +29,8 @@ import struct
 from dataclasses import dataclass
 
 from artifactforge.gates import GateReport
-from artifactforge.gates.validity import classify
+from artifactforge.gates.validity import classify_bytes
+from artifactforge.inventory import InventoryError, inventory_regular_files
 
 # The in-band anchor each format must carry. A format absent from this table is unmarked,
 # and unmarked is a failure — not an omission to be discovered later.
@@ -606,18 +607,24 @@ def run(scene_dir: str) -> GateReport:
     r = GateReport(3, "inertness",
                    "are binaries payload-free and classified formats marked synthetic?")
     marked = fmts = binary_safety_passed = binary_safety_total = 0
+    inventory_failed = False
 
-    for name in sorted(os.listdir(scene_dir)):
-        path = os.path.join(scene_dir, name)
-        if not os.path.isfile(path) or name.startswith("."):
-            continue
-        if name == "JOIN_MANIFEST.json":
-            continue
-        with open(path, "rb") as f:
-            data = f.read()
+    try:
+        files = inventory_regular_files(scene_dir, capture_bytes=True)
+    except InventoryError as exc:
+        files = ()
+        inventory_failed = True
+        r.fail(f"scene inventory is unsafe: {exc}")
 
-        fmt = classify(path)
-        _indicator_hygiene(r, fmt or os.path.splitext(name)[1] or "text", data)
+    for file in files:
+        name = file.relative_path
+        path = os.fspath(file.path)
+        data = file.data
+        if data is None:  # capture_bytes=True is a construction invariant.
+            raise AssertionError("scene inventory did not capture file bytes")
+
+        fmt = classify_bytes(data, path)
+        _indicator_hygiene(r, name, data)
         if fmt is None:
             continue                                   # xattr sidecar and other plain text
         fmts += 1
@@ -628,25 +635,25 @@ def run(scene_dir: str) -> GateReport:
             if ok:
                 binary_safety_passed += 1
             else:
-                r.fail(f"{fmt}: PE is not inert — {why}")
+                r.fail(f"{name}: {fmt} PE is not inert — {why}")
         elif fmt == "macho":
             binary_safety_total += 1
             ok, why = _macho_code_is_inert(data)
             if ok:
                 binary_safety_passed += 1
             else:
-                r.fail(f"{fmt}: Mach-O is not inert — {why}")
+                r.fail(f"{name}: {fmt} Mach-O is not inert — {why}")
 
         anchors = MARKERS.get(fmt)
         if anchors is None:
-            r.fail(f"{fmt}: no declared synthetic marker for this format")
+            r.fail(f"{name}: {fmt} has no declared synthetic marker")
         elif any(a in data for a in anchors):
             marked += 1
         else:
-            r.fail(f"{fmt}: carries no in-band synthetic marker, so a copy that "
+            r.fail(f"{name}: {fmt} carries no in-band synthetic marker, so a copy that "
                            f"escapes its bundle cannot be recognised as generated")
 
-    if fmts == 0:
+    if fmts == 0 and not inventory_failed:
         r.fail(f"no artifact in {scene_dir!r} was classified, so nothing was checked for "
                f"inertness or for its synthetic marker")
     r.metrics["formats_marked"] = marked

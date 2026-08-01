@@ -40,6 +40,7 @@ from artifactforge.artifacts.macos import (
 from artifactforge.artifacts.prefetch import build_prefetch, prefetch_name_hash
 from artifactforge import suite
 from artifactforge.content import ContentStore
+from artifactforge.inventory import open_real_directory, write_regular_file_at
 from artifactforge.model import PINNED_UNIX, HostProfile, deterministic_uuid
 
 
@@ -91,9 +92,11 @@ def _absent_sha1(skey: bytes, tag: str) -> str:
 
 
 def _write(staging: str, name: str, data: bytes) -> None:
-    os.makedirs(staging, exist_ok=True)
-    with open(os.path.join(staging, name), "wb") as f:
-        f.write(data)
+    root_fd = open_real_directory(staging, create=True)
+    try:
+        write_regular_file_at(root_fd, name, data)
+    finally:
+        os.close(root_fd)
 
 
 def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,

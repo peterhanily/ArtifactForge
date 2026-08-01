@@ -35,7 +35,20 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 import secrets
+
+from artifactforge.inventory import (
+    InventoryError,
+    canonical_relative_paths,
+    directory_entry_matches_descriptor,
+    inventory_regular_files,
+    open_real_directory,
+    open_real_directory_at,
+    remove_pinned_directory_at,
+    rename_directory_no_replace,
+    write_regular_file_at,
+)
 
 #: Domain separator. Changing it invalidates every derived value, which is the point of
 #: versioning it: a v2 suite can never collide with a v1 suite.
@@ -61,6 +74,34 @@ BENCHMARK_FORBIDDEN_FILENAMES = frozenset(("fixture.json",))
 _FIXTURE_MANIFEST_MARKER = b"artifactforge-fixture-manifest-v1"
 
 _SEP = b"\x1f"
+
+
+def _private_stage_directory(parent_fd: int, parent: Path, final_name: str) -> Path:
+    """Create an unpublished same-filesystem directory without touching global temp policy."""
+    for _attempt in range(32):
+        candidate_name = f".{final_name}.stage-{secrets.token_hex(8)}"
+        try:
+            os.mkdir(candidate_name, mode=0o700, dir_fd=parent_fd)
+            return parent / candidate_name
+        except FileExistsError:
+            continue
+        except (NotImplementedError, OSError) as exc:
+            raise ValueError(
+                f"cannot reserve a private staging directory below {parent}: {exc}"
+            ) from exc
+    raise ValueError(f"cannot reserve a private staging directory below {parent}")
+
+
+def _directory_path_matches_descriptor(path: Path, descriptor: int) -> bool:
+    try:
+        path_state = path.lstat()
+        opened = os.fstat(descriptor)
+    except OSError:
+        return False
+    return (
+        path_state.st_dev,
+        path_state.st_ino,
+    ) == (opened.st_dev, opened.st_ino)
 
 
 def _mac(key: bytes, *parts: str) -> bytes:
@@ -180,27 +221,46 @@ def read_key(root: str) -> bytes:
 
 
 def stage(scene_dir: str, staging_dir: str, allowlist) -> list:
-    """Copy exactly the named files into the served directory, and nothing else.
+    """Copy exactly the named regular files into a new recursive served tree.
 
-    An allowlist rather than a denylist: `os.listdir(scene_dir)` equals the allowlist by
-    construction, so a new artifact cannot leak into the solver's view by being forgotten in
-    a filter. This is the structural half of the fix; the keyed derivation is the other half.
+    An allowlist rather than a denylist: the final recursive regular-file inventory equals the
+    canonical allowlist by construction, so a new artifact cannot leak into the solver's view
+    by being forgotten in a filter. This is the structural half of the fix; the keyed
+    derivation is the other half.
     """
-    names = tuple(allowlist)
+    try:
+        names = canonical_relative_paths(allowlist)
+    except InventoryError as exc:
+        raise ValueError(f"unsafe scene allowlist: {exc}") from exc
+    if not names:
+        raise ValueError("scene allowlist must contain at least one artifact")
+
+    scene_path = Path(scene_dir)
+    if not scene_path.name or scene_path.name in {".", ".."}:
+        raise ValueError("served scene root must have one non-empty final path component")
     forbidden = sorted(
         name for name in names
-        if os.path.basename(name).casefold() in BENCHMARK_FORBIDDEN_FILENAMES
+        if name.rsplit("/", 1)[-1].casefold() in BENCHMARK_FORBIDDEN_FILENAMES
     )
     if forbidden:
         raise ValueError(
             "fixture manifests publish benchmark answers and cannot enter a served scene: "
             + ", ".join(forbidden)
         )
+    try:
+        source_inventory = inventory_regular_files(staging_dir, capture_bytes=True)
+    except InventoryError as exc:
+        raise ValueError(f"unsafe staging tree: {exc}") from exc
+    sources = {file.relative_path: file for file in source_inventory}
+    missing = sorted(set(names) - set(sources))
+    if missing:
+        raise ValueError("scene allowlist names missing staging files: " + ", ".join(missing))
+
     prepared = []
     for name in names:
-        src = os.path.join(staging_dir, name)
-        with open(src, "rb") as fh:
-            data = fh.read()
+        data = sources[name].data
+        if data is None:  # capture_bytes=True is a construction invariant.
+            raise AssertionError("staging inventory did not capture file bytes")
         if _FIXTURE_MANIFEST_MARKER in data:
             raise ValueError(
                 "fixture manifests publish benchmark answers and cannot enter a served scene: "
@@ -208,13 +268,99 @@ def stage(scene_dir: str, staging_dir: str, allowlist) -> list:
             )
         prepared.append((name, data))
 
-    os.makedirs(scene_dir, exist_ok=True)
-    staged = []
-    for name, data in prepared:
-        with open(os.path.join(scene_dir, name), "wb") as fh:
-            fh.write(data)
-        staged.append(name)
-    return sorted(staged)
+    try:
+        parent_fd = open_real_directory(scene_path.parent)
+    except InventoryError as exc:
+        raise ValueError(f"served scene parent must be an existing real directory: {exc}") from exc
+    try:
+        os.stat(scene_path.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    except (NotImplementedError, OSError) as exc:
+        os.close(parent_fd)
+        raise ValueError(f"cannot inspect served scene root safely: {exc}") from exc
+    else:
+        os.close(parent_fd)
+        raise ValueError(f"refusing pre-existing served scene root: {scene_path}")
+
+    try:
+        temporary = _private_stage_directory(parent_fd, scene_path.parent, scene_path.name)
+    except Exception:
+        os.close(parent_fd)
+        raise
+    root_fd = -1
+    published = False
+    successful = False
+    try:
+        root_fd = open_real_directory_at(parent_fd, temporary.name)
+        if os.listdir(root_fd):
+            raise ValueError("temporary served scene root is unexpectedly non-empty")
+        for name, data in prepared:
+            write_regular_file_at(root_fd, name, data)
+
+        try:
+            observed = inventory_regular_files(
+                temporary, capture_bytes=True, pinned_root_fd=root_fd
+            )
+        except InventoryError as exc:
+            raise ValueError(f"unsafe staged scene: {exc}") from exc
+        observed_payload = tuple((file.relative_path, file.data) for file in observed)
+        if observed_payload != tuple(prepared):
+            raise ValueError(
+                "staged scene inventory or bytes do not equal the canonical allowlist"
+            )
+        if not _directory_path_matches_descriptor(scene_path.parent, parent_fd):
+            raise ValueError("served scene parent changed during staging")
+        if not directory_entry_matches_descriptor(parent_fd, temporary.name, root_fd):
+            raise ValueError("temporary served scene root changed after verification")
+        root_state = os.fstat(root_fd)
+        expected_source = root_state.st_dev, root_state.st_ino
+        try:
+            rename_directory_no_replace(
+                temporary,
+                scene_path,
+                parent_fd=parent_fd,
+                expected_source=expected_source,
+            )
+        except FileExistsError as exc:
+            raise ValueError(
+                f"refusing served scene root that appeared during staging: {scene_path}"
+            ) from exc
+        published = True
+        if not directory_entry_matches_descriptor(parent_fd, scene_path.name, root_fd):
+            raise ValueError("published served scene is not the verified directory")
+
+        # The root stays private through publication and the descriptor-bound final byte
+        # check. No verification step needs to reopen the public pathname.
+        try:
+            final_inventory = inventory_regular_files(
+                scene_path, capture_bytes=True, pinned_root_fd=root_fd
+            )
+        except InventoryError as exc:
+            raise ValueError(f"unsafe published scene: {exc}") from exc
+        final_payload = tuple((file.relative_path, file.data) for file in final_inventory)
+        if final_payload != tuple(prepared):
+            raise ValueError("published scene bytes changed after verification")
+        if (
+            not _directory_path_matches_descriptor(scene_path.parent, parent_fd)
+            or not directory_entry_matches_descriptor(parent_fd, scene_path.name, root_fd)
+        ):
+            raise ValueError("published served scene changed during final verification")
+        os.fchmod(root_fd, 0o755)
+        successful = True
+    finally:
+        if root_fd >= 0 and not successful:
+            entry_name = scene_path.name if published else temporary.name
+            remove_pinned_directory_at(parent_fd, entry_name, root_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+        elif not published:
+            try:
+                os.rmdir(temporary.name, dir_fd=parent_fd)
+            except OSError:
+                pass
+        os.close(parent_fd)
+    return list(names)
 
 
 def write_answers(root: str, pid: str, answers: dict, join: dict) -> str:

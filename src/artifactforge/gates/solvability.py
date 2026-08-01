@@ -29,9 +29,18 @@ from artifactforge.bench.adversary import ADVERSARIES, blind_solve
 from artifactforge.bench.benchmark import grade
 from artifactforge.bench.reference_solver import reference_solve
 from artifactforge.gates import GateReport
+from artifactforge.inventory import InventoryError, list_regular_file_paths
 
 #: Below this the blind adversary is not working, and no negative result can be trusted.
 CONTROL_FLOOR = 0.50
+SUPPORTED_FAMILIES = frozenset(("windows", "macos"))
+
+
+def _require_supported_tasks(tasks, where: str) -> None:
+    unsupported = sorted({getattr(task, "family", None) for task in tasks} - SUPPORTED_FAMILIES,
+                         key=repr)
+    if unsupported:
+        raise ValueError(f"{where} contains unsupported benchmark families: {unsupported!r}")
 
 
 def _chance_floor(tasks, reps: int = 20) -> float:
@@ -42,15 +51,15 @@ def _chance_floor(tasks, reps: int = 20) -> float:
     reported look better than it was. A score is only meaningful against the floor of the same
     corpus, measured in the same round.
     """
-    import os
+    _require_supported_tasks(tasks, "chance-floor corpus")
     rng = random.Random(0xA5F)                    # fixed: the floor must be reproducible
     correct = total = 0
     for _ in range(reps):
         for t in tasks:
             try:
-                visible = sorted(f for f in os.listdir(t.directory)
-                                 if os.path.isfile(os.path.join(t.directory, f)))
-            except OSError:
+                visible = sorted(path.rsplit("/", 1)[-1]
+                                 for path in list_regular_file_paths(t.directory))
+            except InventoryError:
                 visible = []
             for q in t.questions:
                 total += 1
@@ -64,6 +73,7 @@ def _chance_floor(tasks, reps: int = 20) -> float:
 
 
 def _score(tasks, solver) -> float:
+    _require_supported_tasks(tasks, "scored corpus")
     correct = total = 0
     for t in tasks:
         s = grade(t, solver(t.public()))
@@ -78,6 +88,9 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
     if not holdout_tasks:
         r.fail("no tasks generated, so nothing was measured")
         return r
+    _require_supported_tasks(holdout_tasks, "hold-out corpus")
+    if dev_tasks:
+        _require_supported_tasks(dev_tasks, "development control corpus")
 
     floor = _chance_floor(holdout_tasks)
     r.metrics["chance_floor"] = round(floor, 4)

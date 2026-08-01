@@ -347,7 +347,14 @@ def test_archive_mode_is_set_before_final_file_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(archive.os, "fchmod", recording_fchmod)
     monkeypatch.setattr(archive.os, "fsync", recording_fsync)
     create_release_archive(tmp_path / "fixture", tmp_path / "release.tar")
-    mode_index = next(index for index, event in enumerate(events) if event[0] == "fchmod")
+    # Other publication/snapshot primitives also use descriptor-bound fchmod. Identify the
+    # archive file's contract by its required final mode rather than assuming it is globally
+    # the first chmod during release verification.
+    mode_index = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "fchmod" and event[2] == 0o644
+    )
     mode_event = events[mode_index]
     sync_index = next(
         index for index, event in enumerate(events[mode_index + 1:], mode_index + 1)

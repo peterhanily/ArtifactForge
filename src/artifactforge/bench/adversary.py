@@ -23,6 +23,50 @@ well, the benchmark has stopped measuring what it claims to.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+from artifactforge.inventory import (
+    InventoryError,
+    InventoryFile,
+    captured_regular_tree,
+    list_regular_file_paths,
+)
+
+
+SUPPORTED_FAMILIES = frozenset(("windows", "macos"))
+
+
+def _require_supported_family(public) -> str:
+    family = getattr(public, "family", None)
+    if family not in SUPPORTED_FAMILIES:
+        raise ValueError(f"unsupported benchmark family: {family!r}")
+    return family
+
+
+def _by_basename(files: tuple[InventoryFile, ...]) -> dict[str, InventoryFile]:
+    """Index unambiguous basenames while preserving the historical flat-scene view."""
+    indexed: dict[str, InventoryFile] = {}
+    ambiguous: set[str] = set()
+    for file in files:
+        name = file.name
+        if name in indexed or name in ambiguous:
+            indexed.pop(name, None)
+            ambiguous.add(name)
+        else:
+            indexed[name] = file
+    return indexed
+
+
+def _sqlite_fetchone(path: Path, sql: str, parameters: tuple = ()):
+    """Run one read-only query and close the private-snapshot parser on every path."""
+    import sqlite3
+
+    uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        return connection.execute(sql, parameters).fetchone()
+    finally:
+        connection.close()
 
 
 def blind_solve(public) -> dict:
@@ -35,6 +79,8 @@ def blind_solve(public) -> dict:
     """
     from artifactforge import suite
 
+    family = _require_supported_family(public)
+
     # Recover the batch index by searching the public id space under the published key. On a
     # dev suite this succeeds; on a hold-out suite the key is unknown and it cannot.
     key = suite.PUBLIC_DEV_KEY
@@ -45,7 +91,7 @@ def blind_solve(public) -> dict:
     skey = suite.scenario_key(key, public.scenario_id)
 
     a: dict = {}
-    if public.family == "windows":
+    if family == "windows":
         from artifactforge import pools
         from artifactforge.content import ContentStore
         cache = os.path.join(public.directory, "..", "..", "_blind-cache")
@@ -60,7 +106,7 @@ def blind_solve(public) -> dict:
             skey, "absent",
             [n for n in pools.MALWARE_NAMES
              if n != suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)])
-    else:
+    elif family == "macos":
         from artifactforge import pools
         from artifactforge.content import ContentStore
         from artifactforge.model import macos_profile
@@ -83,10 +129,12 @@ def blind_solve(public) -> dict:
 
 def listing_solve(public) -> dict:
     """Answer from the served directory's filenames only — never opening a file."""
+    _require_supported_family(public)
     a: dict = {}
     try:
-        names = sorted(os.listdir(public.directory))
-    except OSError:
+        names = sorted(path.rsplit("/", 1)[-1]
+                       for path in list_regular_file_paths(public.directory))
+    except InventoryError:
         return a
     for f in names:
         if f.lower().endswith(".exe"):
@@ -98,11 +146,13 @@ def listing_solve(public) -> dict:
 
 def null_solve(public) -> dict:
     """Answers nothing — the vacuous-pass guard."""
+    _require_supported_family(public)
     return {}
 
 
 def constant_solve(public) -> dict:
     """A fixed guess for every question, whatever it asks."""
+    _require_supported_family(public)
     return {q.id: ("0" * 64 if q.kind in ("hash", "imphash") else "unknown")
             for q in public.questions}
 
@@ -119,49 +169,53 @@ def mechanical_solve(public) -> dict:
     reconstruct".
     """
     import hashlib
+    family = _require_supported_family(public)
     d = public.directory
     a: dict = {}
     try:
-        names = sorted(os.listdir(d))
-    except OSError:
-        return a
-    blobs = {}
-    for n in names:
-        p = os.path.join(d, n)
-        if os.path.isfile(p):
-            with open(p, "rb") as f:
-                blobs[n] = f.read()
+        with captured_regular_tree(d) as files_context:
+            files = _by_basename(files_context)
+            blobs = {
+                name: file.data
+                for name, file in files.items()
+                if file.data is not None
+            }
 
-    if public.family == "windows":
-        try:
-            from regipy.registry import RegistryHive
-        except ImportError:
-            return a
-        run = RegistryHive(os.path.join(d, "Software.run.hive")).get_key(
-            "\\Microsoft\\Windows\\CurrentVersion\\Run")
-        values = [v.value for v in run.get_values()]
-        if not values:
-            return a
-        target = values[0].replace("/", "\\").rsplit("\\", 1)[-1]
-        for name, data in blobs.items():
-            if name.lower() == target.lower():
-                a["persisted_sha256"] = hashlib.sha256(data).hexdigest()
+            if family == "windows":
+                run_file = files.get("Software.run.hive")
+                if run_file is None:
+                    return a
                 try:
-                    import pefile
-                    a["persisted_imphash"] = pefile.PE(data=data).get_imphash()
-                except Exception:                          # noqa: BLE001 — best effort
-                    pass
-    else:
-        try:
-            import sqlite3
-            con = sqlite3.connect(os.path.join(d, "TCC.db"))
-            row = con.execute("SELECT client FROM access").fetchone()
-            con.close()
-        except Exception:                                  # noqa: BLE001 — best effort
+                    from regipy.registry import RegistryHive
+                except ImportError:
+                    return a
+                run = RegistryHive(os.fspath(run_file.path)).get_key(
+                    "\\Microsoft\\Windows\\CurrentVersion\\Run")
+                values = [v.value for v in run.get_values()]
+                if not values:
+                    return a
+                target = values[0].replace("/", "\\").rsplit("\\", 1)[-1]
+                for name, data in blobs.items():
+                    if name.lower() == target.lower():
+                        a["persisted_sha256"] = hashlib.sha256(data).hexdigest()
+                        try:
+                            import pefile
+                            a["persisted_imphash"] = pefile.PE(data=data).get_imphash()
+                        except Exception:                          # noqa: BLE001 — best effort
+                            pass
+            elif family == "macos":
+                tcc = files.get("TCC.db")
+                if tcc is None:
+                    return a
+                try:
+                    row = _sqlite_fetchone(tcc.path, "SELECT client FROM access")
+                except Exception:                                  # noqa: BLE001 — best effort
+                    return a
+                if row:
+                    a["granted_and_used_bundle"] = row[0]
             return a
-        if row:
-            a["granted_and_used_bundle"] = row[0]
-    return a
+    except InventoryError:
+        return a
 
 
 def footprint_solve(public) -> dict:
@@ -176,65 +230,70 @@ def footprint_solve(public) -> dict:
     understanding any format.
     """
     import hashlib
+    family = _require_supported_family(public)
     d = public.directory
     a: dict = {}
     try:
-        names = sorted(os.listdir(d))
-    except OSError:
+        with captured_regular_tree(d) as files_context:
+            files = _by_basename(files_context)
+            blobs = {
+                name: file.data
+                for name, file in files.items()
+                if file.data is not None
+            }
+
+            def mentions(cand: str) -> int:
+                pats = [cand.encode(), cand.upper().encode(), cand.lower().encode(),
+                        cand.encode("utf-16-le"), cand.upper().encode("utf-16-le")]
+                return sum(1 for f, b in blobs.items()
+                           if f != cand and any(p in b for p in pats))
+
+            if family == "windows":
+                pes = [f for f, b in blobs.items() if b[:2] == b"MZ"]
+                if not pes:
+                    return a
+                ranked = sorted(pes, key=mentions, reverse=True)
+                a["persisted_sha256"] = hashlib.sha256(blobs[ranked[0]]).hexdigest()
+                try:
+                    import pefile
+                    a["persisted_imphash"] = pefile.PE(data=blobs[ranked[0]]).get_imphash()
+                except Exception:                                  # noqa: BLE001 — best effort
+                    pass
+                if len(ranked) > 1:
+                    a["amcache_match_sha256"] = hashlib.sha256(blobs[ranked[1]]).hexdigest()
+            elif family == "macos":
+                bundles = [f[: -len(".quarantine.xattr")] for f in blobs
+                           if f.endswith(".quarantine.xattr")]
+                if not bundles:
+                    return a
+                subject = max(bundles, key=mentions)
+                a["granted_and_used_bundle"] = subject
+                # Everything else about the subject is now a lookup in the subject's own files.
+                try:
+                    import plistlib
+                    xattr = blobs[f"{subject}.quarantine.xattr"]
+                    uuid = xattr.decode().strip().split(";")[-1]
+                    quarantine = files["QuarantineEventsV2"]
+                    row = _sqlite_fetchone(
+                        quarantine.path,
+                        "SELECT LSQuarantineDataURLString, LSQuarantineAgentName FROM "
+                        "LSQuarantineEvent WHERE LSQuarantineEventIdentifier = ?",
+                        (uuid,),
+                    )
+                    if row:
+                        a["subject_download_url"], a["subject_quarantine_agent"] = row
+                    launch_agent = blobs[f"{subject}.plist"]
+                    a["subject_persistence_path"] = plistlib.loads(
+                        launch_agent
+                    )["ProgramArguments"][0]
+                    data = blobs.get(subject)
+                    if data:
+                        a["subject_binary_sha256"] = hashlib.sha256(data).hexdigest()
+                except Exception:                                  # noqa: BLE001 — best effort
+                    pass
+            return a
+    except InventoryError:
         return a
-    blobs = {}
-    for n in names:
-        p = os.path.join(d, n)
-        if os.path.isfile(p):
-            with open(p, "rb") as f:
-                blobs[n] = f.read()
-
-    def mentions(cand: str) -> int:
-        pats = [cand.encode(), cand.upper().encode(), cand.lower().encode(),
-                cand.encode("utf-16-le"), cand.upper().encode("utf-16-le")]
-        return sum(1 for f, b in blobs.items() if f != cand and any(p in b for p in pats))
-
-    if public.family == "windows":
-        pes = [f for f, b in blobs.items() if b[:2] == b"MZ"]
-        if not pes:
-            return a
-        ranked = sorted(pes, key=mentions, reverse=True)
-        a["persisted_sha256"] = hashlib.sha256(blobs[ranked[0]]).hexdigest()
-        try:
-            import pefile
-            a["persisted_imphash"] = pefile.PE(data=blobs[ranked[0]]).get_imphash()
-        except Exception:                                  # noqa: BLE001 — best effort
-            pass
-        if len(ranked) > 1:
-            a["amcache_match_sha256"] = hashlib.sha256(blobs[ranked[1]]).hexdigest()
-    else:
-        bundles = [f[: -len(".quarantine.xattr")] for f in blobs
-                   if f.endswith(".quarantine.xattr")]
-        if not bundles:
-            return a
-        subject = max(bundles, key=mentions)
-        a["granted_and_used_bundle"] = subject
-        # Everything else about the subject is now a lookup in the subject's own files.
-        try:
-            import plistlib
-            import sqlite3
-            with open(os.path.join(d, f"{subject}.quarantine.xattr")) as f:
-                uuid = f.read().strip().split(";")[-1]
-            con = sqlite3.connect(os.path.join(d, "QuarantineEventsV2"))
-            row = con.execute(
-                "SELECT LSQuarantineDataURLString, LSQuarantineAgentName FROM "
-                "LSQuarantineEvent WHERE LSQuarantineEventIdentifier = ?", (uuid,)).fetchone()
-            con.close()
-            if row:
-                a["subject_download_url"], a["subject_quarantine_agent"] = row
-            with open(os.path.join(d, f"{subject}.plist"), "rb") as f:
-                a["subject_persistence_path"] = plistlib.load(f)["ProgramArguments"][0]
-            data = blobs.get(subject)
-            if data:
-                a["subject_binary_sha256"] = hashlib.sha256(data).hexdigest()
-        except Exception:                                  # noqa: BLE001 — best effort
-            pass
-    return a
 
 
 #: name -> (solver, the score above which the benchmark is considered gameable).

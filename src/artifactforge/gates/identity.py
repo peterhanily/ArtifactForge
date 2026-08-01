@@ -22,13 +22,13 @@ confined to one artifact cannot detect a broken pivot.
 """
 from __future__ import annotations
 
-import glob
 import hashlib
 import os
 import plistlib
 import sqlite3
 
 from artifactforge.gates import GateReport
+from artifactforge.inventory import InventoryError, InventoryFile, captured_regular_tree
 
 
 def _check(r: GateReport, spans: str, what: str, got, want):
@@ -42,33 +42,61 @@ def _check(r: GateReport, spans: str, what: str, got, want):
     return False
 
 
-def _resident(scene_dir: str) -> dict:
+def _named(
+    r: GateReport, files: tuple[InventoryFile, ...], name: str, where: str
+) -> InventoryFile | None:
+    matches = [file for file in files if file.name == name]
+    if not matches:
+        r.fail(f"{where}: required artifact {name!r} is absent from the scene")
+        return None
+    if len(matches) != 1:
+        r.fail(
+            f"{where}: required artifact basename {name!r} is ambiguous across "
+            + ", ".join(file.relative_path for file in matches)
+        )
+        return None
+    return matches[0]
+
+
+def _resident(r: GateReport, scene_files: tuple[InventoryFile, ...]) -> dict:
     out = {}
-    for name in sorted(os.listdir(scene_dir)):
-        path = os.path.join(scene_dir, name)
-        if not os.path.isfile(path):
-            continue
-        with open(path, "rb") as f:
-            data = f.read()
+    ambiguous = set()
+    for file in scene_files:
+        data = file.data
+        if data is None:
+            raise AssertionError("identity inventory did not capture file bytes")
         if data[:2] == b"MZ":
-            out[name.lower()] = data
+            key = file.name.lower()
+            if key in out or key in ambiguous:
+                out.pop(key, None)
+                ambiguous.add(key)
+                locations = [candidate.relative_path for candidate in scene_files
+                             if candidate.name.lower() == key]
+                r.fail(
+                    f"disk: resident binary basename {file.name!r} is ambiguous across "
+                    + ", ".join(locations)
+                )
+                continue
+            out[key] = data
     return out
 
 
-def _q(scene_dir: str, name: str, sql: str):
-    con = sqlite3.connect(os.path.join(scene_dir, name))
+def _q(file: InventoryFile, sql: str):
+    con = sqlite3.connect(file.path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         return con.execute(sql).fetchall()
     finally:
         con.close()
 
 
-def _windows(r: GateReport, scene_dir: str, join: dict):
+def _windows(
+    r: GateReport, scene_files: tuple[InventoryFile, ...], join: dict
+):
     import pefile
     from regipy.registry import RegistryHive
     from windowsprefetch import Prefetch
 
-    files = _resident(scene_dir)
+    files = _resident(r, scene_files)
     p, a = join["persisted"], join["amcache_match"]
 
     for label, claim in (("persisted", p), ("amcache_match", a)):
@@ -87,26 +115,32 @@ def _windows(r: GateReport, scene_dir: str, join: dict):
     # and it must be the one the scene says it is.
     by_sha1 = {hashlib.sha1(d).hexdigest(): n                         # noqa: S324 - identity
                for n, d in files.items()}
-    iaf = RegistryHive(os.path.join(scene_dir, "Amcache.hve")).get_key(
-        "\\Root\\InventoryApplicationFile")
-    matches = sorted(by_sha1[v.value[4:]] for sub in iaf.iter_subkeys()
-                     for v in sub.get_values()
-                     if v.name == "FileId" and v.value[4:] in by_sha1)
-    _check(r, "Amcache->disk", "exactly one recorded hash belongs to a resident file",
-           matches, [a["name"].lower()])
+    amcache_file = _named(r, scene_files, "Amcache.hve", "Amcache")
+    if amcache_file is not None:
+        iaf = RegistryHive(os.fspath(amcache_file.path)).get_key(
+            "\\Root\\InventoryApplicationFile")
+        matches = sorted(by_sha1[v.value[4:]] for sub in iaf.iter_subkeys()
+                         for v in sub.get_values()
+                         if v.name == "FileId" and v.value[4:] in by_sha1)
+        _check(r, "Amcache->disk", "exactly one recorded hash belongs to a resident file",
+               matches, [a["name"].lower()])
 
     # The persistence->disk pivot: exactly one autostart names a program that is here.
-    run = RegistryHive(os.path.join(scene_dir, "Software.run.hive")).get_key(
-        "\\Microsoft\\Windows\\CurrentVersion\\Run")
-    named = sorted(v.value for v in run.get_values()
-                   if v.value.replace("/", "\\").rsplit("\\", 1)[-1].lower() in files)
-    _check(r, "Run key->disk", "exactly one autostart names a resident program",
-           named, [p["path"]])
+    run_file = _named(r, scene_files, "Software.run.hive", "Run key")
+    if run_file is not None:
+        run = RegistryHive(os.fspath(run_file.path)).get_key(
+            "\\Microsoft\\Windows\\CurrentVersion\\Run")
+        named = sorted(v.value for v in run.get_values()
+                       if v.value.replace("/", "\\").rsplit("\\", 1)[-1].lower() in files)
+        _check(r, "Run key->disk", "exactly one autostart names a resident program",
+               named, [p["path"]])
 
     # The execution pivot: the persisted program's run count, and exactly one orphan.
     prefetches = {}
-    for pf_path in sorted(glob.glob(os.path.join(scene_dir, "*.pf"))):
-        pf = Prefetch(pf_path)
+    for file in scene_files:
+        if not file.name.endswith(".pf"):
+            continue
+        pf = Prefetch(os.fspath(file.path))
         prefetches[pf.executableName.lower()] = pf.runCount
     if p["name"].lower() in prefetches:
         _check(r, "prefetch->persisted", "run count",
@@ -118,72 +152,93 @@ def _windows(r: GateReport, scene_dir: str, join: dict):
            [join["orphan_execution"].lower()])
 
 
-def _macos(r: GateReport, scene_dir: str, join: dict):
+def _macos(
+    r: GateReport, scene_files: tuple[InventoryFile, ...], join: dict
+):
     from artifactforge.content.macho import cdhash_of_file
 
     s = join["subject"]
 
     # The macOS half of the keystone: the subject's binary is a real Mach-O and every
     # hash-shaped field about it is re-derived from those bytes.
-    binary = os.path.join(scene_dir, s["bundle_id"])
-    if os.path.exists(binary):
-        with open(binary, "rb") as f:
-            data = f.read()
+    binary = _named(r, scene_files, s["bundle_id"], "subject binary")
+    if binary is not None:
+        data = binary.data
+        if data is None:
+            raise AssertionError("identity inventory did not capture file bytes")
         _check(r, "disk->subject", "sha256", hashlib.sha256(data).hexdigest(), s["sha256"])
         _check(r, "disk->subject", "sha1",
                hashlib.sha1(data).hexdigest(), s["sha1"])             # noqa: S324 - identity
         _check(r, "codesign blob->subject", "cdhash", cdhash_of_file(data), s["cdhash"])
         _check(r, "disk->subject", "the binary is a 64-bit Mach-O",
                data[:4], b"\xcf\xfa\xed\xfe")
-    else:
-        r.fail("disk: the subject application has no binary, so its hashes are claims about "
-               "a file nobody can check")
+    tcc = _named(r, scene_files, "TCC.db", "TCC")
+    knowledge = _named(r, scene_files, "knowledgeC.db", "knowledgeC")
+    if tcc is not None and knowledge is not None:
+        granted = {row[0] for row in _q(
+            tcc, "SELECT client FROM access WHERE auth_value = 2"
+        )}
+        used = {row[0] for row in _q(
+            knowledge,
+            "SELECT ZVALUESTRING FROM ZOBJECT WHERE ZSTREAMNAME = '/app/inFocus'",
+        )}
+        _check(r, "TCC->knowledgeC", "exactly one granted client was also used",
+               sorted(granted & used), [s["bundle_id"]])
 
-    granted = {row[0] for row in _q(scene_dir, "TCC.db",
-                                    "SELECT client FROM access WHERE auth_value = 2")}
-    used = {row[0] for row in _q(scene_dir, "knowledgeC.db",
-                                 "SELECT ZVALUESTRING FROM ZOBJECT "
-                                 "WHERE ZSTREAMNAME = '/app/inFocus'")}
-    _check(r, "TCC->knowledgeC", "exactly one granted client was also used",
-           sorted(granted & used), [s["bundle_id"]])
-
-    xattr_path = os.path.join(scene_dir, f"{s['bundle_id']}.quarantine.xattr")
-    if os.path.exists(xattr_path):
-        with open(xattr_path) as f:
-            uuid = f.read().strip().split(";")[-1]
+    xattr = _named(
+        r, scene_files, f"{s['bundle_id']}.quarantine.xattr", "quarantine xattr"
+    )
+    if xattr is not None:
+        data = xattr.data
+        if data is None:
+            raise AssertionError("identity inventory did not capture file bytes")
+        uuid = data.decode().strip().split(";")[-1]
         _check(r, "xattr->subject", "quarantine UUID", uuid, s["quarantine_uuid"])
-        rows = {row[0]: row for row in _q(
-            scene_dir, "QuarantineEventsV2",
-            "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
-            "LSQuarantineAgentName FROM LSQuarantineEvent")}
-        if uuid in rows:
-            _check(r, "xattr->QuarantineEventsV2", "download URL",
-                   rows[uuid][1], s["download_url"])
-            _check(r, "xattr->QuarantineEventsV2", "downloading agent",
-                   rows[uuid][2], s["agent"])
-        else:
-            r.fail("QuarantineEventsV2: the subject's xattr UUID matches no row, so the "
-                   "download pivot dead-ends")
-    else:
-        r.fail("scene: the subject has no quarantine xattr, so nothing links it to a download")
+        quarantine = _named(
+            r, scene_files, "QuarantineEventsV2", "QuarantineEventsV2"
+        )
+        if quarantine is not None:
+            rows = {row[0]: row for row in _q(
+                quarantine,
+                "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
+                "LSQuarantineAgentName FROM LSQuarantineEvent",
+            )}
+            if uuid in rows:
+                _check(r, "xattr->QuarantineEventsV2", "download URL",
+                       rows[uuid][1], s["download_url"])
+                _check(r, "xattr->QuarantineEventsV2", "downloading agent",
+                       rows[uuid][2], s["agent"])
+            else:
+                r.fail("QuarantineEventsV2: the subject's xattr UUID matches no row, so the "
+                       "download pivot dead-ends")
 
-    plist_path = os.path.join(scene_dir, f"{s['bundle_id']}.plist")
-    if os.path.exists(plist_path):
-        with open(plist_path, "rb") as f:
-            pl = plistlib.load(f)
+    plist = _named(r, scene_files, f"{s['bundle_id']}.plist", "LaunchAgent")
+    if plist is not None:
+        data = plist.data
+        if data is None:
+            raise AssertionError("identity inventory did not capture file bytes")
+        pl = plistlib.loads(data)
         _check(r, "LaunchAgent->subject", "Label", pl["Label"], s["bundle_id"])
         _check(r, "LaunchAgent->subject", "program", pl["ProgramArguments"][0], s["app_path"])
-    else:
-        r.fail("scene: the subject has no LaunchAgent, so the persistence pivot is absent")
 
 
 def run(scene_dir: str, join: dict) -> GateReport:
     r = GateReport(2, "identity",
                    "do the declared answer-bearing pivots agree with emitted bytes?")
-    if join.get("family") == "windows":
-        _windows(r, scene_dir, join)
-    else:
-        _macos(r, scene_dir, join)
+    try:
+        with captured_regular_tree(scene_dir) as scene_files:
+            if not scene_files:
+                r.fail(
+                    f"no artifact in {scene_dir!r} was inventoried, so no identity pivot was checked"
+                )
+            elif join.get("family") == "windows":
+                _windows(r, scene_files, join)
+            elif join.get("family") == "macos":
+                _macos(r, scene_files, join)
+            else:
+                r.fail(f"scene family {join.get('family')!r} has no identity gate implementation")
+    except InventoryError as exc:
+        r.fail(f"scene inventory is unsafe: {exc}")
     joined = r.metrics.get("checks_joined", 0)
     total = r.metrics.get("checks_total", 0)
     r.denominator = f"{joined}/{total} cross-artifact identity checks hold"

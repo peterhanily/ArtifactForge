@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from artifactforge import suite
 from artifactforge.compose.scene import build_macos_scene, build_windows_scene
 from artifactforge.content import ContentStore
+from artifactforge.inventory import inventory_regular_files
 from artifactforge.model import HostProfile, macos_profile, windows_profile
 
 
@@ -197,6 +198,13 @@ def generate_suite(n: int, root: str, *, key: bytes = suite.PUBLIC_DEV_KEY,
             questions = _macos_questions(scene.join)
 
         task = Task(pid, scene.family, scene_dir, questions, scene.join)
+        observed_artifacts = [
+            file.relative_path for file in inventory_regular_files(scene_dir)
+        ]
+        if observed_artifacts != scene.artifacts:
+            raise ValueError(
+                "scene's declared artifact inventory does not equal its served recursive tree"
+            )
         suite.write_answers(root, pid, task.answer_key(), scene.join)
         tasks.append(task)
         public.append({"scenario_id": pid, "family": scene.family,
@@ -219,8 +227,10 @@ def _profile(skey: bytes, family: str) -> HostProfile:
         host = suite.pick(skey, "host", pools.HOSTS)
         n = int.from_bytes(suite.scenario_key(skey, "hostnum")[:2], "big") % 900 + 100
         return windows_profile(hostname=f"{host}-{n:03d}", username=user)
-    n = int.from_bytes(suite.scenario_key(skey, "hostnum")[:2], "big") % 900 + 100
-    return macos_profile(hostname=f"mac-{n:03d}", username=user)
+    if family == "macos":
+        n = int.from_bytes(suite.scenario_key(skey, "hostnum")[:2], "big") % 900 + 100
+        return macos_profile(hostname=f"mac-{n:03d}", username=user)
+    raise ValueError(f"unsupported benchmark family: {family!r}")
 
 
 def _rmtree(path: str) -> None:

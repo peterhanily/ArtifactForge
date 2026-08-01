@@ -29,7 +29,15 @@ jobs:
         python-version: ["3.11", "3.12"]   # 3.11 is the declared floor — test it, don't assume it
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      # uv is installed with pip rather than through astral-sh/setup-uv, for two reasons: the
+      # action still targets Node 20 and so annotates every job with a deprecation warning,
+      # and this removes a third-party action from the supply chain of a repository whose
+      # whole subject is provenance. Pinned for the same reason ruff is.
+      - name: Install uv
+        run: |
+          python3 -m pip install --quiet --user "uv==0.11.17"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" --version
       - name: Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
@@ -150,7 +158,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      # uv is installed with pip rather than through astral-sh/setup-uv, for two reasons: the
+      # action still targets Node 20 and so annotates every job with a deprecation warning,
+      # and this removes a third-party action from the supply chain of a repository whose
+      # whole subject is provenance. Pinned for the same reason ruff is.
+      - name: Install uv
+        run: |
+          python3 -m pip install --quiet --user "uv==0.11.17"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" --version
       - name: Python
         run: uv python install 3.12
 
@@ -194,7 +210,15 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      # uv is installed with pip rather than through astral-sh/setup-uv, for two reasons: the
+      # action still targets Node 20 and so annotates every job with a deprecation warning,
+      # and this removes a third-party action from the supply chain of a repository whose
+      # whole subject is provenance. Pinned for the same reason ruff is.
+      - name: Install uv
+        run: |
+          python3 -m pip install --quiet --user "uv==0.11.17"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" --version
       - run: uv python install 3.12
       - name: Install against EvidenceForge main
         run: |

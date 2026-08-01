@@ -10,8 +10,8 @@ miss.
 
 This is not decoration and it is not optional. Gate 3 fails any format that ships without
 one, checked on the emitted bytes rather than on a promise in a document — which matters,
-because KNOWN_TELLS.md claimed exactly this mechanism for eighteen days while nothing
-enforced it and four of six formats carried nothing at all.
+because KNOWN_TELLS.md claimed exactly this mechanism while nothing enforced it, and four
+of six formats carried nothing at all.
 
 Where a format has somewhere natural to put it, it goes there: a reserved table in a SQLite
 database, a reserved key in a plist, the overlay of a PE, `__cstring` in a Mach-O. Each is a

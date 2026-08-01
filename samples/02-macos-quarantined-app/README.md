@@ -38,11 +38,11 @@ com.pinewharf.terminal
 ### sqlite3 — QuarantineEventsV2: five downloads, joined by the xattr UUID
 
 ```
-B1281D32-7B03-419E-92F0-26A97BA22B5D  Brave Browser    https://pkg.untrusted.test/org.pelagic.tool.dmg
+B1281D32-7B03-419E-92F0-26A97BA22B5D  Microsoft Edge   https://pkg.untrusted.test/org.pelagic.tool.dmg
 E555543F-8659-423F-983D-82B9FC5F0158  Safari           https://static.threat.example/com.riverstone.helper.dmg
 D8AA6C04-D0C9-4057-ADF5-F4E5430DA278  Safari           https://static.threat.example/io.slatebeck.agent.dmg
-1F7078EC-9C42-4E1B-B8C0-E807C5E02C98  curl             https://files.badactor.example/com.duskwater.preview.dmg
-A64213D3-56C4-45C7-A9AB-66B7E0C9F465  Brave Browser    https://files.badactor.example/com.pinewharf.terminal.dmg
+1F7078EC-9C42-4E1B-B8C0-E807C5E02C98  Brave Browser    https://files.badactor.example/com.duskwater.preview.dmg
+A64213D3-56C4-45C7-A9AB-66B7E0C9F465  Microsoft Edge   https://files.badactor.example/com.pinewharf.terminal.dmg
 ```
 
 ### plistlib — LaunchAgents

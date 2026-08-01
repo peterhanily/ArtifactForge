@@ -67,7 +67,7 @@ Answering anything about it requires reading two artifacts together, which is th
 ## What's in it
 
 - **Windows artifacts** — a synthetic PE with a real, seed-deterministic IMPHASH that pefile
-  computes; registry hives carrying Run-key persistence and Amcache execution records
+  computes; registry hives carrying Run-key persistence and Amcache installation records
   (`FileId` really is the file's SHA1); uncompressed SCCA v17 prefetch that libyal's
   `libscca` opens, which means plaso reads it.
 - **macOS artifacts** — a hand-assembled arm64 Mach-O with a real symhash and a real ad-hoc
@@ -80,7 +80,7 @@ Answering anything about it requires reading two artifacts together, which is th
 - **A benchmark for investigation, not recall — experimental, and currently failing its own
   validity gate.** Deterministic scenes with decoys, questions that each span at least two
   artifacts, and answers derived from a suite key the solver never sees. The keyed-suite half
-  works; the scene composition leaks, at 72.7% against a 3.7% floor. See *How honest is it,
+  works; the scene composition leaks, at 72.7% against a 4.2% floor. See *How honest is it,
   really?* below. Do not report a score from it yet.
 - **A companion adapter** that reads an EvidenceForge run's output and recovers which logical
   binary each of its Sysmon hashes denotes — verifying every recovery against the digest
@@ -127,8 +127,9 @@ processes, hash seeds, timezones and locales.
 **Artifact fidelity — partial, and measured.** Every format is read by two independently
 implemented parsers, but two of them are not independent at all: `sqlite3` and `plistlib`
 write and read their own formats, so the macOS databases and plists have no outside opinion on
-them. Both are declared gaps in `fidelity-scorecard.json`, which is why the scorecard's
-headline verdict reads `gap` rather than `pass`. Beyond that, every format has real
+them. Both are declared gaps in `fidelity-scorecard.json` — limits of the measuring apparatus
+rather than failures of the thing measured, which is why they do not set the verdict. (That
+currently reads `fail`, because of Gate 4 below.) Beyond that, every format has real
 limitations and [`KNOWN_TELLS.md`](KNOWN_TELLS.md) lists them: minimal registry hives with
 ASCII-only key names, uncompressed prefetch where Windows 10 compresses, a Mach-O using an
 older linker idiom than any current clang emits.
@@ -142,7 +143,7 @@ hold-out suite:
 |---|---|
 | reference solver (real parsers, real joins) | **100%** |
 | `footprint` adversary (counts substring mentions, parses nothing) | **72.7%** |
-| chance floor (guesses among visible candidates) | **3.7%** |
+| chance floor (guesses among visible candidates) | **4.2%** |
 
 Those three numbers are the ones in `fidelity-scorecard.json`, measured at `--n 40` on one
 hold-out suite. Reproduce them with `artifactforge scorecard --n 40`. The floor is a Monte

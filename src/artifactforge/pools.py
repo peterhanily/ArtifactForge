@@ -94,7 +94,9 @@ DOWNLOAD_HOSTS = (
     "static.threat.example", "pkg.untrusted.test", "mirror.hostile.invalid", "get.sketchy.example",
 )
 
-DOWNLOAD_AGENTS = ("Safari", "Google Chrome", "Firefox", "curl", "Brave Browser")
+# Only applications that route downloads through LaunchServices get a quarantine record.
+# `curl` does not, so a QuarantineEventsV2 row naming it could not exist on a real Mac.
+DOWNLOAD_AGENTS = ("Safari", "Google Chrome", "Firefox", "Brave Browser", "Microsoft Edge")
 
 TCC_SERVICES = (
     "kTCCServiceSystemPolicyAllFiles", "kTCCServiceAccessibility", "kTCCServiceScreenCapture",

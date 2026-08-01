@@ -52,8 +52,37 @@ class Scene:
 
 
 def _device_path(exec_path: str) -> str:
+    """A Windows path as prefetch records it: one device token, not two.
+
+    Real prefetch writes `\\DEVICE\\HARDDISKVOLUME<n>\\...` in both the filename-strings array
+    and the volume-information block. Emitting a different token in each — which this did —
+    is the sort of thing a responder notices in the first minute.
+    """
     tail = exec_path.split(":", 1)[-1] if ":" in exec_path else exec_path
-    return "\\VOLUME{01}" + tail.upper()
+    return "\\DEVICE\\HARDDISKVOLUME1" + tail.upper()
+
+
+#: Where a given executable actually lives on Windows. Shipping `C:\\Program Files\\
+#: explorer.exe` is the kind of detail that tells a responder the scene was not made by
+#: someone who has looked at one; anything not listed here is third-party and does live under
+#: Program Files.
+_SYSTEM32 = frozenset({
+    "notepad.exe", "calc.exe", "mspaint.exe", "cmd.exe", "explorer.exe", "javaw.exe",
+    "powershell.exe", "conhost_x.exe", "ctfmon_x64.exe", "dllhost_up.exe", "taskeng_x.exe",
+    "rundll_svc.exe", "spoolsvr.exe", "srvhost32.exe", "smartscrn.exe", "winlogon_h.exe",
+    "lsass_mon.exe", "shellexp.exe", "dnscache.exe", "wmi_perf.exe", "printsvc.exe",
+})
+
+
+def _install_dir(name: str) -> str:
+    """Where this executable would sit on a real host."""
+    if name.lower() == "explorer.exe":
+        return "C:\\Windows"
+    return "C:\\Windows\\System32" if name.lower() in _SYSTEM32 else "C:\\Program Files"
+
+
+def _full_path(name: str) -> str:
+    return f"{_install_dir(name)}\\{name}"
 
 
 def _absent_sha1(skey: bytes, tag: str) -> str:
@@ -70,7 +99,6 @@ def _write(staging: str, name: str, data: bytes) -> None:
 def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
                         scene_dir: str, staging_dir: str) -> Scene:
     temp = f"{profile.home_dir}\\AppData\\Local\\Temp"
-    prog = "C:\\Program Files"
 
     persisted_name = suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)
     amcache_name, *noise_names = suite.pick_many(skey, "resident", pools.BENIGN_NAMES, 4)
@@ -78,7 +106,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
                              [n for n in pools.MALWARE_NAMES if n != persisted_name])
 
     persisted_path = f"{temp}\\{persisted_name}"
-    amcache_path = f"{prog}\\{amcache_name}"
+    amcache_path = f"{_install_dir(amcache_name)}\\{amcache_name}"
 
     # --- the binaries. Two carry answers; the rest are the haystack. ------------------
     resident = {}
@@ -95,8 +123,8 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     absent_targets = [n for n in pools.BENIGN_NAMES if n not in resident]
     run_values = [
         (names[0], persisted_path),
-        (names[1], f"{prog}\\{suite.pick(skey, 'run-decoy-1', absent_targets)}"),
-        (names[2], f"{prog}\\{suite.pick(skey, 'run-decoy-2', absent_targets)}"),
+        (names[1], _full_path(suite.pick(skey, "run-decoy-1", absent_targets))),
+        (names[2], _full_path(suite.pick(skey, "run-decoy-2", absent_targets))),
     ]
     _write(staging_dir, "Software.run.hive", build_run_hive(run_values))
 
@@ -107,7 +135,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     rows.append((_absent_sha1(skey, "stale-persisted"), persisted_path.lower(),
                  persisted_name, len(persisted.bytes) + 4096))
     for i, n in enumerate(suite.pick_many(skey, "amcache-decoys", absent_targets, 6)):
-        rows.append((_absent_sha1(skey, f"amcache{i}"), f"{prog}\\{n}".lower(), n, 4096 * (i + 3)))
+        rows.append((_absent_sha1(skey, f"amcache{i}"), _full_path(n).lower(), n, 4096 * (i + 3)))
     _write(staging_dir, "Amcache.hve", build_amcache_hive(rows))
 
     # --- prefetch: four executions, one of a program that has since gone --------------
@@ -115,7 +143,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     executions = [
         (persisted_name, persisted_path, run_count),
         (amcache_name, amcache_path, 1 + skey[1] % 5),
-        (noise_names[0], f"{prog}\\{noise_names[0]}", 1 + skey[2] % 5),
+        (noise_names[0], _full_path(noise_names[0]), 1 + skey[2] % 5),
         (absent_name, f"{temp}\\{absent_name}", 1 + skey[3] % 5),
     ]
     pf_names = []
@@ -197,7 +225,9 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
         (benign[0], "kTCCServiceAppleEvents", 0),
         (persisted_only, "kTCCServiceCamera", 0),
     ]
-    _write(staging_dir, "TCC.db", build_tcc([(c, s, a, t) for c, s, a in tcc_rows]))
+    # TCC stores Unix time, not Mac absolute time — see build_tcc.
+    _write(staging_dir, "TCC.db",
+           build_tcc([(c, s, a, PINNED_UNIX) for c, s, a in tcc_rows]))
 
     # --- knowledgeC: three apps actually used -----------------------------------------
     used = [subject, *benign]

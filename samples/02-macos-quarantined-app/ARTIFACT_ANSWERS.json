@@ -5,7 +5,7 @@
   "answers": {
     "granted_and_used_bundle": "org.pelagic.tool",
     "subject_download_url": "https://pkg.untrusted.test/org.pelagic.tool.dmg",
-    "subject_quarantine_agent": "Brave Browser",
+    "subject_quarantine_agent": "Microsoft Edge",
     "subject_persistence_path": "/Users/ekallio/Library/Application Support/org.pelagic.tool/tool",
     "subject_binary_sha256": "ee5690aa4244dd50c11632157659fb380ad839a4e943fc919278f618b4f7816e",
     "subject_binary_symhash": "75e96658570d9db2e4984f2d852fd825"
@@ -20,7 +20,7 @@
       "app_path": "/Users/ekallio/Library/Application Support/org.pelagic.tool/tool",
       "quarantine_uuid": "B1281D32-7B03-419E-92F0-26A97BA22B5D",
       "download_url": "https://pkg.untrusted.test/org.pelagic.tool.dmg",
-      "agent": "Brave Browser",
+      "agent": "Microsoft Edge",
       "tcc_service": "kTCCServiceCamera",
       "sha256": "ee5690aa4244dd50c11632157659fb380ad839a4e943fc919278f618b4f7816e",
       "sha1": "d2471353738e69699d0c3f60faa790fc452567a7",

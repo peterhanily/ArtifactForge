@@ -28,6 +28,18 @@ artifact, the cross-artifact identity re-derives from the bytes on disk, nothing
 its synthetic marker, and no adversary can answer a benchmark question without doing the work.
 `artifactforge scorecard` runs all of it.
 
+## After anything that changes what the gates measure
+
+    artifactforge scorecard --n 40 --out fidelity-scorecard.json
+    python scripts/pin-published-numbers.py
+    ./scripts/make-samples.sh
+    pytest -q
+
+The prose quotes figures from the scorecard, and prose does not regenerate. The README once
+published a chance floor the committed scorecard contradicted, five lines above a sentence
+warning against exactly that. `tests/test_published_numbers.py` now catches the divergence and
+`scripts/pin-published-numbers.py` closes it — run both, in that order.
+
 ## Design values
 
 Dependencies point one way: `model <- content <- artifacts <- compose <- bench <- cli`. The

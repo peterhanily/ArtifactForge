@@ -6,7 +6,7 @@ What is not built, and why. Ordered by what would change the most if it existed.
 
 Gate 4 is red and the number is in the README. A solver that parses nothing — for each
 candidate, count how many other files mention its name, take the maximum — scores **72.7%**
-against a **3.7%** chance floor, where the reference solver scores 100%.
+against a **4.2%** chance floor, where the reference solver scores 100%.
 
 It is structural. The answer object is by definition the one the registry, Amcache, prefetch
 and disk all talk about; a decoy appears in fewer of them. Counting mentions *is* the intended

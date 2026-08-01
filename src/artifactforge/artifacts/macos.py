@@ -72,7 +72,13 @@ def build_knowledgec(entries) -> bytes:
 def build_tcc(rows) -> bytes:
     """~/Library/Application Support/com.apple.TCC/TCC.db — permission grants and refusals.
 
-    `rows` is a sequence of (client, service, auth_value, last_modified_mac).
+    `rows` is a sequence of (client, service, auth_value, last_modified_unix).
+
+    Note the units: `access.last_modified` is a **Unix** timestamp, unlike almost every other
+    macOS forensic column, which uses Mac absolute time (seconds since 2001-01-01). Getting
+    that wrong shifts every TCC grant by 31 years, and an analyst converting the column with
+    the usual macOS recipe would notice immediately.
+
     auth_value 2 is allowed, 0 is denied; a database containing only grants would make
     "which app was allowed" a lookup rather than a question.
     """

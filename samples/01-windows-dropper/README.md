@@ -22,7 +22,7 @@ winlogon_h.exe           sha256=3128f4b32bdddab9...  imphash=31e964de5fd56a9caf0
 
 ```
 LicenseCheck             C:\Users\tsvensson\AppData\Local\Temp\winlogon_h.exe
-WmiPerfMon               C:\Program Files\mspaint.exe
+WmiPerfMon               C:\Windows\System32\mspaint.exe
 DllHostUp                C:\Program Files\slack.exe
 ```
 
@@ -42,10 +42,10 @@ mspaint.exe              FileId=00005568530759d2e5c7...
 ### libscca (what plaso uses) — prefetch
 
 ```
-ONEDRIVE.EXE             run_count=2  hash=0xfbda2740
-PRINTSVC.EXE             run_count=2  hash=0x2b5c9c4f  <-- not on disk
-PUTTY.EXE                run_count=2  hash=0xf1c28886
-WINLOGON_H.EXE           run_count=9  hash=0x5a5d06c6
+ONEDRIVE.EXE             run_count=2  hash=0xf7f76876
+PRINTSVC.EXE             run_count=2  hash=0xb6b06abd  <-- not on disk
+PUTTY.EXE                run_count=2  hash=0x73cc9234
+WINLOGON_H.EXE           run_count=9  hash=0x6d87f104
 ```
 
 ## The answers

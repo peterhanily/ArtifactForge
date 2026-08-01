@@ -6,7 +6,7 @@
 the file, or it does not. Two independent implementations are required per format, because
 one permissive parser hides what a strict one rejects: every prefetch file this project
 emitted was accepted by `windowsprefetch` and rejected by `pyscca`, the libyal parser plaso
-is built on, for eighteen days — because `windowsprefetch` was the only oracle installed.
+is built on, for as long as `windowsprefetch` was the only oracle installed.
 
 A missing oracle is a FAILURE, never a skip. A skipped check exits 0 and reads exactly like
 a passing one.

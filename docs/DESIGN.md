@@ -4,7 +4,7 @@
 
 ArtifactForge generates **forensic artifacts**: the files a responder finds on a host once
 they dig in. A synthetic PE with a real import table and a real IMPHASH; Windows registry
-hives carrying Run-key persistence and an Amcache execution record; a prefetch file; macOS
+hives carrying Run-key persistence and an Amcache installation record; a prefetch file; macOS
 knowledgeC, TCC and QuarantineEventsV2 databases, a quarantine xattr and a LaunchAgent plist.
 
 Everything is a pure function of a seed. No wall clock, no entropy, no PID. The same scenario
@@ -72,8 +72,8 @@ scorecard's `honest_gaps` so they cannot be forgotten. Anything undeclared is a 
 
 Two independently-implemented parsers per format, because one permissive parser hides what a
 strict one rejects. Every prefetch file this project emitted was accepted by
-`windowsprefetch` and refused by `pyscca` — the libyal parser plaso is built on — for
-eighteen days, because `windowsprefetch` was the only oracle installed.
+`windowsprefetch` and refused by `pyscca` — the libyal parser plaso is built on — for as
+long as `windowsprefetch` was the only oracle installed.
 
 A missing oracle is a **failure, never a skip**: a skipped check exits 0 and reads exactly
 like a passing one. Where no genuinely independent second implementation exists — SQLite
@@ -104,13 +104,25 @@ might be real.
 
 *Are the benchmark's answers recovered from evidence, or derivable?*
 
+**This gate is currently RED, and deliberately stays red.** A solver that parses nothing — for
+each candidate, count how many other files mention its name, take the maximum — scores 72.7%
+against a 4.2% chance floor. The number is published in the README and tracked in the
+scorecard; `docs/ROADMAP.md` says what the repair takes. Raising the threshold to make it pass
+is the one response ruled out: a red gate reporting a true fact is the system working.
+
 A reference solver scoring 100% proves the artifacts *encode* the ground truth. It does not
 prove that is the only way to get it — and here it was not: because the generator is open
 source and the public scenario identifier was also its generation seed, a solver opening zero
 files reproduced every answer. So the gate measures three things: the reference solver
-scores 100%; every adversary (blind, listing, null, constant) stays under its threshold; and
-at least one question per family is answerable **only** by joining two artifacts, without
-which the benchmark cannot detect a broken pivot at all.
+scores 100%; every adversary stays under its threshold; and at least one question per family
+is answerable **only** by joining two artifacts, without which the benchmark cannot detect a
+broken pivot at all.
+
+The adversary set is the gate. `null` and `constant` score zero — *below* the chance floor of
+a solver guessing among visible candidates — and for a long time they were the only baselines,
+which flattered every number the benchmark published. `footprint` and `mechanical` are the two
+that actually threaten it, and a measured chance floor is published beside them so a score can
+be read against something.
 
 ## §5 The scorecard
 

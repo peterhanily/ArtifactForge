@@ -61,9 +61,13 @@ Everything here is inert by construction: see
 
 ## prefetch
 
-- **Uncompressed SCCA v17.** Real Windows 10 and 11 prefetch is MAM/LZXPRESS-compressed; this
-  emits the older uncompressed format, which open-source parsers read directly. Compression is
-  out of scope.
+- **Uncompressed SCCA v17, on a host that says Windows 10.** Format version 17 is the
+  Windows Vista and 7 layout. A real `10.0.19045` host emits version 30, MAM/LZXPRESS-
+  compressed, and a responder who checks the version against the `HostProfile` will see they
+  disagree. v17 is emitted because it is uncompressed and open-source parsers read it
+  directly; compression is out of scope, and version consistency between the profile and the
+  artifact is not enforced anywhere. This is the largest single fidelity gap in the Windows
+  set.
 - **Single volume, no directory strings, no file references.** A real record carries the full
   directory list and the MFT references of everything the process touched.
 - **Bespoke name hash.** The hash embedded in the filename and header is the SCCA Vista

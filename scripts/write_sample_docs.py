@@ -33,11 +33,13 @@ BANNER = {
     "synthetic": True,
     "notice": NOTICE,
     "generator": "ArtifactForge",
-    # A SQLite header embeds the writing library's version, so the macOS databases here are
-    # byte-identical only to a rebuild using the same one. Recorded so a difference is
-    # explicable rather than alarming; every other artifact is byte-identical anywhere.
-    "sqlite_version": sqlite3.sqlite_version,
 }
+# Deliberately NOT recorded here: the sqlite3 version. It is environment-dependent, and
+# putting it in a generated file makes that file environment-dependent too — which is how the
+# answer key briefly stopped being byte-identical across platforms, defeating the very diff
+# that had just been narrowed to exclude the databases. Provenance belongs in prose that a
+# person maintains; `samples/README.md` carries it, and fidelity-scorecard.json records the
+# version the gates ran under.
 
 
 def _windows_readings(d: str) -> list:

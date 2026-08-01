@@ -17,6 +17,12 @@ Two generated scenes, committed so they can be read without running anything.
 Each directory holds the artifacts, a `README.md` with real parser output pasted in — pefile,
 regipy, libscca, LIEF, sqlite3, plistlib — and a `ARTIFACT_ANSWERS.json` answer key.
 
+The committed macOS databases were written with **sqlite3 3.50.4**. A SQLite header embeds the
+version of the library that wrote it, so rebuilding them elsewhere produces different bytes in
+those three files and in nothing else — measured against a Linux/x86-64 rebuild with 3.53.1,
+where every PE, Mach-O, registry hive, prefetch record, plist and answer key was byte-identical
+to the macOS/arm64 originals.
+
 These are built from a **dev suite**, whose key is published in `artifactforge/suite.py` on
 purpose. That is what makes them reproducible: `scripts/make-samples.sh` regenerates these
 exact bytes, and a regeneration that differs means the generator changed. It also means they

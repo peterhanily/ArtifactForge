@@ -89,6 +89,23 @@ def test_the_answer_key_is_not_inside_the_served_directory(tmp_path):
     assert os.path.exists(os.path.join(paths["answers"], tasks[0].scenario_id + ".json"))
 
 
+def test_fixture_manifest_cannot_enter_a_served_benchmark_scene(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "fixture.json").write_text("public hashes and seed")
+    with pytest.raises(ValueError, match="publish benchmark answers"):
+        suite.stage(str(tmp_path / "served"), str(staging), ["fixture.json"])
+    assert not (tmp_path / "served").exists()
+
+    (staging / "fixture.json").rename(staging / "innocent.json")
+    (staging / "innocent.json").write_text(
+        '{"schema":"artifactforge-fixture-manifest-v1"}\n'
+    )
+    with pytest.raises(ValueError, match="publish benchmark answers"):
+        suite.stage(str(tmp_path / "served"), str(staging), ["innocent.json"])
+    assert not (tmp_path / "served").exists()
+
+
 def test_public_ids_reveal_nothing_and_differ_by_key(tmp_path):
     dev = [t.scenario_id for t in _dev(tmp_path, n=4)]
     hold = [t.scenario_id for t in _holdout(tmp_path, n=4)]

@@ -1,0 +1,12 @@
+{
+  "schema": "artifactforge-fixture-spec-v1",
+  "purpose": "public-reproducible-fixture",
+  "fixture_id": "macos-quarantine-001",
+  "family": "macos",
+  "profile": {
+    "id": "macos-14-loose-v1",
+    "hostname": "mac-01",
+    "username": "v"
+  },
+  "seed_hex": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+}

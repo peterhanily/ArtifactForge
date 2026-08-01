@@ -54,6 +54,12 @@ SCORECARD_MEASUREMENT_KEY_DOMAIN = b"artifactforge/scorecard/measurement-key/v1"
 SCORECARD_MEASUREMENT_KIND = "scorecard-measurement"
 NON_REPORTABLE_SUITE_KINDS = frozenset(("dev", SCORECARD_MEASUREMENT_KIND))
 
+# Fixture manifests publish their seed and every payload digest. They are reproducibility
+# records and therefore answer disclosures inside a benchmark's served tree. Keep this
+# boundary in the staging primitive so a future scene builder cannot opt out by accident.
+BENCHMARK_FORBIDDEN_FILENAMES = frozenset(("fixture.json",))
+_FIXTURE_MANIFEST_MARKER = b"artifactforge-fixture-manifest-v1"
+
 _SEP = b"\x1f"
 
 
@@ -180,12 +186,31 @@ def stage(scene_dir: str, staging_dir: str, allowlist) -> list:
     construction, so a new artifact cannot leak into the solver's view by being forgotten in
     a filter. This is the structural half of the fix; the keyed derivation is the other half.
     """
-    os.makedirs(scene_dir, exist_ok=True)
-    staged = []
-    for name in allowlist:
+    names = tuple(allowlist)
+    forbidden = sorted(
+        name for name in names
+        if os.path.basename(name).casefold() in BENCHMARK_FORBIDDEN_FILENAMES
+    )
+    if forbidden:
+        raise ValueError(
+            "fixture manifests publish benchmark answers and cannot enter a served scene: "
+            + ", ".join(forbidden)
+        )
+    prepared = []
+    for name in names:
         src = os.path.join(staging_dir, name)
         with open(src, "rb") as fh:
             data = fh.read()
+        if _FIXTURE_MANIFEST_MARKER in data:
+            raise ValueError(
+                "fixture manifests publish benchmark answers and cannot enter a served scene: "
+                + name
+            )
+        prepared.append((name, data))
+
+    os.makedirs(scene_dir, exist_ok=True)
+    staged = []
+    for name, data in prepared:
         with open(os.path.join(scene_dir, name), "wb") as fh:
             fh.write(data)
         staged.append(name)

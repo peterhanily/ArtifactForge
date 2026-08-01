@@ -84,6 +84,10 @@ Answering anything about it requires reading two artifacts together, which is th
   materialized binary's bytes once and derives its content digests and structural hashes from
   them. The selected Amcache-to-disk and answer-key-to-disk joins reuse that identity. Deliberate
   stale and absent Amcache decoys do not claim to be resident file bytes.
+- **Fixture Core v1.** A strict public recipe builds `fixture.json` plus an exact `artifacts/`
+  payload; verification re-hashes and regenerates every byte, inspection and semantic diff are
+  stable interfaces, and release emits a deterministic checked USTAR archive. Fixture
+  manifests publish hashes and seeds, so they are explicitly ineligible for benchmark use.
 - **A benchmark for investigation, not recall — experimental, with benchmark-validity status
   red because Gate 4 fails.** Deterministic scenes with decoys, questions that each span two
   artifacts, and answers derived from a suite key the solver never sees. The keyed-suite half
@@ -100,9 +104,16 @@ Answering anything about it requires reading two artifacts together, which is th
 
 ```sh
 uv venv && uv pip install -e ".[dev]"
+uv run artifactforge fixture build examples/fixtures/windows-loose-v1.json out/windows
+uv run artifactforge fixture verify out/windows --assurance
+uv run artifactforge fixture release out/windows out/windows.tar --assurance
 uv run pytest -q                          # the whole suite, standalone
 uv run artifactforge scorecard            # every gate, and what it measured
 ```
+
+See [`docs/fixture-core.md`](docs/fixture-core.md) for the schema, lifecycle, exit-code and
+integrity boundaries. `windows-loose-v1` is deliberately not branded Windows 10: its loose
+artifact set currently combines NT6-era paths with XP-family SCCA v17 prefetch semantics.
 
 EvidenceForge is not a declared runtime or development dependency. Two isolated CI jobs install
 it for the pinned contract and the default-branch drift canary; the standalone test job does
@@ -207,7 +218,7 @@ files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.0.3, nothing published to PyPI. **Gates 1 to 3 have no
+Early and experimental, version 0.1.0, nothing published to PyPI. **Gates 1 to 3 have no
 failures; generator-assurance status is `gap` because two oracle gaps remain. Benchmark-validity
 status is `fail` because Gate 4 is red.** `fidelity-scorecard.json` at the repository root is
 the honest record — it ships whatever it actually reads, and right now that includes a
@@ -215,6 +226,7 @@ failure. MIT licensed, deliberately, so any part of it could be merged upstream 
 friction if that ever became useful.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and the gate discipline,
+[`docs/fixture-core.md`](docs/fixture-core.md) for the public fixture contract,
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is not built, and
 [`integration/evidenceforge/`](integration/evidenceforge/) for a sketch of what an upstream
 contribution would involve — which has not been proposed to anyone.

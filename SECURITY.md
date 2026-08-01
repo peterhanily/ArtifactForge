@@ -1,9 +1,10 @@
 # Security policy
 
 ArtifactForge generates **synthetic forensic artifacts** — binaries, registry hives, prefetch
-records and macOS databases — for training and evaluation. It ships no service, listens on no
-port, and processes no untrusted input. The security surface is therefore unusual, and this
-file says what we actually care about.
+records and macOS databases — for training and evaluation. It ships no service and listens on
+no port. Fixture commands do parse caller-supplied local JSON and filesystem trees, so those
+boundaries are treated as untrusted. The security surface is unusual, and this file says what
+we actually care about.
 
 ## Report privately
 
@@ -83,10 +84,34 @@ about exact bytes against dated signature snapshots — not proof of safety or i
 record is self-reported and unsigned, so it also does not independently authenticate the scan
 host or scanner executables.
 
+## Fixture filesystem boundary
+
+Fixture Core treats recipes, manifests and existing fixture trees as untrusted input. Strict
+JSON loading rejects duplicate keys, unknown fields, non-normalised strings and floats.
+Artifact inventory rejects absolute or traversing paths, symbolic links, special files and
+case-fold collisions. Build and release refuse any pre-existing destination, stage beside the
+destination, and use atomic no-replace publication only after regeneration or archive readback.
+Verification pins the opened root and payload directories, snapshots only through held
+descriptors, and rejects identity changes. Build syncs the complete generated tree before the
+rename; if the final parent sync fails, the API and CLI explicitly report that the verified
+output was published but its crash durability is uncertain.
+
+Release uses a single descriptor-pinned fixture snapshot for reproduction and encoding, keeps
+the temporary archive inode open through mode-setting, sync and post-write verification, and
+checks that the published hard link names that inode. Archive verification independently
+regenerates the embedded recipe; manifest-consistent but non-reproducible payloads are rejected.
+Post-link directory-sync failure is reported as a published, verified archive with uncertain
+crash durability rather than being ambiguously deleted.
+
+The manifest is an integrity and reproducibility record, not a signature. Its seed and content
+digests are public, and `benchmark_eligible` is permanently false: copying a fixture manifest
+into a benchmark scenario would disclose the content answers the benchmark is meant to hide.
+See [`docs/fixture-core.md`](docs/fixture-core.md).
+
 ## Scope
 
-In scope: the generated artifacts, the generator, the benchmark's answer-key isolation, and
-the disclosure mechanisms above.
+In scope: the generated artifacts, the generator, Fixture Core's parser/filesystem/archive
+boundary, the benchmark's answer-key isolation, and the disclosure mechanisms above.
 
 Out of scope: the DFIR parsers used as CI oracles — report those to their own maintainers — and
 EvidenceForge. It is not a declared dependency; isolated contract jobs install it and one test

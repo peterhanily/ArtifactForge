@@ -52,7 +52,9 @@ verdict — that currently reads `fail`, because of Gate 4 above.
 ## Not built
 
 - **Windows 10 prefetch.** The current uncompressed SCCA v17 writer and XP path hash agree
-  with each other, but the modeled host reports Windows 10. A version-consistent replacement
+  with each other, but legacy benchmark/gallery scenes still model a Windows 10 host. Fixture
+  Core avoids that overclaim with the explicit `windows-loose-v1` profile. A
+  version-consistent replacement
   requires a v30 layout plus deterministic MAM/LZXPRESS compression, with independent parser
   and semantic mutation controls retained.
 - **Linux.** No ELF writer, no `HostProfile` constructor, no scene. The layering supports it —

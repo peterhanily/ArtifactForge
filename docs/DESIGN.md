@@ -35,13 +35,16 @@ disk. Deliberate stale and absent Amcache decoys are outside that content-blob c
 
 Dependencies point one way:
 
-    model <- content <- artifacts <- compose <- bench <- cli
+    model <- content <- artifacts <- compose <- fixture / bench <- cli
 
 - `model` — hosts, profiles, pinned times. Depends on nothing.
 - `content` — file bytes and their identity. The ContentStore lives here.
 - `artifacts` — pure builders for the structured formats and plain sidecar values; classified
   formats are validated by their declared readers.
 - `compose` — assembles formats into a scene directory plus its join manifest.
+- `fixture` — turns a public recipe into a canonical, byte-bound loose-file bundle. It drops
+  the private scene join and stays separate from benchmark suites because its manifest
+  publishes content digests.
 - `bench` — turns scenes into gradeable tasks, and holds the adversary solvers.
 - `gates`, `scorecard` — measurement.
 - `ingest` — the EvidenceForge companion adapter, outside the chain. Nothing in the chain may
@@ -51,6 +54,21 @@ ArtifactForge runs standalone. EvidenceForge is never a declared dependency: it 
 PyPI, so naming it would force a git URL into the metadata, which makes the distribution
 unbuildable. Two isolated CI jobs install it for a pinned contract and a default-branch drift
 canary; the standalone test job does not.
+
+### Fixture Core contract
+
+Fixture Core is the public-reproducible product surface. A strict v1 recipe carries a public
+seed and one named loose-artifact profile. Its canonical manifest embeds that recipe and an
+exact sorted inventory of payload paths, sizes and SHA-256 values. Verification checks the
+manifest, re-inventories the tree, and independently regenerates the complete payload. An
+optional assurance pass runs Gates 1 and 3; Gate 2 is not claimed because the fixture manifest
+deliberately omits the private scene join.
+
+The benchmark boundary is absolute: fixture manifests set `benchmark_eligible` to false and
+must never appear under a suite's served `scenarios/` tree. Their hashes and seed are public,
+which is useful for reproducibility and disqualifying for a hold-out. Deterministic USTAR
+release archives add no authenticity claim; they preserve exact bytes with fixed metadata.
+The full contract is in `docs/fixture-core.md`.
 
 ## §4 Scope and validation gate
 

@@ -33,7 +33,7 @@ FORBIDDEN = "evidenceforge"
 #: The generation chain. None of it may reach for the companion adapter or the seed
 #: transcription, or the coupling has leaked inward and standalone is no longer structural.
 CHAIN = ("model", "pools", "suite", "disclosure", "scorecard",
-         "content", "artifacts", "compose", "bench", "gates")
+         "content", "artifacts", "compose", "fixture", "bench", "gates")
 
 
 def _python_files(directory):

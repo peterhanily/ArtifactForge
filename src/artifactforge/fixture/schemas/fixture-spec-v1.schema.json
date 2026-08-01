@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:artifactforge:schema:fixture-spec:v1",
+  "title": "ArtifactForge public reproducible fixture recipe v1",
+  "$comment": "Canonical byte form, duplicate-member rejection and Unicode NFC are enforced by artifactforge.fixture, not by JSON Schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "purpose",
+    "fixture_id",
+    "family",
+    "profile",
+    "seed_hex"
+  ],
+  "properties": {
+    "schema": {
+      "const": "artifactforge-fixture-spec-v1"
+    },
+    "purpose": {
+      "const": "public-reproducible-fixture"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "family": {
+      "enum": [
+        "windows",
+        "macos"
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "hostname",
+        "username"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "windows-loose-v1",
+            "macos-14-loose-v1"
+          ]
+        },
+        "hostname": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$"
+        },
+        "username": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
+      }
+    },
+    "seed_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "family": {
+            "const": "windows"
+          }
+        },
+        "required": [
+          "family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "id": {
+                "const": "windows-loose-v1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "family": {
+            "const": "macos"
+          }
+        },
+        "required": [
+          "family"
+        ]
+      },
+      "then": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "id": {
+                "const": "macos-14-loose-v1"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

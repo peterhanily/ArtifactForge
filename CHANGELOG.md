@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-08-01
+
+### Added
+
+Fixture Core v1 adds a strict public-reproducible recipe and manifest contract plus
+`artifactforge fixture build`, `verify`, `inspect`, `diff` and `release`. Manifests bind an
+exact recursive payload inventory and regenerate the embedded recipe before verification;
+release archives are deterministic USTAR and are reopened and checked before publication.
+Fixture outputs are explicitly ineligible for benchmark use because their public manifests
+publish content hashes and their seed is reproducible by design.
+
+The initial named profiles are `windows-loose-v1` and `macos-14-loose-v1`. The Windows name is
+deliberately version-neutral: current loose artifacts combine NT6-era paths with XP-family
+SCCA v17 prefetch, so calling the fixture a Windows 10 image would overstate consistency.
+
+### Security
+
+Fixture JSON rejects duplicate keys, unknown properties, non-normalised text, floats, unsafe
+paths, symbolic links, special files and case-fold collisions. Build and release refuse an
+existing destination, stage on the destination filesystem, and atomically publish only after
+reproduction or archive verification. Fixture verification pins directory descriptors against
+replacement races and requires the exact installed generator version. Build syncs the complete
+tree before publication; a failed post-rename parent sync reports the verified output as
+published with uncertain durability. Release captures once, reproduction-checks and encodes
+that same byte snapshot, writes through a held temporary descriptor, and reports post-link
+durability uncertainty explicitly. Archive verification rejects even canonically rehashed
+payloads that do not reproduce from the embedded recipe. Manifests and archives provide
+integrity and reproducibility, not signatures or producer authentication.
+
 ## 0.0.3 - 2026-08-01
 
 ### Added

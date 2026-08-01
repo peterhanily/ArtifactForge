@@ -75,6 +75,39 @@ jobs:
       - name: Tests (real parsers over freshly generated artifacts)
         run: uv run pytest -q -rs
 
+      - name: Fixture Core — build, reproduce, assure and release deterministically
+        run: |
+          uv run artifactforge fixture build \
+            examples/fixtures/windows-loose-v1.json fixture-run/windows-a
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture build \
+            examples/fixtures/windows-loose-v1.json fixture-run/windows-b
+          uv run artifactforge fixture verify fixture-run/windows-a --assurance
+          uv run artifactforge fixture diff fixture-run/windows-a fixture-run/windows-b
+          uv run artifactforge fixture release \
+            fixture-run/windows-a fixture-run/windows-a.tar --assurance
+          uv run artifactforge fixture release \
+            fixture-run/windows-b fixture-run/windows-b.tar --assurance
+          cmp fixture-run/windows-a.tar fixture-run/windows-b.tar
+          echo "fixture trees and release archives are byte-identical"
+
+      - name: Wheel — packaged schemas and zero-dependency fixture smoke
+        if: matrix.python-version == '3.12'
+        run: |
+          uv build --wheel --out-dir wheel-dist
+          uv venv wheel-smoke --python ${{ matrix.python-version }}
+          uv pip install --python wheel-smoke/bin/python --no-deps \
+            wheel-dist/artifactforge-*.whl
+          wheel-smoke/bin/artifactforge fixture build \
+            examples/fixtures/macos-14-loose-v1.json wheel-fixture
+          wheel-smoke/bin/artifactforge fixture verify wheel-fixture
+          wheel-smoke/bin/python - <<'PY'
+          from importlib.resources import files
+
+          names = sorted(path.name for path in files("artifactforge.fixture.schemas").iterdir())
+          assert names == ["fixture-manifest-v1.schema.json", "fixture-spec-v1.schema.json"]
+          print(names)
+          PY
+
       # The keystone. Declared answer-bearing resident-file identities are re-derived from the
       # bytes on disk through real parsers and then compared. Deliberate stale/absent decoys
       # are outside this scope.

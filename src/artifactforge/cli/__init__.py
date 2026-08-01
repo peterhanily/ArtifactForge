@@ -387,6 +387,52 @@ def main(argv=None) -> int:
     )
     s.set_defaults(func=cmd_scorecard, scene=None)
 
+    from artifactforge.cli import fixture as fixture_commands
+
+    f = sub.add_parser(
+        "fixture",
+        help="build, verify, inspect, compare and release public reproducible fixtures",
+    )
+    fsub = f.add_subparsers(dest="fixture_cmd", required=True)
+
+    fb = fsub.add_parser("build", help="build a fixture from a strict v1 JSON recipe")
+    fb.add_argument("spec", help="fixture recipe JSON")
+    fb.add_argument("output", help="new fixture directory (must not already exist)")
+    fb.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
+    fb.set_defaults(func=fixture_commands.cmd_fixture_build)
+
+    fv = fsub.add_parser("verify", help="verify integrity and exact recipe reproduction")
+    fv.add_argument("fixture", help="fixture directory")
+    fv.add_argument(
+        "--assurance",
+        action="store_true",
+        help="also require parser/semantic Gate 1 and binary-safety Gate 3",
+    )
+    fv.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
+    fv.set_defaults(func=fixture_commands.cmd_fixture_verify)
+
+    fi = fsub.add_parser("inspect", help="verify and summarize a fixture")
+    fi.add_argument("fixture", help="fixture directory")
+    fi.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
+    fi.set_defaults(func=fixture_commands.cmd_fixture_inspect)
+
+    fd = fsub.add_parser("diff", help="verify and semantically compare two fixtures")
+    fd.add_argument("left", help="first fixture directory")
+    fd.add_argument("right", help="second fixture directory")
+    fd.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
+    fd.set_defaults(func=fixture_commands.cmd_fixture_diff)
+
+    fr = fsub.add_parser("release", help="verify and publish a deterministic USTAR archive")
+    fr.add_argument("fixture", help="fixture directory")
+    fr.add_argument("output", help="new uncompressed .tar path (must not already exist)")
+    fr.add_argument(
+        "--assurance",
+        action="store_true",
+        help="also require parser/semantic Gate 1 and binary-safety Gate 3",
+    )
+    fr.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
+    fr.set_defaults(func=fixture_commands.cmd_fixture_release)
+
     b = sub.add_parser("bench", help="build a benchmark suite")
     bsub = b.add_subparsers(dest="bench_cmd", required=True)
     bn = bsub.add_parser("new", help="generate a suite")

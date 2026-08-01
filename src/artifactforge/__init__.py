@@ -4,11 +4,12 @@
 
 Layered so dependencies point one way only:
 
-    model <- content <- artifacts <- compose <- bench <- cli
+    model <- content <- artifacts <- compose <- fixture / bench <- cli
 
 `model` knows nothing about anything else. `content` owns file bytes and their identity.
 `artifacts` writes one file format each. `compose` assembles them into a scene on disk.
-`bench` turns scenes into gradeable tasks. `gates` and `scorecard` measure the result.
+`fixture` publishes reproducible byte-bound bundles; `bench` turns scenes into gradeable
+tasks. `gates` and `scorecard` measure the result.
 
 `ingest` — the EvidenceForge companion adapter — sits outside that chain and depends only
 on `model`; nothing in the chain may import it, and `ef_seeds` is deliberately absent from
@@ -53,4 +54,4 @@ __all__ = [
     "Task", "PublicTask", "Question", "Score",
     "generate_suite", "generate_batch", "grade",
 ]
-__version__ = "0.0.3"
+__version__ = "0.1.0"

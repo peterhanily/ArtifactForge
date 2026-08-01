@@ -1,6 +1,6 @@
 [project]
 name = "artifactforge"
-version = "0.0.3"
+version = "0.1.0"
 description = "Deterministic, parser-gated synthetic forensic artifacts with byte-derived identity."
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -66,13 +66,13 @@ and limitations documented in
 
 ## prefetch
 
-- **Uncompressed SCCA v17, on a host that says Windows 10.** Format version 17 is the
-  Windows XP and Server 2003 layout. A real `10.0.19045` host emits version 30,
-  MAM/LZXPRESS-compressed, and a responder who checks the version against the `HostProfile`
-  will see them disagree. v17 is emitted because it is uncompressed and open-source parsers
-  read it directly; compression is out of scope, and version consistency between the profile
-  and the artifact is not enforced anywhere. This is the largest single fidelity gap in the
-  Windows set.
+- **Uncompressed SCCA v17; legacy scenes say Windows 10.** Format version 17 is the Windows XP
+  and Server 2003 layout. A real `10.0.19045` host emits version 30,
+  MAM/LZXPRESS-compressed, and a responder who checks a benchmark/gallery `HostProfile` will
+  see them disagree. Fixture Core avoids a version claim by naming this combination
+  `windows-loose-v1`; it does not make the artifacts internally version-consistent. v17 is
+  emitted because it is uncompressed and open-source parsers read it directly. This is the
+  largest single fidelity gap in the Windows set.
 - **Single volume, no directory strings, no file references.** A real record carries the full
   directory list and the MFT references of everything the process touched.
 - **The SCCA XP path hash is real.** It hashes the upper-case UTF-16LE device path using the

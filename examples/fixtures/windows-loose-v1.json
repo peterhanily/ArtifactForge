@@ -1,0 +1,12 @@
+{
+  "schema": "artifactforge-fixture-spec-v1",
+  "purpose": "public-reproducible-fixture",
+  "fixture_id": "windows-dropper-001",
+  "family": "windows",
+  "profile": {
+    "id": "windows-loose-v1",
+    "hostname": "WKSTN-01",
+    "username": "v"
+  },
+  "seed_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

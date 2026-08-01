@@ -92,13 +92,32 @@ jobs:
           fi
 
       # The committed gallery must still be what the generator produces. A regeneration that
-      # differs is a change in the generator, and it should be reviewed as one rather than
+      # differs is a change in the generator, and should be reviewed as one rather than
       # discovered by a reader.
+      #
+      # SQLite files are excluded, and only those. A SQLite header embeds the version of the
+      # library that wrote it, so knowledgeC / TCC / QuarantineEventsV2 differ between the
+      # runner's sqlite3 and whichever built the committed copies — KNOWN_TELLS.md has said so
+      # from the start, and a step asserting the opposite would be asserting something the
+      # project documents as untrue. Everything else must match to the byte, across operating
+      # system and architecture: the gallery was built on macOS/arm64 and this runs on
+      # Linux/x86-64.
       - name: Samples — regenerate and byte-diff against what is committed
         run: |
           cp -r samples samples.committed
           PY=.venv/bin/python AF=.venv/bin/artifactforge ./scripts/make-samples.sh
-          diff -r samples.committed samples && echo "committed samples are reproducible"
+          diff -r -x 'knowledgeC.db' -x 'TCC.db' -x 'QuarantineEventsV2' \
+            samples.committed samples
+          echo "every non-SQLite artifact is byte-identical across OS and architecture"
+          # The excluded three still have to be valid, or the exclusion would hide a break.
+          for db in knowledgeC.db TCC.db QuarantineEventsV2; do
+            uv run python -c "
+          import sqlite3, sys
+          con = sqlite3.connect('samples/02-macos-quarantined-app/$db')
+          assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+          assert con.execute(\"SELECT count(*) FROM sqlite_master WHERE type='table'\").fetchone()[0] >= 2
+          print('  $db ok')"
+          done
 
       - name: Demo — the whole loop end to end
         run: AF=.venv/bin/artifactforge ./scripts/demo.sh

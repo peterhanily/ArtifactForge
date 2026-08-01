@@ -82,10 +82,12 @@ Covers knowledgeC, TCC and QuarantineEventsV2.
 
 - **Minimal schema.** Only the tables and columns real forensic queries read are present. A
   genuine database has many more columns, supporting tables, indices and triggers.
-- **The SQLite header embeds the writing library's version.** Two builds with the same
-  `sqlite3` are byte-identical, which is what the determinism gate checks — but a different
-  SQLite version produces different header bytes, so cross-version reproducibility is not
-  guaranteed. The version in use is recorded in `fidelity-scorecard.json`.
+- **The SQLite header embeds the writing library's version**, and these are the only artifacts
+  affected. Measured: a gallery built on macOS/arm64 with sqlite3 3.50.4 and rebuilt on
+  Linux/x86-64 with 3.53.1 differs in exactly these three files and in nothing else — every
+  PE, Mach-O, registry hive, prefetch record, plist and answer key is byte-identical across
+  both operating system and architecture. The version in use is recorded in
+  `fidelity-scorecard.json` and beside each sample.
 - **Not independently validated.** `sqlite3` both writes and reads these files, so it is not
   an independent oracle. Gate 1 records this as a declared gap rather than counting it as
   validation.

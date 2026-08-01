@@ -33,6 +33,10 @@ BANNER = {
     "synthetic": True,
     "notice": NOTICE,
     "generator": "ArtifactForge",
+    # A SQLite header embeds the writing library's version, so the macOS databases here are
+    # byte-identical only to a rebuild using the same one. Recorded so a difference is
+    # explicable rather than alarming; every other artifact is byte-identical anywhere.
+    "sqlite_version": sqlite3.sqlite_version,
 }
 
 

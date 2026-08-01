@@ -9,15 +9,16 @@ contribution would look like, written down so it can be evaluated rather than as
 
 ## The constraint of record
 
-ArtifactForge consumes EvidenceForge as an optional development tool. It does not modify it,
-does not vendor it, does not monkeypatch it in anything that ships, and does not push
-anything to it. This directory is the only place in the repository where in-process patching
-of upstream appears at all, and it appears as a demonstration.
+EvidenceForge is not a declared ArtifactForge dependency. Two isolated CI jobs install it for
+the pinned contract and the default-branch drift canary; the standalone job does not. Nothing
+that ships vendors or imports EvidenceForge, and no upstream source tree, branch or repository
+is modified or pushed. One contract test temporarily monkeypatches an imported private method
+in memory to exercise a seed branch; pytest restores it, and no upstream file is changed.
 
 ## The observation
 
-EvidenceForge computes a file's hashes as digests of a **seed string**, keyed differently per
-call site:
+EvidenceForge computes these synthetic hash fields as digests of **seed strings**, with seed
+construction local to the emitting path:
 
 ```python
 # src/evidenceforge/generation/emitters/sysmon.py, v1.13.1
@@ -30,43 +31,51 @@ elif host is not None and not isinstance(host, str):
 sha256 = hashlib.sha256(seed.encode(), usedforsecurity=False).hexdigest().upper()
 ```
 
-Zeek's file-transfer path seeds differently again. The consequence is that the same logical
-binary carries unrelated hashes depending on which sensor saw it, so the file-hash pivot —
-the move a responder reaches for first — does not join anything.
+Zeek's file-transfer path uses a different seed domain. In the measured stock run the resulting
+same-algorithm Sysmon and Zeek sets are disjoint. That observation alone does not show that the
+same logical file received two different hashes: there is no basename-matched transfer and
+execution in that run. A controlled positive witness is needed to make the causal claim.
 
-This is not a bug in the sense of a wrong value; every hash is stable, deterministic and
-correctly shaped. It is a modelling choice whose cost only appears when someone tries to
-pivot on it.
+This does not make an individual value malformed: the hashes are stable, deterministic and
+correctly shaped. Whether separate emitter domains are a defect depends on whether a
+cross-emitter content join is an intended invariant; the stock run alone cannot answer that.
 
 ## Measured, on a real run
 
-From `scenarios/branch-office-example` at v1.13.1, read through
+From an unmodified run of `scenarios/branch-office-example` at v1.13.1, read through
 `artifactforge/ingest/evidenceforge.py`:
 
 | | |
 |---|---|
 | Hosts with Sysmon logs | 7 |
-| Hashed Sysmon records | 446 |
-| Records whose identity is recoverable and verified | 446 (100%) |
-| Distinct logical binaries | 93 |
-| Seed forms observed | `from_host_metadata` 75, `with_description` 18 |
+| Sysmon records carrying SHA256 (Event IDs 1 and 7) | 853 |
+| Records whose Sysmon identity is recoverable and verified | 853 (100%) |
+| Distinct Sysmon SHA1 / SHA256 / logical identities | 105 / 105 / 105 |
+| Seed forms observed | `from_host_metadata` 78, `with_description` 27 |
+| Event ID 1 only | 614 records, 78 distinct SHA1 and 78 distinct SHA256 |
 
-So the identity *is* fully determined by what upstream already emits — it is simply not
-expressed as a digest of anything. That is what makes a change tractable: no information is
-missing, only unbound.
+So the adapter can recover the Sysmon-local logical identity from the fields upstream emits and
+verify every recovery against its emitted SHA256. This does not bind that identity to a Zeek
+file-transfer row or to bytes shared by both emitters.
 
-A second measurement worth stating, because it constrains any cross-emitter claim: in a stock
-run, no non-certificate `files.log` record carries a SHA256 at all. HTTP records carry SHA1 at
-best. Any Zeek-side join has to be specified on SHA1.
+A second measurement constrains any cross-emitter proposal. The same run's Zeek `files.json`
+has 722 rows, 119 distinct SHA1 values and 103 distinct SHA256 values. Of those rows, 525 are
+certificates and 197 are not; no non-certificate row carries SHA256, while 21 non-certificate
+rows carry SHA1, representing 16 distinct values. The same-algorithm Sysmon/Zeek intersections
+are zero, but basename overlap is also zero. A meaningful join therefore has to be designed and
+tested around a controlled file that appears in both paths, likely using SHA1 given the fields
+the non-certificate rows actually carry.
 
 ## What a change would have to touch
 
 Deliberately understated in earlier drafts of this plan, so stated carefully here.
 
-1. **A content identity object.** One place that maps a logical file to bytes, so a digest is
-   a digest of something. EvidenceForge already has `PeContext` on its canonical event and an
-   HTTP file-download action on the main generation path, so this is surfacing an existing
-   internal primitive rather than inventing one.
+1. **A scenario/world-level content identity object.** One place that maps a logical file to
+   bytes and can be referenced by separate transfer and execution events. EvidenceForge has
+   per-event `PeContext` data and an HTTP file-download action, but those are distinct
+   `SecurityEvent` instances; neither currently proves that a transferred object is the later
+   executed object. The shared relation must therefore be explicit cross-event state, not just
+   another field surfaced from one event.
 2. **Two hash functions rerouted.** `sysmon.py::_generate_hashes` (two call sites) and
    `file_transfer.py::file_transfer_hashes` (three call sites, of which the two SMB seeds are
    not content identity and should stay as they are). A dormant eCAR path is optional.
@@ -87,5 +96,6 @@ only version of this that stops the clock.
 
 ## Before any of it
 
-Ask. A one-paragraph issue describing the file-identity event type and the join it enables,
-carrying the numbers above, costs nothing and settles whether the rest is worth writing.
+Build a controlled positive witness in which one independently paired content identity is both
+transferred and executed. Only then ask whether the file-identity relation and join are wanted;
+the stock-run disjoint sets are not enough to label the current behavior a same-file defect.

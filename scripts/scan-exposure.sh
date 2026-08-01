@@ -3,9 +3,10 @@
 #
 # Committing malware-shaped binaries to a public repository means they will be crawled,
 # downloaded and scanned. This runs whatever scanners are on the machine against a fresh
-# corpus, and each one is preceded by a POSITIVE CONTROL — a scanner that detects nothing
-# because it is misconfigured is indistinguishable from a clean result, which is the same
-# trap the gates are built to avoid.
+# corpus. ClamAV has an EICAR control and XProtect a crafted hit plus near miss. The community
+# YARA path reports compilation and observed matches but does not yet enforce a dedicated
+# positive control; Gatekeeper likewise remains a manual observation. Do not describe either
+# as controlled until that changes.
 #
 # A missing scanner is reported as SKIPPED and the script still exits 0: this is a
 # pre-publication check run by a person, not a CI gate. Detections exit 1.
@@ -83,7 +84,7 @@ if command -v spctl >/dev/null && command -v codesign >/dev/null; then
     fi
     ASSESS=$(spctl -a -t execute "$WORK/gk" 2>&1)
     if [[ "$ASSESS" == *rejected* ]]; then
-      echo "   spctl:    REJECTED — Gatekeeper refuses it, as it refuses any ad-hoc signature"
+      echo "   spctl:    REJECTED in this run — a dated host observation, not a portable guarantee"
     else
       echo "   spctl:    $ASSESS"
       echo "             ACCEPTED is unexpected for an ad-hoc signature; investigate"; FAILED=1
@@ -94,5 +95,5 @@ else
 fi
 
 echo
-[ "$FAILED" -eq 0 ] && echo "== no scanner flagged anything ==" || echo "== SOMETHING WAS FLAGGED =="
+[ "$FAILED" -eq 0 ] && echo "== no threat-naming finding from the scans that completed ==" || echo "== SOMETHING WAS FLAGGED =="
 exit "$FAILED"

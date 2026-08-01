@@ -1,18 +1,19 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Gate 3 — inertness: can anything we ship execute, and is every format marked synthetic?
+"""Gate 3 — inertness: are binaries payload-free and classified formats marked synthetic?
 
 Two properties, both checked on the emitted bytes rather than asserted in prose.
 
-**Inert.** A binary this project generates reproduces the forensic *signal* — a real import
-table, a real symbol table, a real hash — and never the offensive *capability*. The code
-section is a single return instruction and nothing else. This is checked by disassembling
-what actually lands on disk, not by trusting the generator.
+**Payload-free.** A binary this project generates reproduces the forensic *signal* — a real
+import table, a real symbol table, and real content or structural hashes — without a payload.
+PE ``.text`` is ``ret`` plus zero padding and its DOS stub is fixed; Mach-O ``__text`` is
+``mov w0,#0 ; ret``. The PE check parses the emitted section. The current Mach-O check searches
+the emitted bytes for that permitted sequence; it does not enumerate all executable sections.
 
-**Marked.** Every emitted format carries an in-band anchor identifying it as ArtifactForge
-output, so a file that escapes its bundle can still be recognised for what it is. A format
-with no marker is a failure: KNOWN_TELLS.md calls honesty "a shipped mechanism", and a
-mechanism nothing enforces is a claim.
+**Marked.** Every parser-classified structured format carries an in-band anchor identifying it
+as ArtifactForge output. A classified format with no marker is a failure. Plain sidecars are
+outside that format-marker check; the serialized quarantine xattr value is the notable current
+exception.
 
 **Indicators point nowhere real.** Domains must be RFC 2606 reserved (.example, .invalid,
 .test) and addresses RFC 5737 / RFC 3849, so no synthetic artifact can label a real host as
@@ -140,7 +141,7 @@ def _indicator_hygiene(r: GateReport, where: str, data: bytes):
 
 def run(scene_dir: str) -> GateReport:
     r = GateReport(3, "inertness",
-                   "can anything we ship execute, and is every format marked synthetic?")
+                   "are binaries payload-free and classified formats marked synthetic?")
     marked = fmts = 0
 
     for name in sorted(os.listdir(scene_dir)):

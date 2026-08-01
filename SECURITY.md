@@ -15,9 +15,11 @@ categories below.
 1. **A shipped binary is not inert, or its synthetic marking can be stripped.**
 
    Every generated binary reproduces the forensic *signal* — a real import table, a real
-   symbol table, a real hash — and never the offensive *capability*. The PE's `.text` section
-   is a single `ret` and nothing else; the Mach-O's `__text` is `mov w0, #0 ; ret` and nothing
-   else. Both are checked on the emitted bytes by Gate 3, not asserted in a document.
+   symbol table, and real content or structural hashes — without a payload. The PE's `.text`
+   section is a single `ret` followed by zero padding; the Mach-O writer emits an eight-byte
+   `__text` containing `mov w0, #0 ; ret`. Gate 3 parses and bounds-checks PE `.text`; its
+   current Mach-O check recognizes the permitted byte sequence but does not independently
+   enumerate every executable section.
 
    The Mach-O is a genuinely loadable, ad-hoc-signed arm64 executable, because an unsigned one
    is not loadable at all and would therefore not be a realistic artifact. It runs and returns
@@ -28,12 +30,13 @@ categories below.
 2. **A generated artifact could be mistaken for genuine evidence, or an indicator points at
    something real.**
 
-   Every emitted format carries an in-band `ARTIFACTFORGE` anchor so a file that escapes its
-   bundle is still recognisable as generated. Domains must be RFC 2606 reserved (`.example`,
-   `.invalid`, `.test`) and addresses RFC 5737 / RFC 3849 or RFC 1918. If you find a format
-   shipping without a marker, a marker that a normal workflow strips, or an indicator naming
-   something that could plausibly be a real host, domain, bundle identifier or signing
-   authority — tell us.
+   Every parser-classified structured format carries an in-band `ARTIFACTFORGE` anchor so a
+   file that escapes its bundle is still recognisable as generated. Plain sidecars are outside
+   that gate: in particular, the serialized `com.apple.quarantine` value has no in-band marker.
+   Domains must be RFC 2606 reserved (`.example`, `.invalid`, `.test`) and addresses RFC 5737 /
+   RFC 3849 or RFC 1918. If you find a classified format shipping without a marker, a marker
+   that a normal workflow strips, or an indicator naming something that could plausibly be a
+   real host, domain, bundle identifier or signing authority — tell us.
 
 3. Anything else: a normal public issue is fine.
 
@@ -55,6 +58,7 @@ that context. If you publish results from them, say they are synthetic.
 In scope: the generated artifacts, the generator, the benchmark's answer-key isolation, and
 the disclosure mechanisms above.
 
-Out of scope: the DFIR parsers used as CI oracles — report those to their own maintainers —
-and EvidenceForge, which this project consumes as an optional development dependency and
-never modifies.
+Out of scope: the DFIR parsers used as CI oracles — report those to their own maintainers — and
+EvidenceForge. It is not a declared dependency; isolated contract jobs install it and one test
+temporarily monkeypatches an imported private method in memory. Nothing that ships modifies an
+EvidenceForge source tree, branch or repository.

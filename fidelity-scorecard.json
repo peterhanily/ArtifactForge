@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "generator": {
-    "artifactforge_version": "0.0.1",
+    "artifactforge_version": "0.0.2",
     "git_commit": "dc00ba9",
     "sqlite_version": "3.50.4"
   },
@@ -50,10 +50,38 @@
       "adversarial_floor": 0.7273
     }
   },
+  "status": {
+    "generator_assurance": {
+      "verdict": "gap",
+      "experimental": false,
+      "gates": [
+        "validity",
+        "identity",
+        "inertness"
+      ],
+      "fails": [],
+      "gaps": [
+        "Gate 1 (validity): plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
+        "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap"
+      ]
+    },
+    "benchmark_validity": {
+      "verdict": "fail",
+      "experimental": true,
+      "gates": [
+        "solvability"
+      ],
+      "fails": [
+        "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold — that many answers are obtainable without forensic work"
+      ],
+      "gaps": []
+    }
+  },
   "honest_gaps": [
     "Gate 1 (validity): plist: plistlib both writes and reads the LaunchAgent plist, so it is not an independent oracle; a second reader is an open gap",
     "Gate 1 (validity): sqlite: sqlite3 both writes and reads these databases, so it is not an independent oracle; a second reader is an open gap",
     "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
   ],
-  "verdict": "fail"
+  "verdict": "fail",
+  "verdict_scope": "all_gates"
 }

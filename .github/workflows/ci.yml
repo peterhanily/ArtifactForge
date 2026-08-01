@@ -71,19 +71,21 @@ jobs:
       - name: Tests (real parsers over freshly generated artifacts)
         run: uv run pytest -q -rs
 
-      # The keystone. Every hash-shaped field is re-derived from the bytes on disk through a
-      # real parser and only then compared, so this can actually fail — and does, the moment
-      # a single byte of any artifact stops agreeing with the others.
+      # The keystone. Declared answer-bearing resident-file identities are re-derived from the
+      # bytes on disk through real parsers and then compared. Deliberate stale/absent decoys
+      # are outside this scope.
       - name: Gate 2 — identity (must PASS)
         run: uv run artifactforge gate identity --n 40
 
-      # Two independently-implemented parsers per format. A missing oracle fails here rather
-      # than skipping, because a skipped check exits 0 and reads exactly like a passing one.
+      # PE, Mach-O, hive and prefetch each have two independently implemented readers. SQLite
+      # and plist use their standard-library writer as reader and remain declared gaps. A
+      # missing required oracle fails here rather than skipping.
       - name: Gate 1 — validity (must PASS)
         run: uv run artifactforge gate validity --n 40
 
-      # Checked on the emitted bytes: the code section is one return instruction, every format
-      # carries its in-band marker, and no indicator names anything that could be real.
+      # Checked on emitted bytes: PE and Mach-O follow their format-specific inert instruction
+      # policies, classified structured formats carry their marker, and indicators stay in
+      # reserved synthetic namespaces. Plain xattr sidecars are the documented marker exception.
       - name: Gate 3 — inertness (must PASS)
         run: uv run artifactforge gate inertness --n 40
 
@@ -189,6 +191,39 @@ jobs:
             "https://raw.githubusercontent.com/Cisco-Talos/EvidenceForge/${{ env.EF_TAG }}/scenarios/branch-office-example/scenario.yaml"
           uv run python -m evidenceforge generate scenario.yaml -o ef-out
           test -f ef-out/GROUND_TRUTH.json
+
+      - name: Verify pinned EvidenceForge measurement
+        run: |
+          uv run python - <<'PY'
+          import importlib.metadata
+          import json
+          import subprocess
+          import sys
+
+          distribution = importlib.metadata.distribution("evidence-forge")
+          direct_url = json.loads(distribution.read_text("direct_url.json"))
+          subprocess.run(
+              [
+                  sys.executable,
+                  "scripts/measure_evidenceforge.py",
+                  "measure",
+                  "ef-out",
+                  "--scenario",
+                  "scenario.yaml",
+                  "--evidenceforge-version",
+                  distribution.version,
+                  "--evidenceforge-commit",
+                  direct_url["vcs_info"]["commit_id"],
+                  "--output",
+                  "ef-measurement.json",
+              ],
+              check=True,
+          )
+          PY
+          diff -u measurements/evidenceforge-v1.13.1-branch-office-example.json ef-measurement.json
+          uv run python scripts/measure_evidenceforge.py check \
+            measurements/evidenceforge-v1.13.1-branch-office-example.json \
+            --run-root ef-out
 
       - name: Contract — must RUN, not skip
         env:

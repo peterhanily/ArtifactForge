@@ -1,19 +1,20 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Gate 1 — validity: does an independent real parser read every artifact we ship?
+"""Gate 1 — validity: do the declared parser oracles read each classified artifact?
 
 "Realistic" is not a matter of taste here. Either a parser a responder actually runs opens
-the file, or it does not. Two independent implementations are required per format, because
-one permissive parser hides what a strict one rejects: every prefetch file this project
-emitted was accepted by `windowsprefetch` and rejected by `pyscca`, the libyal parser plaso
-is built on, for as long as `windowsprefetch` was the only oracle installed.
+the file, or it does not. PE, Mach-O, registry hive and prefetch require two independent
+implementations because one permissive parser can hide what a strict one rejects: every
+prefetch file this project emitted was accepted by `windowsprefetch` and rejected by `pyscca`,
+the libyal parser plaso is built on, for as long as `windowsprefetch` was the only oracle
+installed.
 
 A missing oracle is a FAILURE, never a skip. A skipped check exits 0 and reads exactly like
 a passing one.
 
-Where a genuinely independent second implementation does not exist — SQLite databases and
-binary plists are read back by the same library that wrote them — that is recorded as a
-declared gap rather than quietly counted as validation.
+SQLite databases and binary plists are read back by the same libraries that wrote them, so
+they have no independent second opinion. That is recorded as a declared gap rather than
+quietly counted as independent validation. Plain sidecars are outside the parser gate.
 """
 from __future__ import annotations
 
@@ -147,7 +148,7 @@ READERS = {
 
 def run(scene_dir: str) -> GateReport:
     r = GateReport(1, "validity",
-                   "does an independent real parser read every artifact we ship?")
+                   "do the declared parser oracles read each classified artifact?")
     checked = passed = 0
     seen_formats = set()
 

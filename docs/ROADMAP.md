@@ -2,11 +2,13 @@
 
 What is not built, and why. Ordered by what would change the most if it existed.
 
-## The benchmark is failing its own validity gate
+## The benchmark-validity status is failing because Gate 4 is red
 
-Gate 4 is red and the number is in the README. A solver that parses nothing — for each
-candidate, count how many other files mention its name, take the maximum — scores **72.7%**
-against a **4.2%** chance floor, where the reference solver scores 100%.
+Gate 4 is red and the number is in the README. The `footprint` adversary ranks candidates
+without parsing their formats — for each candidate, count how many other files mention its
+name and take the maximum — then uses ordinary parsers and lookups to complete the dependent
+answers. On the public, non-reportable scorecard measurement corpus it scores **72.7%** against
+the committed scorecard's **4.2%** chance floor, where the reference solver scores 100%.
 
 It is structural. The answer object is by definition the one the registry, Amcache, prefetch
 and disk all talk about; a decoy appears in fewer of them. Counting mentions *is* the intended
@@ -31,7 +33,8 @@ What the repair looks like, in order:
    presence test, a name, or a position in a stored sequence.
 
 Until that lands the benchmark is experimental and no score from it should be reported. The
-generator and Gates 1 to 3 are unaffected by any of it.
+generator's Gates 1 to 3 have no failures, though generator assurance remains `gap` while the
+SQLite and plist second-oracle gaps are open.
 
 ## Open gaps in what already ships
 
@@ -41,7 +44,9 @@ verdict — that currently reads `fail`, because of Gate 4 above.
 
 - **No independent oracle for SQLite or plists.** `sqlite3` and `plistlib` write and read
   their own formats, so knowledgeC, TCC, QuarantineEventsV2 and the LaunchAgent plists have no
-  outside opinion on them. Every other format has two independently implemented parsers.
+  outside opinion on them. PE, Mach-O, registry hive and prefetch each have two independently
+  implemented parsers; the serialized quarantine xattr is a plain sidecar, not a parser-gated
+  format.
   Candidates worth evaluating: `mac_apt`'s readers, Apple's `plutil` (macOS-only, so it cannot
   be the CI oracle), or a from-scratch bplist reader whose only job is to disagree.
 - **The prefetch name hash is bespoke.** It is the SCCA Vista algorithm seeded with 0 rather
@@ -86,6 +91,9 @@ verdict — that currently reads `fail`, because of Gate 4 above.
 - **The upstream contribution.** Sketched in
   [`integration/evidenceforge/`](../integration/evidenceforge/), not proposed to anyone. The
   next step is a one-paragraph issue asking whether it would be wanted, not code.
-- **Zeek-side reconciliation.** Constrained by a measurement: in a stock run, no
-  non-certificate `files.log` record carries a SHA256 at all, and HTTP records carry SHA1 at
-  best. Any Zeek join has to be specified on SHA1 or it is unfalsifiable.
+- **Zeek-side reconciliation.** Constrained by an unmodified v1.13.1 branch-office run:
+  `files.json` has 722 rows, 525 certificate and 197 non-certificate. No non-certificate row
+  carries SHA256; 21 carry SHA1, representing 16 distinct values. The same-algorithm Sysmon
+  and Zeek sets are disjoint, but their basenames are also disjoint, so the stock run is not a
+  same-file positive witness. Any proposed SHA1 join needs a controlled transfer-to-execution
+  case before it can be described as repairing an observed broken pivot.

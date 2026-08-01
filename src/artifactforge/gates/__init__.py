@@ -16,9 +16,9 @@ The sixth is the one that matters. A gate that has never been observed to fail p
 nothing, and this repository previously shipped tests that stayed green when the data they
 checked was replaced with the literal string GARBAGE-NOT-A-SHA1.
 
-  Gate 1  validity     Does an independent real parser read every artifact we ship?
-  Gate 2  identity     Is every hash-shaped field a genuine digest of one ContentStore blob?
-  Gate 3  inertness    Can anything we ship execute, and is every format marked synthetic?
+  Gate 1  validity     Do the declared parser oracles read each classified artifact?
+  Gate 2  identity     Do the declared answer-bearing pivots agree with emitted bytes?
+  Gate 3  inertness    Are binaries payload-free and classified formats marked synthetic?
   Gate 4  solvability  Are the benchmark's answers recovered from evidence, or derivable?
 
 Failures block. Declared gaps do not — they are honest, named limitations that travel in the

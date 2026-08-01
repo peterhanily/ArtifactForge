@@ -9,12 +9,14 @@ section here, and equally if a section here names no emitted format — so it ca
 of date silently. It is the prose half of `fidelity-scorecard.json`, whose `honest_gaps` array
 carries the same information in a form a machine can read.
 
-Everything here is inert by construction: see
+Generated binaries are payload-free by construction, under the precise executable-code checks
+and limitations documented in
 [`docs/inert-by-construction.md`](docs/inert-by-construction.md).
 
 ## pe
 
-- **Inert.** The `.text` section is a single `0xC3` (`ret`). Structurally valid, does nothing.
+- **Payload-free.** The `.text` section starts with one `0xC3` (`ret`) and the rest is zero
+  padding. The fixed DOS stub separately prints its standard sentence and exits.
 - **Minimal, not compiler-realistic.** Two sections (`.text`, `.rdata`), no resources, no rich
   header, no relocations, no TLS. The internals do not resemble any real compiler's output,
   and pefile will note that a large fraction of the file is zero bytes.
@@ -32,10 +34,10 @@ Everything here is inert by construction: see
 
 ## macho
 
-- **Inert.** `__text` is `mov w0, #0 ; ret` and nothing else — the arm64 analogue of the PE's
-  single `ret`. It is a genuinely loadable, ad-hoc-signed executable, because an unsigned
-  arm64 binary is not loadable at all and so would not be a realistic artifact. Running it
-  returns zero.
+- **Payload-free.** `__text` is `mov w0, #0 ; ret` and nothing else — the arm64 analogue of
+  the PE's single `ret`. It is a genuinely loadable, ad-hoc-signed executable, because an
+  unsigned arm64 binary is not loadable at all and so would not be a realistic artifact.
+  Running it returns zero.
 - **symhash and cdhash are real.** A genuine `LC_SYMTAB` whose undefined external symbols
   yield the same symhash threatstream/symhash and yara-x compute, and an ad-hoc
   `CS_SuperBlob` whose cdhash is what `codesign -d` reports.
@@ -44,8 +46,9 @@ Everything here is inert by construction: see
 - **Older linker idiom.** Uses `LC_DYLD_INFO_ONLY` bind opcodes. A 2024-era clang emits
   `LC_DYLD_CHAINED_FIXUPS`, `LC_FUNCTION_STARTS`, `LC_DATA_IN_CODE` and an exports trie, and
   none of those are present — `dyld_info -fixup_chains` will show nothing.
-- **Ad-hoc signature only.** No Developer ID, no notarisation, no Info.plist slot; Gatekeeper
-  would refuse it exactly as it refuses any ad-hoc-signed download.
+- **Ad-hoc signature only.** No Developer ID, no notarisation, no Info.plist slot. A dated manual
+  scan recorded Gatekeeper rejection; that is not a portable guarantee across hosts or macOS
+  releases, and a future assessment needs a functioning platform control.
 - **Marked.** `__TEXT,__cstring` carries `ARTIFACTFORGE-SYNTHETIC-<16 hex>`.
 
 ## hive
@@ -111,8 +114,11 @@ The tier is loose files that a responder's tools read directly.
 
 ## EvidenceForge coupling
 
-`artifactforge/ef_seeds.py` recovers a file's identity from EvidenceForge's per-emitter seed
-hashes by reproducing upstream's private seed construction. That is a private surface SemVer
-does not protect. It is pinned to `v1.13.1`, isolated in one module nothing else imports,
-absent from the public exports, and exercised by a CI job that fails rather than skips when
-EvidenceForge is missing — so an upstream change to those formulas breaks loudly.
+`artifactforge/ef_seeds.py` recovers a Sysmon-local logical identity from EvidenceForge's
+seed-derived hash fields by reproducing upstream's private Sysmon seed construction. That is a
+private surface SemVer does not protect. It is pinned to `v1.13.1`, isolated in one module
+nothing else imports, absent from the public exports, and exercised by isolated contract jobs
+that fail rather than skip when their required EvidenceForge installation is missing — so an
+upstream change to those formulas breaks loudly. The stock branch-office run has no
+basename-matched Sysmon/Zeek pair, so this recovery is not evidence that one logical file
+received inconsistent values across emitters.

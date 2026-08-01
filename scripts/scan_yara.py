@@ -1,11 +1,12 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Scan a corpus with a YARA rule set, with a positive control first.
+"""Scan a corpus with XProtect or a community YARA rule set.
 
-A rule set that matches nothing because it failed to compile looks exactly like a clean
-result. So before reporting anything, this crafts a file that satisfies one rule in the set
-exactly, and a near-miss that satisfies it one condition short, and requires the first to hit
-and the second not to. Only then is a zero worth printing.
+For XProtect, a file crafted to satisfy one named rule and a one-condition near miss provide a
+positive and negative control before the corpus is scanned. For a community rules directory,
+the script reports compiled and unsupported file counts and the matches it observes, but it
+does not currently enforce a dedicated positive-control rule. A community run with no matches
+must therefore not be described as controlled merely because compilation succeeded.
 
 Community rule sets are largely *descriptive* rather than accusatory — `IsPE64` says a file is
 a 64-bit PE, `win_registry` says it imports registry APIs. Those firing is expected and says

@@ -5,27 +5,31 @@
 ArtifactForge generates **forensic artifacts**: the files a responder finds on a host once
 they dig in. A synthetic PE with a real import table and a real IMPHASH; Windows registry
 hives carrying Run-key persistence and an Amcache installation record; a prefetch file; macOS
-knowledgeC, TCC and QuarantineEventsV2 databases, a quarantine xattr and a LaunchAgent plist.
+knowledgeC, TCC and QuarantineEventsV2 databases, a quarantine xattr value serialized as a
+sidecar file, and a LaunchAgent plist.
 
 Everything is a pure function of a seed. No wall clock, no entropy, no PID. The same scenario
 regenerates byte-identical forever, which is the property every other claim rests on.
 
 ## §2 The premise is a test, not a claim
 
-The interesting question about synthetic evidence is not "does it look realistic". It is
-"does a tool a responder actually runs open it, and do the artifacts agree with each other".
-Both are pass/fail, so both are gates rather than adjectives.
+Two useful questions about synthetic evidence are "does a tool a responder actually runs open
+it?" and "do the declared cross-artifact pivots agree?" Both are pass/fail, so both are gates
+rather than adjectives. They establish parser readability and selected consistency properties,
+not realism in general; `KNOWN_TELLS.md` records the remaining fidelity limits.
 
 The second half is the harder one and the reason this project exists. EvidenceForge — whose
-synthetic *logs* this complements — computes a file's hashes as digests of a per-emitter seed
-string. The same binary therefore carries disagreeing hashes across sources: on one real run,
-its Sysmon file-hashes and its Zeek file-hashes have **zero** overlap, so the file-hash pivot,
-the core move of DFIR, silently never works.
+synthetic *logs* this complements — computes these values from emitter-local synthetic seed
+domains rather than from file bytes. On one unmodified branch-office run, the same-algorithm
+Sysmon and Zeek digest sets have zero overlap. Their basenames have zero overlap as well, so
+that stock run does **not** prove that one logical file received inconsistent hashes across two
+emitters; a controlled transfer-to-execution witness is required for that causal claim.
 
-ArtifactForge's answer is content-first identity. `ContentStore` synthesizes a file's real
-bytes once; every hash-shaped field anywhere — Amcache `FileId`, on-disk digest, YARA target,
-IMPHASH — is a genuine digest of those same bytes. They agree by construction, and Gate 2
-re-derives all of them from disk to prove it.
+ArtifactForge's answer for materialized, answer-bearing binaries is content-first identity.
+`ContentStore` synthesizes a binary's bytes once and derives its content digests and structural
+hashes from those bytes and their parsed structures. The selected Amcache-to-disk and
+answer-key-to-disk pivots reuse that identity, and Gate 2 re-derives those declared checks from
+disk. Deliberate stale and absent Amcache decoys are outside that content-blob claim.
 
 ## §3 Layering
 
@@ -35,16 +39,18 @@ Dependencies point one way:
 
 - `model` — hosts, profiles, pinned times. Depends on nothing.
 - `content` — file bytes and their identity. The ContentStore lives here.
-- `artifacts` — one module per format, each a pure function, each validated by a real parser.
+- `artifacts` — pure builders for the structured formats and plain sidecar values; classified
+  formats are validated by their declared readers.
 - `compose` — assembles formats into a scene directory plus its join manifest.
 - `bench` — turns scenes into gradeable tasks, and holds the adversary solvers.
 - `gates`, `scorecard` — measurement.
 - `ingest` — the EvidenceForge companion adapter, outside the chain. Nothing in the chain may
   import it, and upstream's private seed formulas are never re-exported as ArtifactForge API.
 
-ArtifactForge runs standalone. EvidenceForge is a CI-only dev tool, never a declared
-dependency: it is not on PyPI, so naming it would force a git URL into the metadata, which
-makes the distribution unbuildable.
+ArtifactForge runs standalone. EvidenceForge is never a declared dependency: it is not on
+PyPI, so naming it would force a git URL into the metadata, which makes the distribution
+unbuildable. Two isolated CI jobs install it for a pinned contract and a default-branch drift
+canary; the standalone test job does not.
 
 ## §4 Scope and validation gate
 
@@ -68,12 +74,12 @@ scorecard's `honest_gaps` so they cannot be forgotten. Anything undeclared is a 
 
 ### Gate 1 — validity
 
-*Does an independent real parser read every artifact we ship?*
+*Do the declared parser oracles read each classified artifact?*
 
-Two independently-implemented parsers per format, because one permissive parser hides what a
-strict one rejects. Every prefetch file this project emitted was accepted by
-`windowsprefetch` and refused by `pyscca` — the libyal parser plaso is built on — for as
-long as `windowsprefetch` was the only oracle installed.
+PE, Mach-O, registry hive and prefetch each require two independently implemented parsers,
+because one permissive parser can hide what a strict one rejects. Every prefetch file this
+project emitted was accepted by `windowsprefetch` and refused by `pyscca` — the libyal parser
+plaso is built on — for as long as `windowsprefetch` was the only oracle installed.
 
 A missing oracle is a **failure, never a skip**: a skipped check exits 0 and reads exactly
 like a passing one. Where no genuinely independent second implementation exists — SQLite
@@ -82,41 +88,50 @@ gap, not silent credit.
 
 ### Gate 2 — identity
 
-*Is every hash-shaped field a genuine digest of one ContentStore blob?*
+*Do the declared answer-bearing identities and cross-artifact pivots agree with the emitted
+bytes?*
 
-The keystone. Every value is re-derived from the files on disk, through a real parser, and
-only then compared. Nothing is compared against the value that produced it. Every check names
-the two artifacts it spans, because a check confined to one artifact cannot detect a broken
-pivot.
+The keystone. Each declared value in the gate's scope is re-derived from the files on disk,
+through a real parser where the value is structural, and only then compared. Every check names
+the artifacts it spans, because a check confined to one artifact cannot detect a broken pivot.
+The gate does not claim that stale or absent decoy Amcache `FileId`s correspond to bytes shipped
+in the scene.
 
 ### Gate 3 — inertness
 
-*Can anything we ship execute, and is every format marked synthetic?*
+*Are generated binaries payload-free, and is every classified structured format marked
+synthetic?*
 
 Generated binaries reproduce the forensic **signal** — a real import table, a real symbol
-table, a real hash — and never the offensive **capability**: the code section is a single
-return and nothing else, checked on the emitted bytes. Every format carries an in-band
-`ARTIFACTFORGE` anchor so a file that escapes its bundle is still recognisable. Domains must
-be RFC 2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that
-might be real.
+table, real content and structural hashes — without a payload. PE `.text` is `ret` plus zero
+padding and the DOS stub is the fixed print-and-exit stub; Mach-O `__text` is
+`mov w0,#0 ; ret`. Gate 3 checks the emitted bytes, although its current Mach-O check recognizes
+the permitted byte sequence rather than independently enumerating every executable section.
+Every classified structured format carries an in-band `ARTIFACTFORGE` anchor. Plain sidecars,
+including the quarantine xattr value, are not counted by that marker gate. Domains must be RFC
+2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that might be
+real.
 
 ### Gate 4 — solvability
 
 *Are the benchmark's answers recovered from evidence, or derivable?*
 
-**This gate is currently RED, and deliberately stays red.** A solver that parses nothing — for
-each candidate, count how many other files mention its name, take the maximum — scores 72.7%
-against a 4.2% chance floor. The number is published in the README and tracked in the
-scorecard; `docs/ROADMAP.md` says what the repair takes. Raising the threshold to make it pass
-is the one response ruled out: a red gate reporting a true fact is the system working.
+**This gate is currently RED, and deliberately stays red.** The `footprint` adversary ranks
+candidates without format parsing — for each candidate, count how many other files mention its
+name and take the maximum — then uses ordinary parsers and lookups to complete dependent
+answers. On the public, non-reportable scorecard measurement corpus it scores 72.7% against
+the committed scorecard's 4.2% chance floor. The number is published in the README and tracked
+in the scorecard; `docs/ROADMAP.md` says what the repair
+takes. Raising the threshold to make it pass is the one response ruled out: a red gate
+reporting a true fact is the system working.
 
 A reference solver scoring 100% proves the artifacts *encode* the ground truth. It does not
 prove that is the only way to get it — and here it was not: because the generator is open
 source and the public scenario identifier was also its generation seed, a solver opening zero
-files reproduced every answer. So the gate measures three things: the reference solver
-scores 100%; every adversary stays under its threshold; and at least one question per family
-is answerable **only** by joining two artifacts, without which the benchmark cannot detect a
-broken pivot at all.
+files reproduced every answer. So the gate measures four things: the reference solver scores
+100%; every adversary stays under its threshold; at least one question per family is answerable
+**only** by joining two artifacts; and the blind solver succeeds against the deliberately
+cheatable dev-suite control.
 
 The adversary set is the gate. `null` and `constant` score zero — *below* the chance floor of
 a solver guessing among visible candidates — and for a long time they were the only baselines,

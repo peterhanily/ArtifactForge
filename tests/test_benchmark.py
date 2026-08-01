@@ -108,3 +108,20 @@ def test_batch_is_distinct_and_deterministic(tmp_path):
     assert [t.answer_key() for t in a] == [t.answer_key() for t in b]
     hashes = [t.answer_key()["persisted_sha256"] for t in a if t.family == "windows"]
     assert len(set(hashes)) == len(hashes)
+
+
+def test_scorecard_measurement_corpus_is_deterministic_but_not_a_holdout(tmp_path):
+    key = suite.scorecard_measurement_key()
+    a = generate_suite(2, str(tmp_path / "measure-a"), key=key,
+                       kind=suite.SCORECARD_MEASUREMENT_KIND)
+    b = generate_suite(2, str(tmp_path / "measure-b"), key=key,
+                       kind=suite.SCORECARD_MEASUREMENT_KIND)
+
+    assert [t.scenario_id for t in a] == [t.scenario_id for t in b]
+    assert [t.answer_key() for t in a] == [t.answer_key() for t in b]
+    assert key != HOLDOUT_KEY
+    assert suite.SCORECARD_MEASUREMENT_KIND in suite.NON_REPORTABLE_SUITE_KINDS
+
+    for name in ("public.json",):
+        assert (tmp_path / "measure-a" / name).read_bytes() == \
+               (tmp_path / "measure-b" / name).read_bytes()

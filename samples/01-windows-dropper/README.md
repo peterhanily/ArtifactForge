@@ -2,7 +2,7 @@
 
 > **Synthetic.** Every byte here was generated. No hash, UUID, URL or path in this directory identifies anything real, and none should be submitted to a blocklist or a threat-intelligence platform. See [`../../SECURITY.md`](../../SECURITY.md).
 
-Five binaries. One Run-key value names a program that is present; Amcache's recorded hashes match a *different* one, because the persisted binary is recorded under the hash of the version Amcache saw. One prefetch record names a program that is no longer on disk. Following names and following hashes lead to different files, which is what makes each of them a pivot rather than a lookup.
+Five binaries. One Run-key value names a program that is present; Amcache's recorded hashes match a *different* one, while the persisted binary is recorded under a deliberately stale value whose historical bytes are not retained. One prefetch record names a program that is no longer on disk. Following names and following hashes lead to different files, which is what makes each of them a pivot rather than a lookup.
 
 Regenerate with `scripts/make-samples.sh`. The bytes are deterministic, so a regeneration that differs is a change in the generator, not in the weather.
 

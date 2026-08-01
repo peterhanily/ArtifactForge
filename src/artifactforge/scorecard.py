@@ -49,6 +49,27 @@ _METRICS = [
 
 SCHEMA_VERSION = "1.0"
 
+# The scorecard has two audiences with different maturity. Gates 1-3 describe the artifact
+# generator; Gate 4 describes the explicitly experimental investigation benchmark. Keep the
+# legacy aggregate verdict below for existing consumers, while making the two scopes available
+# as first-class machine-readable status.
+GENERATOR_ASSURANCE_GATES = ("validity", "identity", "inertness")
+BENCHMARK_VALIDITY_GATES = ("solvability",)
+
+# A metric comparison is meaningless when the two cards describe different corpora. These
+# fields identify the public deterministic measurement without publishing key material.
+_MEASUREMENT_IDENTITY = (
+    ("measurement.suite_kind", "suite kind"),
+    ("measurement.scenario_count", "scenario count"),
+    ("measurement.deterministic", "deterministic flag"),
+    ("measurement.reportable", "reportable flag"),
+    ("measurement.suite_derivation_domain", "suite derivation domain"),
+    ("measurement.key_derivation.algorithm", "key derivation algorithm"),
+    ("measurement.key_derivation.domain", "key derivation domain"),
+    ("measurement.key_derivation.seed_id", "public seed identity"),
+    ("measurement.key_derivation.key_id", "measurement key identity"),
+)
+
 
 def _dig(card: dict, path: str):
     node = card
@@ -59,15 +80,35 @@ def _dig(card: dict, path: str):
     return node
 
 
+def _status_block(reports, gate_names, *, experimental: bool) -> dict:
+    by_name = {r.name: r for r in reports}
+    selected = [by_name[name] for name in gate_names if name in by_name]
+    missing = [name for name in gate_names if name not in by_name]
+    fails = [f"Gate {r.gate} ({r.name}) FAILING: {reason}"
+             for r in selected for reason in r.fails]
+    fails += [f"required gate report missing: {name}" for name in missing]
+    gaps = [f"Gate {r.gate} ({r.name}): {reason}"
+            for r in selected for reason in r.gaps]
+    verdict = "fail" if fails else "gap" if gaps else "pass"
+    return {
+        "verdict": verdict,
+        "experimental": experimental,
+        "gates": list(gate_names),
+        "fails": fails,
+        "gaps": gaps,
+    }
+
+
 def build_scorecard(reports, *, artifactforge_version: str, git_commit: str,
-                    sqlite_version: str, honest_gaps=None) -> dict:
+                    sqlite_version: str, honest_gaps=None, measurement=None) -> dict:
     """Assemble the committed artifact from a run of the gates."""
+    reports = list(reports)
     gates = {r.name: r.as_scorecard_block() for r in reports}
     gaps = list(honest_gaps or [])
     for r in reports:
         gaps += [f"Gate {r.gate} ({r.name}): {g}" for g in r.gaps]
         gaps += [f"Gate {r.gate} ({r.name}) FAILING: {f}" for f in r.fails]
-    return {
+    card = {
         "schema_version": SCHEMA_VERSION,
         "generator": {
             "artifactforge_version": artifactforge_version,
@@ -75,6 +116,12 @@ def build_scorecard(reports, *, artifactforge_version: str, git_commit: str,
             "sqlite_version": sqlite_version,
         },
         "gates": gates,
+        "status": {
+            "generator_assurance": _status_block(
+                reports, GENERATOR_ASSURANCE_GATES, experimental=False),
+            "benchmark_validity": _status_block(
+                reports, BENCHMARK_VALIDITY_GATES, experimental=True),
+        },
         "honest_gaps": gaps,
         # Three-valued on purpose. "pass" would be the wrong headline while a declared gap is
         # open — a gap is a named limitation rather than a failure, but it is still something
@@ -84,7 +131,11 @@ def build_scorecard(reports, *, artifactforge_version: str, git_commit: str,
         #   fail  a gate is red
         "verdict": ("fail" if not all(r.ok for r in reports)
                     else "gap" if gaps else "pass"),
+        "verdict_scope": "all_gates",
     }
+    if measurement is not None:
+        card["measurement"] = dict(measurement)
+    return card
 
 
 def regressions(baseline: dict, current: dict) -> list:
@@ -101,12 +152,39 @@ def regressions(baseline: dict, current: dict) -> list:
     return out
 
 
+def measurement_incompatibilities(baseline: dict, current: dict) -> list:
+    """Identity/provenance differences that make two scorecards incomparable.
+
+    Missing provenance is incompatible even when both sides omit it. Without a scenario
+    count, domain and key identity, a claim that metrics did not regress has no defined
+    measurement population behind it.
+    """
+    out = []
+    for path, label in _MEASUREMENT_IDENTITY:
+        was, now = _dig(baseline, path), _dig(current, path)
+        if was is None or now is None:
+            out.append((label, "missing", was, now))
+        elif was != now:
+            out.append((label, "changed", was, now))
+    return out
+
+
 def render_comparison(baseline: dict, current: dict) -> str:
     rows = regressions(baseline, current)
     if not rows:
         return "no tracked metric regressed"
     return "\n".join(f"  {kind.upper():9s} {label}: {was} -> {now}"
                      for label, kind, was, now in rows)
+
+
+def render_measurement_compatibility(baseline: dict, current: dict) -> str:
+    rows = measurement_incompatibilities(baseline, current)
+    if not rows:
+        return "measurement provenance compatible"
+    details = "\n".join(
+        f"  {kind.upper():7s} {label}: {was!r} -> {now!r}"
+        for label, kind, was, now in rows)
+    return "measurement provenance incompatible\n" + details
 
 
 def load(path: str) -> dict:

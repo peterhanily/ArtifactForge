@@ -14,16 +14,18 @@ responder's tools read and pivot on. It has no payload, no network code, no shel
 persistence mechanism of its own, and no decryption routine. There is nothing in it to
 reverse-engineer because there is nothing in it.
 
-Concretely, the entire code body of each format is:
+Concretely, the generated native code regions are:
 
 | Format | Region | Code | Bytes |
 |---|---|---|---|
 | PE (x86-64) | `.text` | `ret` | `C3` |
 | PE (16-bit) | MS-DOS stub | print a sentence, exit | `0E 1F BA 0E 00 B4 09 CD 21 B8 01 4C CD 21` |
-| Mach-O (arm64) | `__text` | `mov w0, #0 ; ret` | `52 80 00 00  D6 5F 03 C0` |
+| Mach-O (arm64) | `__text` | `mov w0, #0 ; ret` | `00 00 80 52  C0 03 5F D6` |
 
-Everything after that is zero padding. Gate 3 reads what actually lands on disk and fails if a
-single instruction appears past the return.
+PE `.text` contains zero padding after its return; Mach-O `__text` is exactly the two listed
+instructions. Gate 3 reads what actually lands on disk. Its PE check parses `.text` and rejects
+non-zero bytes after `ret`; its current Mach-O check recognizes the permitted eight-byte
+sequence but does not independently enumerate every executable section.
 
 The DOS stub is the standard one every Windows compiler has emitted for thirty years,
 reproduced byte for byte. It is included because a PE without it is trivially distinguishable
@@ -47,11 +49,11 @@ it returns zero. That is a real step up in dual-use posture from an unloadable s
 mitigation is the whole of this document — the two-instruction body, the marker, the
 disclosure, and the tests below.
 
-## Marked, in-band, in every format
+## Marked, in-band, in every classified structured format
 
 A bundle can be renamed and a README can be lost. The only disclosure that survives a file
-being copied somewhere else is one inside the bytes, so every format carries an
-`ARTIFACTFORGE` anchor that `strings` finds:
+being copied somewhere else is one inside the bytes, so every classified structured format
+carries an `ARTIFACTFORGE` anchor that `strings` finds:
 
 | Format | Where |
 |---|---|
@@ -61,6 +63,11 @@ being copied somewhere else is one inside the bytes, so every format carries an
 | Prefetch | a reserved filename-strings entry |
 | SQLite (knowledgeC, TCC, QuarantineEventsV2) | a reserved `artifactforge_synthetic` table |
 | Binary plist | a reserved `artifactforge_synthetic` key |
+
+The serialized `com.apple.quarantine` value is a plain sidecar, not a parser-classified format,
+and it does not carry that anchor. Its filename, reserved indicators and the scene-level
+disclosure provide context, but they are not an in-band marker; this is a deliberate limit of
+the current gate rather than credit silently counted as coverage.
 
 The disclosure text is deliberately plain ASCII. A binary plist silently re-encodes any string
 containing a non-ASCII character as UTF-16, which would hide the anchor from `strings` — a
@@ -80,14 +87,15 @@ the pool the file was drawn from.
 
 ## Checkable, not asserted
 
-Every claim above is a test. These are the ones that would go red:
+The generator-level safety and marking claims above map to the checks below. The table states
+their present scope rather than treating a weaker check as proof of a stronger property:
 
 | Property | Enforced by |
 |---|---|
 | The PE's `.text` is one `ret` and padding | `gates/inertness.py::_pe_code_is_inert` |
 | The PE's MS-DOS stub is the canonical one, byte for byte | same |
-| The Mach-O's `__text` is `mov w0,#0 ; ret` | `gates/inertness.py::_macho_code_is_inert` |
-| Every emitted format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
+| The permitted Mach-O sequence `mov w0,#0 ; ret` is present | `gates/inertness.py::_macho_code_is_inert` |
+| Every classified structured format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
 | A format with no declared marker fails | same — an unknown format is a failure, not a skip |
 | No URL outside RFC 2606 | `gates/inertness.py::_indicator_hygiene` |
 | No address outside RFC 5737 / RFC 1918 | same |
@@ -105,8 +113,10 @@ notice.
 ## What real scanners make of it
 
 Run with `scripts/scan-exposure.sh` against a fresh 20-scenario batch plus the committed
-gallery — 160 files. Every scanner is preceded by a positive control, because one that detects
-nothing because it is misconfigured is indistinguishable from a clean result.
+gallery — 160 files. ClamAV is checked with EICAR, and XProtect with a crafted hit plus a
+one-condition near miss. The community YARA path records how many rule files and rules compile,
+and its descriptive matches show that rules ran, but it does not have a dedicated enforced
+positive-control rule. Gatekeeper and `codesign` are manual platform observations, not CI gates.
 
 Measured 2026-07-31 on macOS 26.5.2 (arm64):
 
@@ -114,15 +124,15 @@ Measured 2026-07-31 on macOS 26.5.2 (arm64):
 |---|---|---|
 | **ClamAV 1.5.3**, signature set 28078 (355,577 signatures, same day) | EICAR detected | **0 detections** across 160 files |
 | **Apple XProtect** 5353 — the 451-rule set macOS scans downloads with | a crafted file matches `XProtect_MACOS_71915a8`; a near-miss one condition short does not | **no threat-naming rule fired** |
-| **Yara-Rules community set** — 12,685 rules from 436 files | (the set is deliberately trigger-happy, which is the control) | **no threat-naming rule fired**; 461 descriptive hits, below |
-| **Gatekeeper** (`spctl -a -t execute`) | — | **rejected**, with and without a quarantine xattr |
+| **Yara-Rules community set** — 12,685 rules from 436 files | 436 files compiled; descriptive matches demonstrate active scanning, but are not a dedicated control | **no threat-naming rule fired**; 461 descriptive hits, below |
+| **Gatekeeper** (`spctl -a -t execute`) | manual observation; no positive control recorded | **rejected in this dated run**, with and without a quarantine xattr |
 | **`codesign -v`** | — | signature valid on disk; `codesign -d` reports the cdhash we computed by hand, for all five sample binaries |
 
-The Gatekeeper result is the one to keep in view. The Mach-O is real enough that Apple's own
-tooling parses it, validates its ad-hoc signature and agrees with our hand-computed cdhash —
-and the operating system still refuses to run it as a download, exactly as it refuses any
-ad-hoc-signed binary. Realistic to a forensic parser, refused by the actual security gate, is
-the shape this project wants.
+The Gatekeeper result is a dated manual observation, not a portable guarantee. In that run the
+Mach-O was real enough that Apple's own tooling parsed it, validated its ad-hoc signature and
+agreed with the hand-computed cdhash, while `spctl` rejected it as a download. Future claims
+about Gatekeeper need a functioning platform control because `spctl` can also return an
+inconclusive Code Signing subsystem error.
 
 ### The 461 community-YARA hits, itemised
 
@@ -147,10 +157,10 @@ reproduced byte for byte and the rule no longer fires.
 
 Making a synthetic binary *less* distinguishable is a trade worth being explicit about. It is
 the right one here because the thing being removed was an accident, not a disclosure: the
-deliberate marking is the in-band `ARTIFACTFORGE` anchor, which every artifact still carries
-and which Gate 3 still requires. Distinguishability that comes from an honest marker is a
-safety property; distinguishability that comes from an incomplete header is just a bug that
-happened to be load-bearing.
+deliberate marking is the in-band `ARTIFACTFORGE` anchor, which every classified structured
+artifact carries and Gate 3 requires. Plain sidecars remain the disclosed exception.
+Distinguishability that comes from an honest marker is a safety property; distinguishability
+that comes from an incomplete header is just a bug that happened to be load-bearing.
 
 ### VirusTotal
 
@@ -160,8 +170,8 @@ Uploading a file to VirusTotal publishes it and its hash to a third party perman
 [`SECURITY.md`](../SECURITY.md) tells everyone else not to submit these hashes to a
 threat-intelligence platform. Doing it ourselves to get a badge would be the same pollution
 the policy exists to prevent — a synthetic SHA256 that acquires a reputation is a small piece
-of noise in somebody else's data and it never goes away. ClamAV and XProtect run locally
-against current signature sets and answer the question that actually mattered.
+of noise in somebody else's data and it never goes away. The ClamAV and XProtect results above
+were local measurements against the dated signature versions recorded in the table.
 
 ## What this does not protect against
 

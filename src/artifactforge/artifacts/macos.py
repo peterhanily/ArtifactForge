@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Deterministic macOS forensic artifacts — the gap EvidenceForge structurally can't fill.
 
-All are loose files a responder's tools read directly: SQLite databases (knowledgeC / TCC /
-QuarantineEventsV2), the com.apple.quarantine xattr value, and a LaunchAgent plist. Each is
-built deterministically (pinned timestamps and rowids, no wall clock) and validated by a real
-reader (sqlite3 with the canonical forensic queries; plistlib). The quarantine xattr UUID
-equals the QuarantineEventsV2 row identifier — the macOS cross-artifact join.
+All are loose files a responder can inspect directly: SQLite databases (knowledgeC / TCC /
+QuarantineEventsV2), a serialized com.apple.quarantine xattr value, and a LaunchAgent plist.
+They are built deterministically (pinned timestamps and rowids, no wall clock). SQLite and
+plist outputs are validated with sqlite3 canonical queries and plistlib; the xattr sidecar is
+checked as join data, not counted as a parser-gated format. Its UUID equals the
+QuarantineEventsV2 row identifier — the macOS cross-artifact join.
 
 SQLite files embed the writing library's version in their header; two builds with the same
 sqlite3 are byte-identical (two-clock gate), but cross-version reproducibility is a disclosed

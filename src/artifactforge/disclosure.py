@@ -1,12 +1,13 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""The in-band synthetic marking every emitted artifact carries.
+"""In-band synthetic marking for parser-classified structured formats.
 
 A bundle can be renamed, a README can be lost, a file can be copied out of its directory by
 someone who does not know where it came from. The only disclosure that survives all of that
-is one carried inside the bytes, so every format this project writes contains an
+is one carried inside the bytes, so every format listed in Gate 3's marker table contains an
 `ARTIFACTFORGE` anchor that `strings` will find and that a person reading a hex dump cannot
-miss.
+miss. Plain sidecars are outside that table; the serialized quarantine xattr value is the
+notable current exception.
 
 This is not decoration and it is not optional. Gate 3 fails any format that ships without
 one, checked on the emitted bytes rather than on a promise in a document — which matters,
@@ -18,7 +19,7 @@ database, a reserved key in a plist, the overlay of a PE, `__cstring` in a Mach-
 place a real artifact's tooling ignores and a responder's `strings` does not.
 """
 
-#: The anchor. Present verbatim, as ASCII, in every artifact this project writes.
+#: The anchor. Present verbatim, as ASCII, in every parser-classified structured format.
 MARKER = "ARTIFACTFORGE"
 
 #: The one-line disclosure that travels with it wherever there is room for prose.

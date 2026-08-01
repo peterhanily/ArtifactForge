@@ -30,7 +30,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGETS = [
     ("README.md", r"(?<=at )(\d+(?:\.\d+)?%)(?= against a \d+(?:\.\d+)?% floor)", "footprint"),
     ("README.md", r"(?<=against a )(\d+(?:\.\d+)?%)(?= floor)", "chance"),
-    ("README.md", r"(?<=parses nothing\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "footprint"),
+    ("README.md", r"(?<=parser-assisted completion\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "footprint"),
     ("README.md", r"(?<=visible candidates\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "chance"),
     ("docs/ROADMAP.md", r"(?<=take the maximum — scores \*\*)(\d+(?:\.\d+)?%)(?=\*\*)", "footprint"),
     ("docs/ROADMAP.md", r"(?<=against a \*\*)(\d+(?:\.\d+)?%)(?=\*\* chance floor)", "chance"),

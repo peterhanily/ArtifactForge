@@ -1,10 +1,11 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""File content and its identity — the layer every hash-shaped field is derived from.
+"""Materialized file content and its identity.
 
-`ContentStore` synthesizes a file's real bytes once from a seed; every artifact that
-mentions that file quotes a genuine digest of those same bytes, so the cross-artifact
-hash pivot holds by construction rather than by assertion.
+`ContentStore` synthesizes a binary's bytes once from a seed and derives that ``Content``
+object's content and structural hashes from the bytes it emits. A caller that populates several
+declared fields from the same object gets a consistent identity by construction. Scene-level
+stale and absent decoy hashes are outside this module's guarantee.
 
 Depends on: model. Nothing here may import artifacts, compose, bench or ingest.
 """

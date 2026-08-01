@@ -1,0 +1,392 @@
+{
+  "method": {
+    "name": "artifactforge-evidenceforge-hash-surface",
+    "network_required": false,
+    "script": "scripts/measure_evidenceforge.py",
+    "version": 2
+  },
+  "provenance": {
+    "evidenceforge": {
+      "git_commit": "c0c619992fa44418a20f9b7d9abbeae750695916",
+      "tag": "v1.13.1",
+      "version": "1.13.1"
+    },
+    "generation_command_template": "python -m evidenceforge generate scenarios/branch-office-example/scenario.yaml -o out",
+    "output_tree": {
+      "canonicalization": "artifactforge-output-tree-v1",
+      "file_count": 45,
+      "files": [
+        {
+          "path": "COLLECTION_PROFILE.json",
+          "sha256": "551fd38c274e8b7c4796c92d532df97966c8e0da3a80a1a37d69f6208e5ef1cf",
+          "size": 3349
+        },
+        {
+          "path": "GROUND_TRUTH.json",
+          "sha256": "f14f5fd5c65401abdcbd2d35c09f48ab0e2054028fe383e0a4802fd02647c2da",
+          "size": 10544
+        },
+        {
+          "path": "GROUND_TRUTH.md",
+          "sha256": "0f168bfc120aef6daada33d89018ed0cb38515a036818e92bb6af6cec70967dc",
+          "size": 5331
+        },
+        {
+          "path": "OBSERVATION_MANIFEST.json",
+          "sha256": "17053507639fe276bcfdf1950d1761e546f594d629f250df675ed93e776a659d",
+          "size": 4665
+        },
+        {
+          "path": "OUTPUT_TARGET.txt",
+          "sha256": "01666ec060466c14b9fa06c613fbac449163f2a2017558fe16526209ab78c6b0",
+          "size": 8
+        },
+        {
+          "path": "data/DC-BO-01.northstar-branch.local/ecar.json",
+          "sha256": "0b7396f587f6e4854d1063d3a96dddf7751873eff263a04799e25c5a01653e00",
+          "size": 2494258
+        },
+        {
+          "path": "data/DC-BO-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "4e088f391de66d6091377b62587e64f17c4f08ec8701e9954774474e5c2d1b23",
+          "size": 6924146
+        },
+        {
+          "path": "data/DC-BO-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "804ace42c0cd15735040b5edc815778b9740aec359f88b727e539f97a6db10ea",
+          "size": 1334350
+        },
+        {
+          "path": "data/FILE-BO-01.northstar-branch.local/ecar.json",
+          "sha256": "8b3bf7305b2fea71ad2c021204d73b97a9c786e7f83ff4513e867e00b07e8263",
+          "size": 1128083
+        },
+        {
+          "path": "data/FILE-BO-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "cfa581bb806ffe96b1a3b601b72b526ecd07fe4955009fdab60c8067bdeec996",
+          "size": 2401029
+        },
+        {
+          "path": "data/FILE-BO-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "583bc21fd7f8c42b566e9b7afd3863ec76093323e979cb01f5a9ddc300129e51",
+          "size": 785422
+        },
+        {
+          "path": "data/FW-BO-EDGE/cisco_asa.log",
+          "sha256": "b99ccbd2b70cc42f54d7e5452a46010a8219085342c9bca10bfc523e8def0f7d",
+          "size": 1035357
+        },
+        {
+          "path": "data/IDS-BO-EDGE/snort_alert.log",
+          "sha256": "34496c7f9c7dca222d02a798afdc1f77fad7628cb44d36d6841dad81ec72a401",
+          "size": 9159
+        },
+        {
+          "path": "data/PROXY-BO-01.northstar-branch.local/bash_history/nina.kapoor.bash_history",
+          "sha256": "e055b1f0895ac5674674da05ef951ebf86b8713caa393e89be3b5c4db2600851",
+          "size": 2169
+        },
+        {
+          "path": "data/PROXY-BO-01.northstar-branch.local/ecar.json",
+          "sha256": "c034e78cda3bf3bc67d401114fc612305f722e50ecb8beb1b6bbea4a300d5373",
+          "size": 938412
+        },
+        {
+          "path": "data/PROXY-BO-01.northstar-branch.local/proxy_access.log",
+          "sha256": "0c7afeea60f16b73b6f2ba53cd64985669f2943d5cf459de14d0a71f8a64a667",
+          "size": 377948
+        },
+        {
+          "path": "data/PROXY-BO-01.northstar-branch.local/syslog.log",
+          "sha256": "1787096e97e9243994be22edbfb8ae825d6ef7df9b87a1179676e57c5c50c359",
+          "size": 57448
+        },
+        {
+          "path": "data/WEB-BO-01.northstar-branch.local/bash_history/nina.kapoor.bash_history",
+          "sha256": "4603c4c56265125ebde4237162b5fe9ca4b1519455c21d00d37d1425cd0f1bb3",
+          "size": 1179
+        },
+        {
+          "path": "data/WEB-BO-01.northstar-branch.local/ecar.json",
+          "sha256": "5ce6fbd893662e9990db255311eaaaed6aefbaafde6e820016e4f96ce9185ada",
+          "size": 752623
+        },
+        {
+          "path": "data/WEB-BO-01.northstar-branch.local/syslog.log",
+          "sha256": "71a9d7ee11df1474934fca39db99ede0ec5d04ebfe6b94fa8e4d16fa0d69c04e",
+          "size": 278006
+        },
+        {
+          "path": "data/WEB-BO-01.northstar-branch.local/web_access.log",
+          "sha256": "1c6bdc63bb068c7c1d3341fe41349aeef03305201738b84572bb4bac55406b2c",
+          "size": 110131
+        },
+        {
+          "path": "data/WS-LMORRIS-01.northstar-branch.local/ecar.json",
+          "sha256": "b745df4c7ce16e223507e9f2ae7fce4283b8a2f6d1335d9aa934dd7dd5bdc430",
+          "size": 546497
+        },
+        {
+          "path": "data/WS-LMORRIS-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "3e51a4748dd9bfa2978626fcf9e5ba7e56d2d5beb9d84d6ca1e51f19eb92f018",
+          "size": 766239
+        },
+        {
+          "path": "data/WS-LMORRIS-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "b7d80e6f76ed6aeea1ff42587fb2270290388b2f3e06ae13af96faf91bb899f9",
+          "size": 621634
+        },
+        {
+          "path": "data/WS-MPATEL-01.northstar-branch.local/ecar.json",
+          "sha256": "438304dc6411f41925513afda9df0da56a785c52d3d737ac8e36162f5c244147",
+          "size": 550494
+        },
+        {
+          "path": "data/WS-MPATEL-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "cd017edf37c2f24e034be6d28d302f38b21c32bcd02e9ee5c4fa2f848175ccad",
+          "size": 743905
+        },
+        {
+          "path": "data/WS-MPATEL-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "c6a7b37672d62dcfb103f5712596e45e60d0e079547776192a47dd08410f8474",
+          "size": 589495
+        },
+        {
+          "path": "data/WS-NKAPOOR-01.northstar-branch.local/ecar.json",
+          "sha256": "de5d70570da032b1badc9f2f5771da5cfa120b74efbb7126be2710da3b69dc55",
+          "size": 605534
+        },
+        {
+          "path": "data/WS-NKAPOOR-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "a6813eca007322a48aa5f827544734a82b6e136c40357b8cb7deddd95cd6c332",
+          "size": 932119
+        },
+        {
+          "path": "data/WS-NKAPOOR-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "8457cf22cf8c97a9c4e1226b3aed8c93d6eff9536a2e970595ce4cc12ebd67d0",
+          "size": 778513
+        },
+        {
+          "path": "data/WS-OREED-01.northstar-branch.local/ecar.json",
+          "sha256": "e35ee557b53fca4b6231177bef316c6ce5cdde605f5f8968d11096a4b14b5a88",
+          "size": 560330
+        },
+        {
+          "path": "data/WS-OREED-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "66b5b206ae318bbae2e5453af02d6613608c9b77c7ea1ceec4a3209985e3245d",
+          "size": 728244
+        },
+        {
+          "path": "data/WS-OREED-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "c15460a7d0d5e04ab6b7b538438ca2c12b744090cbd97cdd95c34a50aa47b6c6",
+          "size": 659748
+        },
+        {
+          "path": "data/WS-VHALE-01.northstar-branch.local/ecar.json",
+          "sha256": "cbc370e963aaed3265ae4e3d9acc42287c6e96d2ba17baff7e1d2ef000cf5159",
+          "size": 531872
+        },
+        {
+          "path": "data/WS-VHALE-01.northstar-branch.local/windows_event_security.xml",
+          "sha256": "eca3b0b4d92d20f385a5bd7aeb9419c441d6e334482501cd22db5ef32825618e",
+          "size": 665695
+        },
+        {
+          "path": "data/WS-VHALE-01.northstar-branch.local/windows_event_sysmon.xml",
+          "sha256": "79f2415a051b8182e02ac5739c311b1f26e6883b27dbc93fb71a86eaa02e8ecf",
+          "size": 555438
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/conn.json",
+          "sha256": "15870abb40ca94f6823b07d0fef6521efa70a068ed15663c5106c4916a97c22f",
+          "size": 2321600
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/dhcp.json",
+          "sha256": "2adfe2d17bc04e185a5fac6359a8caaba1535033d3ed09889d465d72faddb137",
+          "size": 14615
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/dns.json",
+          "sha256": "abd8b69aecd53ac093354d73f999bd4ff7637ca825d8bff5c0106f89bc4d1d05",
+          "size": 438659
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/files.json",
+          "sha256": "c63c68a7d8ec08c6ebe39199f025df8c76e460ca7cb84741ad5392e028cde28c",
+          "size": 370971
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/http.json",
+          "sha256": "cafd12fafcffa16e3cada9a32729506c7a90d890d90d9ae8d4edc2b9ad176ac8",
+          "size": 333528
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/ntp.json",
+          "sha256": "6a4e10296856aa65191c3d8a62373732ea5a00558794f033f50eafaa90c7255b",
+          "size": 3540
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/ocsp.json",
+          "sha256": "34bdb97d4ae2463fc011c4ee4a87d641efe69999b242a2ddd045a04162b50b31",
+          "size": 9103
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/ssl.json",
+          "sha256": "777491f5da688ec6def7c66663de059b05792a6e203aef60f5a7df825520a6aa",
+          "size": 290955
+        },
+        {
+          "path": "data/ZEEK-BO-CORE/x509.json",
+          "sha256": "eaff6106776e2644b0756e5cf15f5a4e3ca85b9f47dfaf66a1513a5397b59c78",
+          "size": 363523
+        }
+      ],
+      "total_bytes": 32635868,
+      "tree_sha256": "956a9ae41bc94925412024cefaabb39a3c7c536a4441637ddc5cdfb09fad865d"
+    },
+    "producer_attestation": {
+      "automatically_detected_from_output": false,
+      "bound_output_tree_sha256": "956a9ae41bc94925412024cefaabb39a3c7c536a4441637ddc5cdfb09fad865d",
+      "limitation": "The serialized output has no producer-commit field. This record binds an explicit external attestation to the exact measured bytes; it does not independently infer the producer commit from those bytes.",
+      "pin_validation": "exact version and git commit match",
+      "source": "required CLI arguments"
+    },
+    "scenario": {
+      "duration": "6h",
+      "git_blob_sha1": "415947f6b34c69170a89d953607b0d5ad9848bd8",
+      "name": "branch-office-example",
+      "repository_path": "scenarios/branch-office-example/scenario.yaml",
+      "sha256": "4a46b8e54181be0cf74163e93f849f88d47761338d8a943a2b7a2c93eedbf249",
+      "warmup": "2h"
+    },
+    "scenario_input_modified": false
+  },
+  "qualification": {
+    "basis": [
+      "EID1 image/non-certificate Zeek filename basename overlaps: 0",
+      "EID1 image/non-certificate HTTP URI basename overlaps: 0",
+      "The serialized logs expose no explicit transfer-to-execution content identity."
+    ],
+    "claim_boundary": "The disjoint hash sets establish that this stock run has no hash join. They do not, by themselves, establish that two records for a known-identical file carry different hashes, because the run demonstrates no positive transfer-to-execution same-file pair.",
+    "positive_same_file_pair_demonstrated": false,
+    "serialized_transfer_to_execution_identity_field": null
+  },
+  "record_id": "evidenceforge-v1.13.1-branch-office-example-full",
+  "results": {
+    "artifactforge_adapter_verification": {
+      "distinct_logical_identities": 105,
+      "distinct_logical_identities_by_verified_seed_form": {
+        "bare": 0,
+        "from_host_metadata": 78,
+        "with_description": 27
+      },
+      "evidenceforge_import_required": false,
+      "method": "artifactforge.ingest.evidenceforge.read_run",
+      "records_recovered_and_verified": 853,
+      "records_with_sha256_and_image": 853,
+      "unrecovered_records": 0,
+      "verified_records_by_seed_form": {
+        "bare": 0,
+        "from_host_metadata": 614,
+        "with_description": 239
+      }
+    },
+    "intersections": {
+      "any_digest_algorithm_all_sysmon_to_all_zeek": 0,
+      "event_id_1_image_to_non_certificate_filename_basenames": {
+        "count": 0,
+        "values": []
+      },
+      "event_id_1_image_to_non_certificate_http_uri_basenames": {
+        "count": 0,
+        "values": []
+      },
+      "same_algorithm_all_sysmon_to_all_zeek": {
+        "md5": 0,
+        "sha1": 0,
+        "sha256": 0
+      },
+      "same_algorithm_event_id_1_to_all_zeek": {
+        "md5": 0,
+        "sha1": 0,
+        "sha256": 0
+      },
+      "same_algorithm_event_id_1_to_non_certificate_zeek": {
+        "md5": 0,
+        "sha1": 0,
+        "sha256": 0
+      }
+    },
+    "sysmon": {
+      "distinct_hashes": {
+        "imphash": 105,
+        "md5": 105,
+        "sha1": 105,
+        "sha256": 105
+      },
+      "distinct_image_basenames": 77,
+      "event_id_1": {
+        "distinct_hashes": {
+          "imphash": 78,
+          "md5": 78,
+          "sha1": 78,
+          "sha256": 78
+        },
+        "distinct_image_basenames": 57,
+        "hashed_records": 614
+      },
+      "event_id_7": {
+        "distinct_hashes": {
+          "imphash": 27,
+          "md5": 27,
+          "sha1": 27,
+          "sha256": 27
+        },
+        "distinct_image_basenames": 20,
+        "hashed_records": 239
+      },
+      "hashed_records": 853,
+      "host_logs": 7,
+      "population_definition": "Sysmon EID1/EID7 with non-empty image and SHA256"
+    },
+    "zeek_files": {
+      "certificate_rows": 525,
+      "distinct_non_certificate_filename_basenames": 110,
+      "distinct_non_certificate_http_uri_basenames": 24,
+      "files_log_paths": 1,
+      "hashes": {
+        "md5": {
+          "distinct": 125,
+          "rows": 547
+        },
+        "sha1": {
+          "distinct": 119,
+          "rows": 546
+        },
+        "sha256": {
+          "distinct": 103,
+          "rows": 525
+        }
+      },
+      "http_log_paths": 1,
+      "non_certificate_hashes": {
+        "md5": {
+          "distinct": 22,
+          "rows": 22
+        },
+        "sha1": {
+          "distinct": 16,
+          "rows": 21
+        },
+        "sha256": {
+          "distinct": 0,
+          "rows": 0
+        }
+      },
+      "non_certificate_rows": 197,
+      "rows": 722
+    }
+  },
+  "schema_version": 2
+}

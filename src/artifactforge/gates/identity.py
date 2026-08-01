@@ -1,16 +1,18 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Gate 2 — identity: is every hash-shaped field a genuine digest of one ContentStore blob?
+"""Gate 2 — identity: do the declared answer-bearing pivots agree with emitted bytes?
 
-This is the keystone. The whole project exists because EvidenceForge computes a file's
-"hashes" as digests of a per-emitter seed string, so the same binary carries disagreeing
-hashes across sources and the file-hash pivot — the core move of DFIR — silently never works.
-ArtifactForge's answer is to synthesize the bytes once and let every artifact quote a real
-digest of them.
+This is the keystone. EvidenceForge's Sysmon and Zeek paths use emitter-local synthetic seed
+domains rather than shared file bytes. Their same-algorithm sets are disjoint in the measured
+stock run, but that run contains no basename-matched transfer/execution pair and therefore is
+not proof that one logical binary received two inconsistent hashes. ArtifactForge's scoped
+answer is to synthesize each answer-bearing binary once and reuse its ``Content`` identity in
+the declared joins.
 
-The gate is written to be falsifiable in the one way that matters: every value is re-derived
-from the FILES ON DISK, through a real parser, and only then compared. Nothing is compared
-against the value that produced it. The predecessor of this gate asserted
+The gate is written to be falsifiable in the one way that matters: each value in its declared
+scope is re-derived from the FILES ON DISK, through a real parser where appropriate, and only
+then compared. Deliberate stale and absent Amcache decoy hashes are not claims about resident
+bytes and are outside this gate. The predecessor of this gate asserted
 `amcache == "0000" + c.sha1` one line after assigning `amcache = "0000" + c.sha1`, and stayed
 green when the underlying hash was replaced with a placeholder string.
 
@@ -177,7 +179,7 @@ def _macos(r: GateReport, scene_dir: str, join: dict):
 
 def run(scene_dir: str, join: dict) -> GateReport:
     r = GateReport(2, "identity",
-                   "is every hash-shaped field a genuine digest of one ContentStore blob?")
+                   "do the declared answer-bearing pivots agree with emitted bytes?")
     if join.get("family") == "windows":
         _windows(r, scene_dir, join)
     else:

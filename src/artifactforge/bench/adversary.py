@@ -112,10 +112,11 @@ def constant_solve(public) -> dict:
 def mechanical_solve(public) -> dict:
     """Exploit position: the answer is first in every stored sequence.
 
-    Reads the artifacts, parses nothing meaningfully, joins nothing. It relies only on the
-    generator having emitted the interesting record before the decoys — in the Run key, in the
-    Amcache subkey list, and in every SQLite table. That is the family the owner's own wiki
-    names: "an events file written in the order the agent was asked to reconstruct".
+    It uses ordinary parsers to read stored order but performs no semantically meaningful join.
+    It relies only on the generator having emitted the interesting record before the decoys —
+    in the Run key, in the Amcache subkey list, and in every SQLite table. That is the family
+    the owner's own wiki names: "an events file written in the order the agent was asked to
+    reconstruct".
     """
     import hashlib
     d = public.directory
@@ -166,11 +167,13 @@ def mechanical_solve(public) -> dict:
 def footprint_solve(public) -> dict:
     """Exploit the scene's shape: the answer is whatever the other artifacts talk about most.
 
-    No parsing at all — for each candidate, count how many other files in the directory
-    contain its name as a substring, and take the maximum. This is the strongest attack found,
-    and it is structural rather than incidental: the target is by definition the object the
-    registry, Amcache, prefetch and disk all mention, while a decoy appears in fewer of them.
-    Counting mentions IS the intended pivot, performed without understanding any of it.
+    The ranking step parses no format: for each candidate, count how many other files in the
+    directory contain its name as a substring, and take the maximum. After choosing that pivot,
+    the solver uses ordinary parsers and lookups to complete dependent answers. This is the
+    strongest attack found, and it is structural rather than incidental: the target is by
+    definition the object the registry, Amcache, prefetch and disk all mention, while a decoy
+    appears in fewer of them. Counting mentions performs the intended selection without
+    understanding any format.
     """
     import hashlib
     d = public.directory

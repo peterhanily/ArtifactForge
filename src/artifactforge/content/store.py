@@ -1,19 +1,20 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Content-first identity — the keystone.
+"""Content-first identity for materialized binaries — the keystone.
 
-Synthesize a file's real bytes once from a seed; every hash-shaped field in every artifact —
-Amcache FileId, the digest on disk, a YARA target, IMPHASH on Windows, symhash on macOS — is
-then a real digest of those same bytes and that same import table. They agree by construction
-rather than by assertion, which is the fix for EvidenceForge computing a file's "hashes" as
-digests of a per-emitter seed string.
+Synthesize a binary's bytes once from a seed. SHA256, SHA1 and MD5 are then computed from those
+bytes; IMPHASH and symhash are computed from the import or symbol structures written into them,
+and cdhash from the embedded CodeDirectory. Callers that reuse one ``Content`` object therefore
+reuse one file identity. This claim is deliberately about materialized ``Content`` instances,
+not every hash-shaped decoy field a composed scene may carry.
 
 Bytes are a pure function of the seed, so the same identity regenerates byte-identical
 forever. Both writers are hand-assembled rather than driven by a toolchain or by LIEF,
 neither of which promises determinism.
 
-Everything generated here is inert: the code section is a single return instruction and
-nothing else. See artifactforge.gates.inertness, which checks that on the emitted bytes.
+The native code emitted here is payload-free: PE ``.text`` is ``ret`` plus zero padding, while
+Mach-O ``__text`` is ``mov w0,#0 ; ret``. The PE also carries the fixed DOS print-and-exit stub.
+See ``artifactforge.gates.inertness`` for the exact checks and their current scope.
 """
 from __future__ import annotations
 
@@ -90,7 +91,7 @@ DOS_HEADER = (
     + b"\x00" * 20                         # e_res2[10]
     + struct.pack("<I", 0x80))             # e_lfanew    the PE header, past the stub
 
-# 16-bit real-mode code, and the only executable bytes in the file besides the single `ret`:
+# Fixed 16-bit real-mode DOS-stub code, separate from `.text`'s `ret` plus zero padding:
 #   push cs / pop ds        DS := CS, so DS:DX addresses the message
 #   mov dx, 0x000E          offset of the message within the DOS image
 #   mov ah, 9 / int 21h     DOS "print $-terminated string"
@@ -193,7 +194,7 @@ def _assemble_pe(content_seed: bytes, imports) -> bytes:
 
 
 def build_pe_stub(content_seed: bytes) -> bytes:
-    """A structurally-valid, inert PE (single `ret`) with a real deterministic import table."""
+    """A structurally valid, payload-free PE with a real deterministic import table."""
     return _assemble_pe(content_seed, _pick_imports(content_seed))
 
 

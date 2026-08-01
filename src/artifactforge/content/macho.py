@@ -15,8 +15,9 @@ is not loadable at all, and signing it afterwards would rewrite the bytes, so th
 computed in-process: the CodeDirectory is sized with zeroed hashes first, then the finished
 file is hashed in 16 KiB pages and the real blob written into the space reserved for it.
 
-Inert by construction: __text is `mov w0, #0 ; ret` and nothing else — the arm64 analogue of
-the PE's single 0xC3 — and the only other content is a synthetic marker string in __cstring.
+Payload-free by construction: __text is `mov w0, #0 ; ret` and nothing else — the arm64
+analogue of the PE's single 0xC3. No other native instructions are emitted; the synthetic
+marker string lives in __cstring.
 
 Known tells, disclosed rather than hidden: ld64 on a 2024-era toolchain emits
 LC_DYLD_CHAINED_FIXUPS, LC_FUNCTION_STARTS, LC_DATA_IN_CODE and an exports trie, and this

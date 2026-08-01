@@ -3,10 +3,12 @@
 """Write each sample's answer key and README, with real parser output pasted in.
 
 The key is called ARTIFACT_ANSWERS.json rather than GROUND_TRUTH.json on purpose.
-EvidenceForge's loader searches an output directory AND its parent for a file named exactly
-`GROUND_TRUTH.json`, and degrades to a single `logger.warning` when one does not match its
-schema — so an ArtifactForge scene sitting anywhere near an EvidenceForge run would make that
-tool report a wrong number quietly. Not colliding costs nothing.
+EvidenceForge's evaluator checks its evaluation directory and that directory's direct parent
+for a file named exactly `GROUND_TRUTH.json`, selecting the first existing candidate before it
+validates the schema. An invalid child candidate can therefore shadow a valid parent candidate;
+EvidenceForge emits visible warning logs, continues without parsed ground truth, and its
+ground-truth-dependent causality components can score lower. Avoiding the reserved filename
+costs nothing and prevents the collision.
 
 The parser output is the part that matters. A gallery showing what the generator says about
 its own files is a brochure; a gallery showing what pefile, regipy, libscca and LIEF say about
@@ -182,8 +184,9 @@ def main() -> int:
 
     write(win_dir, "Windows: a persisted binary, and a hash that points elsewhere",
           "Five binaries. One Run-key value names a program that is present; Amcache's "
-          "recorded hashes match a *different* one, because the persisted binary is recorded "
-          "under the hash of the version Amcache saw. One prefetch record names a program "
+          "recorded hashes match a *different* one, while the persisted binary is recorded "
+          "under a deliberately stale value whose historical bytes are not retained. One "
+          "prefetch record names a program "
           "that is no longer on disk. Following names and following hashes lead to different "
           "files, which is what makes each of them a pivot rather than a lookup.",
           win["answers"], win["join"], _windows_readings(win_dir))
@@ -192,7 +195,8 @@ def main() -> int:
           "Five applications, each with a real Mach-O binary and a quarantine record. Two "
           "hold an allowed TCC grant; only one of those also appears in knowledgeC as having "
           "been used. Everything after that hangs off the quarantine UUID in that app's "
-          "`com.apple.quarantine` xattr, which is the join macOS actually gives a responder.",
+          "serialized `com.apple.quarantine` xattr value, emitted here as a sidecar file; the "
+          "UUID is the join macOS gives a responder.",
           mac["answers"], mac["join"], _macos_readings(mac_dir))
     return 0
 

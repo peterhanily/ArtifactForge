@@ -170,7 +170,8 @@ def generate_suite(n: int, root: str, *, key: bytes = suite.PUBLIC_DEV_KEY,
 
     A dev suite uses the published key and is reproducible by anyone, which is what makes it
     good for development and worthless as a score. A hold-out suite uses a key that never
-    leaves the evaluator.
+    leaves the evaluator. The internal scorecard-measurement kind also uses a public key, but
+    one with separate derivation provenance; it is reproducible and explicitly non-reportable.
     """
     paths = suite.suite_paths(root)
     os.makedirs(paths["scenarios"], exist_ok=True)

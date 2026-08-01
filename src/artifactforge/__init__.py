@@ -53,4 +53,4 @@ __all__ = [
     "Task", "PublicTask", "Question", "Score",
     "generate_suite", "generate_batch", "grade",
 ]
-__version__ = "0.0.1"
+__version__ = "0.0.2"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.2 - 2026-08-01
+
 ### Added
 
 The four gates, and the discipline behind them. A gate is a numbered question wired into six
@@ -31,9 +33,18 @@ one binary while Amcache's recorded hashes match a different one — and every q
 least two artifacts.
 
 A companion adapter that reads an EvidenceForge run's output tree without importing
-EvidenceForge, recovering which logical binary each Sysmon hash denotes. On the shipped
-branch-office scenario at v1.13.1: 446 of 446 hashed records recovered and verified, 93
-distinct binaries, both upstream seed forms exercised.
+EvidenceForge, recovering which logical binary each Sysmon hash denotes. On an unmodified run
+of the shipped branch-office scenario at v1.13.1: 853 of 853 Sysmon records carrying SHA256
+recovered and verified, 105 distinct Sysmon logical identities, with seed forms split 78
+`from_host_metadata` and 27 `with_description`. Those are Sysmon-local recovery figures; the
+stock run contains no basename-matched Sysmon/Zeek pair that could prove a same-file
+cross-emitter inconsistency.
+
+A schema-checked EvidenceForge measurement record bound to the exact v1.13.1 scenario input
+and a canonical inventory of all 45 output files. The CI contract derives the installed
+producer version and commit from distribution metadata, generates a fresh run, byte-compares
+the resulting record, and then re-hashes and re-measures the tree. The record states the
+remaining boundary explicitly: serialized output does not itself encode its producer commit.
 
 `SECURITY.md`, `docs/inert-by-construction.md`, `docs/DESIGN.md`, `docs/ROADMAP.md`, a
 `LICENSE` the packaging metadata had always declared, and SPDX headers throughout.
@@ -64,6 +75,15 @@ one store is shared across a suite and hits are real.
 
 ### Changed
 
-`KNOWN_TELLS.md` opened by claiming CI failed if a format shipped undisclosed. Nothing read it,
-and four of six formats carried no marking at all. Every format now carries an in-band
-`ARTIFACTFORGE` anchor, and `tests/test_known_tells.py` enforces the claim in both directions.
+Scorecard measurement now uses a separately domain-separated, deterministic public corpus and
+records its complete derivation identity. It is marked non-reportable and cannot be graded as
+a bare benchmark score; real hold-out suites remain freshly keyed. `scorecard --check` rejects
+incompatible measurement provenance even when no tracked metric regresses. Generator assurance
+and experimental benchmark validity now have separate machine-readable statuses while the
+legacy aggregate verdict remains available.
+
+`KNOWN_TELLS.md` opened by claiming CI failed if a structured format shipped undisclosed.
+Nothing read it, and four of six classified formats carried no marking at all. Every classified
+structured format now carries an in-band `ARTIFACTFORGE` anchor, and
+`tests/test_known_tells.py` enforces the claim in both directions. Plain sidecars, including the
+serialized quarantine xattr value, are outside that format-marker gate.

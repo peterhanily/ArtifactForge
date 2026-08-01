@@ -8,11 +8,11 @@ and reads exactly like a passing one, which is how an upstream formula change wo
 through green for as long as nobody looked.
 
 What this proves, stated precisely, because the predecessor of this file overstated it: on a
-real run, every hashed Sysmon record's *logical identity* is recovered and verified against
-the digest EvidenceForge actually emitted. It does **not** prove that EvidenceForge's emitted
-hashes equal ArtifactForge's file digests — they do not and cannot, since upstream hashes a
-seed string rather than any bytes. That gap is the thing the project exists to describe, so
-there is a test asserting it is still there rather than one quietly implying it is not.
+real run, every hashed Sysmon record's emitter-local seed identity is recovered and verified
+against the digest EvidenceForge actually emitted. It does **not** prove that an emitted hash
+identifies ArtifactForge bytes, or that one transferred file and one executed file disagree.
+The shipped scenario contains no positive same-file transfer-to-execution witness; that needs
+a separate controlled fixture.
 """
 import hashlib
 import os
@@ -48,8 +48,12 @@ def test_both_upstream_seed_forms_appear(run):
     assert len(forms) >= 2, f"only one seed form exercised: {forms}"
 
 
-def test_one_binary_maps_to_one_set_of_bytes(run, tmp_path):
-    """The identity is stable across every emitter and host that mentions the file."""
+def test_one_recovered_content_id_maps_deterministically_to_one_blob(run, tmp_path):
+    """The adapter's derived content id is a stable input to ArtifactForge's generator.
+
+    This is an adapter determinism check, not evidence that the generated blob is the file an
+    EvidenceForge event observed.
+    """
     store = ContentStore("artifactforge::ef-contract", str(tmp_path / "content"))
     assert run.binaries
     for binary in list(run.binaries.values())[:25]:
@@ -60,12 +64,12 @@ def test_one_binary_maps_to_one_set_of_bytes(run, tmp_path):
             assert hashlib.sha256(f.read()).hexdigest() == first.sha256
 
 
-def test_upstream_hashes_are_not_digests_of_any_bytes(run, tmp_path):
-    """The gap, asserted rather than asserted away.
+def test_upstream_hash_is_not_the_digest_of_the_artifactforge_blob(run, tmp_path):
+    """The current adapter does not reconcile an EF observation with generated file bytes.
 
-    EvidenceForge's emitted SHA256 is a digest of a seed string; ArtifactForge's is a digest
-    of real bytes. They differ, necessarily. A test claiming otherwise would be describing a
-    patched copy of the logs rather than what upstream emits.
+    EvidenceForge's emitted SHA256 is derived from emitter-local seed material, while this
+    ArtifactForge blob is generated later from the recovered content id. The values differ in
+    this pinned construction. That is not a same-file cross-emitter witness.
     """
     store = ContentStore("artifactforge::ef-contract", str(tmp_path / "content"))
     binary = next(iter(run.binaries.values()))

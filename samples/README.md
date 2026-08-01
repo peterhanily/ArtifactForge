@@ -5,8 +5,9 @@ Two generated scenes, committed so they can be read without running anything.
 > **Everything in here is synthetic.** No file came from a real host. No hash, UUID, bundle
 > identifier, URL or path identifies anything real, and none should be submitted to
 > VirusTotal, a blocklist, a detection rule or a threat-intelligence platform. Every binary is
-> inert — its entire code section is a single return instruction — and carries an in-band
-> `ARTIFACTFORGE` marker. See [`../SECURITY.md`](../SECURITY.md) and
+> payload-free: PE `.text` is one return instruction plus zero padding, while Mach-O `__text`
+> is `mov w0, #0; ret`. Classified structured artifacts carry an in-band `ARTIFACTFORGE`
+> marker; serialized quarantine-xattr sidecars do not. See [`../SECURITY.md`](../SECURITY.md) and
 > [`../docs/inert-by-construction.md`](../docs/inert-by-construction.md).
 
 | Sample | Family | What it holds |
@@ -15,7 +16,7 @@ Two generated scenes, committed so they can be read without running anything.
 | [`02-macos-quarantined-app`](02-macos-quarantined-app/) | macOS | Five signed arm64 Mach-O binaries with quarantine records, a TCC database with grants and refusals, knowledgeC usage, and LaunchAgent plists. One app was allowed *and* used; everything else about it hangs off its quarantine UUID. |
 
 Each directory holds the artifacts, a `README.md` with real parser output pasted in — pefile,
-regipy, libscca, LIEF, sqlite3, plistlib — and a `ARTIFACT_ANSWERS.json` answer key.
+regipy, libscca, LIEF, sqlite3, plistlib — and an `ARTIFACT_ANSWERS.json` answer key.
 
 The committed macOS databases were written with **sqlite3 3.50.4**. A SQLite header embeds the
 version of the library that wrote it, so rebuilding them elsewhere produces different bytes in

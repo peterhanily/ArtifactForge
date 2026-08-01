@@ -2,7 +2,7 @@
 
 > **Synthetic.** Every byte here was generated. No hash, UUID, URL or path in this directory identifies anything real, and none should be submitted to a blocklist or a threat-intelligence platform. See [`../../SECURITY.md`](../../SECURITY.md).
 
-Five applications, each with a real Mach-O binary and a quarantine record. Two hold an allowed TCC grant; only one of those also appears in knowledgeC as having been used. Everything after that hangs off the quarantine UUID in that app's `com.apple.quarantine` xattr, which is the join macOS actually gives a responder.
+Five applications, each with a real Mach-O binary and a quarantine record. Two hold an allowed TCC grant; only one of those also appears in knowledgeC as having been used. Everything after that hangs off the quarantine UUID in that app's serialized `com.apple.quarantine` xattr value, emitted here as a sidecar file; the UUID is the join macOS gives a responder.
 
 Regenerate with `scripts/make-samples.sh`. The bytes are deterministic, so a regeneration that differs is a change in the generator, not in the weather.
 

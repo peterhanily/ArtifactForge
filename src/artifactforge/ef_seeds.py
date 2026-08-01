@@ -6,11 +6,13 @@
 # src/evidenceforge/generation/emitters/sysmon.py::_generate_hashes, at tag v1.13.1.
 # It is reproduced here to RECOVER identity from EvidenceForge's output, never to
 # reimplement EvidenceForge. Upstream: https://github.com/Cisco-Talos/EvidenceForge
-"""Recover a file's logical identity from EvidenceForge's per-emitter hashes.
+"""Recover a Sysmon-local logical identity from EvidenceForge's seed-derived hashes.
 
-EvidenceForge computes file "hashes" as digests of a seed STRING, keyed differently per call
-site, so the same binary carries disagreeing hashes across emitters. To bind an artifact to a
-log at all, we first have to recover which logical file each hash denotes.
+EvidenceForge computes these Sysmon fields as digests of seed strings rather than file bytes.
+The Zeek path uses a different seed domain, and the measured stock run's same-algorithm sets are
+disjoint; because that run has no basename-matched transfer/execution pair, it does not prove
+that one logical binary received two inconsistent values. This module has the narrower job of
+recovering which Sysmon-local logical file each verified hash denotes.
 
 **Verify or refuse.** Every recovery recomputes the candidate digests and compares them
 against the one upstream actually emitted. If none matches, or more than one does, this

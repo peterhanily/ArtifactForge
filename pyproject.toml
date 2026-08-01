@@ -1,7 +1,7 @@
 [project]
 name = "artifactforge"
-version = "0.0.1"
-description = "Deterministic forensic-artifact companion to EvidenceForge: content-first identity so a file's hash agrees across logs, disk, and artifacts."
+version = "0.0.2"
+description = "Deterministic, parser-gated synthetic forensic artifacts with byte-derived identity."
 requires-python = ">=3.11"
 license = { text = "MIT" }
 license-files = ["LICENSE"]
@@ -11,9 +11,9 @@ dependencies = []
 
 [project.optional-dependencies]
 # Real DFIR parsers used only as CI oracles (consistency-by-construction), never to generate.
-# Two independently-implemented parsers per format, because one permissive parser hides what
-# a strict one rejects: every prefetch file this project emitted was accepted by
-# `windowsprefetch` and refused by libyal's `pyscca` — which plaso is built on — for as long
+# Two independently implemented parsers for PE, Mach-O, hive and prefetch, because one
+# permissive parser hides what a strict one rejects: every prefetch file this project emitted
+# was accepted by `windowsprefetch` and refused by libyal's `pyscca` — which plaso is built on — for as long
 # as `windowsprefetch` was the only oracle installed.
 #   PE        pefile + lief
 #   Mach-O    lief + macholib
@@ -36,8 +36,8 @@ dev = [
 ]
 # EvidenceForge is NOT declared here at any level, deliberately. It is not on PyPI, so it can
 # only be named as a direct git URL — and hatchling refuses to build a wheel for a project
-# carrying one, which would make this distribution un-uploadable. It is a CI-only dev tool,
-# installed by the ef-contract job:
+# carrying one, which would make this distribution un-uploadable. It is a CI-only contract
+# tool, installed independently by the pinned-contract and default-branch canary jobs:
 #   uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@v1.13.1"
 # Note the distribution name is `evidence-forge`, not `evidenceforge`; the import name is
 # `evidenceforge`. Getting this wrong makes the install step exit 1.

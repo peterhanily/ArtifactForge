@@ -59,6 +59,23 @@ def _holdout(args) -> list:
     return args._holdout
 
 
+def _scorecard_measurement(args) -> list:
+    """The reproducible public corpus used only for scorecard measurement.
+
+    This is deliberately not called a hold-out: its key is derivable from published source,
+    and ``bench grade`` refuses to print a reportable score for its suite kind.
+    """
+    if not getattr(args, "_scorecard_measurement", None):
+        root = os.path.join(_workdir(args), suite.SCORECARD_MEASUREMENT_KIND)
+        args._scorecard_measurement = generate_suite(
+            args.n,
+            root,
+            key=suite.scorecard_measurement_key(),
+            kind=suite.SCORECARD_MEASUREMENT_KIND,
+        )
+    return args._scorecard_measurement
+
+
 def _scene_dirs(args) -> list:
     if getattr(args, "scene", None):
         return [args.scene]
@@ -66,7 +83,7 @@ def _scene_dirs(args) -> list:
 
 
 def gate_validity(args) -> GateReport:
-    r = _merge(1, "validity", "does an independent real parser read every artifact we ship?",
+    r = _merge(1, "validity", "do the declared parser oracles read each classified artifact?",
                [validity.run(d) for d in _scene_dirs(args)])
     r.denominator = (f"{r.metrics.get('oracle_reads_passed', 0)}/"
                      f"{r.metrics.get('oracle_reads_total', 0)} oracle reads succeeded")
@@ -76,13 +93,13 @@ def gate_validity(args) -> GateReport:
 def gate_identity(args) -> GateReport:
     if getattr(args, "scene", None):
         r = GateReport(2, "identity",
-                       "is every hash-shaped field a genuine digest of one ContentStore blob?")
+                       "do the declared answer-bearing pivots agree with emitted bytes?")
         r.fail("--scene cannot be used with the identity gate: it needs the scene's join, "
                "which lives in the suite's _answers/ and deliberately not in the served "
                "directory. Run without --scene to generate a suite.")
         return r
     r = _merge(2, "identity",
-               "is every hash-shaped field a genuine digest of one ContentStore blob?",
+               "do the declared answer-bearing pivots agree with emitted bytes?",
                [identity.run(t.directory, t.join) for t in _dev(args)])
     r.denominator = (f"{r.metrics.get('checks_joined', 0)}/"
                      f"{r.metrics.get('checks_total', 0)} cross-artifact identity checks hold")
@@ -91,7 +108,7 @@ def gate_identity(args) -> GateReport:
 
 def gate_inertness(args) -> GateReport:
     r = _merge(3, "inertness",
-               "can anything we ship execute, and is every format marked synthetic?",
+               "are binaries payload-free and classified formats marked synthetic?",
                [inertness.run(d) for d in _scene_dirs(args)])
     r.denominator = (f"{r.metrics.get('formats_marked', 0)}/"
                      f"{r.metrics.get('formats_total', 0)} artifacts carry a synthetic marker")
@@ -99,7 +116,10 @@ def gate_inertness(args) -> GateReport:
 
 
 def gate_solvability(args) -> GateReport:
-    return solvability.run(_holdout(args), _dev(args))
+    measured = (_scorecard_measurement(args)
+                if getattr(args, "_scorecard_measurement_mode", False)
+                else _holdout(args))
+    return solvability.run(measured, _dev(args))
 
 
 GATES = {
@@ -128,25 +148,44 @@ def cmd_scorecard(args) -> int:
     from artifactforge.scorecard import (
         build_scorecard,
         load,
+        measurement_incompatibilities,
         regressions,
         render_comparison,
+        render_measurement_compatibility,
         save,
     )
+    # Scorecards are tracked measurements, so their corpus must reproduce. This mode never
+    # affects ``gate solvability`` or ``bench new --kind holdout``: both retain fresh keys.
+    args._scorecard_measurement_mode = True
     reports = [GATES[n](args) for n in ("validity", "identity", "inertness", "solvability")]
     card = build_scorecard(reports, artifactforge_version=__version__,
-                           git_commit=_git_commit(), sqlite_version=sqlite3.sqlite_version)
+                           git_commit=_git_commit(), sqlite_version=sqlite3.sqlite_version,
+                           measurement=suite.scorecard_measurement_provenance(args.n))
     if args.check:
         baseline = load(args.check)
         rows = regressions(baseline, card)
+        incompatible = measurement_incompatibilities(baseline, card)
         print(render_comparison(baseline, card))
-        return 1 if rows else 0
+        print(render_measurement_compatibility(baseline, card))
+        print(_scorecard_status_summary(card))
+        return 1 if rows or incompatible else 0
     if args.out:
         save(card, args.out)
-        print(f"wrote {args.out} — verdict: {card['verdict']}, "
+        print(f"wrote {args.out} — {_scorecard_status_summary(card)}, "
               f"{len(card['honest_gaps'])} honest gaps")
     else:
         print(json.dumps(card, indent=2))
     return 0
+
+
+def _scorecard_status_summary(card: dict) -> str:
+    """Render scoped status without presenting experimental Gate 4 as generator failure."""
+    status = card["status"]
+    generator = status["generator_assurance"]["verdict"]
+    benchmark = status["benchmark_validity"]["verdict"]
+    return (f"generator assurance: {generator}; "
+            f"experimental benchmark validity: {benchmark}; "
+            f"aggregate (all gates): {card['verdict']}")
 
 
 def cmd_bench_new(args) -> int:
@@ -222,10 +261,12 @@ def cmd_bench_grade(args) -> int:
     for kind in sorted(per_kind):
         hit, seen = per_kind[kind]
         print(f"  {kind:10s} {hit}/{seen}")
-    if public.get("suite_kind") == "dev":
-        # A dev suite is built with the key published in the source. Printing an accuracy for
-        # it would produce a number someone will eventually quote, and it would mean nothing.
-        print(f"  SCORE (DEV SUITE - NOT REPORTABLE): {correct}/{total}")
+    suite_kind = public.get("suite_kind")
+    if suite_kind in suite.NON_REPORTABLE_SUITE_KINDS:
+        # Publicly keyed suites are reproducible by anyone. Printing a bare accuracy for one
+        # would produce a number someone will eventually quote, and it would mean nothing.
+        label = str(suite_kind).upper().replace("-", " ")
+        print(f"  SCORE ({label} - NOT REPORTABLE): {correct}/{total}")
         print("  Build a hold-out suite to measure anything: "
               "artifactforge bench new SUITE --kind holdout")
         return 0

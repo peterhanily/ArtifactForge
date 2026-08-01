@@ -14,8 +14,8 @@ So each scene carries decoys, and the signals deliberately do not all point at t
     the one Amcache's recorded hashes actually match,
   * three Run-key values, only one naming a program that is present,
   * eight Amcache rows, only one whose recorded SHA1 belongs to a resident file — including a
-    row for the persisted binary carrying a stale hash, exactly as a real Amcache would after
-    the file was replaced,
+    row for the persisted binary carrying a deliberately stale value; the historical bytes
+    behind that modeled value are not retained,
   * four prefetch records, one of which names an executable that is no longer there.
 
 Nothing is written into the served directory directly. Artifacts are built into a staging
@@ -130,8 +130,10 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
 
     # --- Amcache: eight rows, exactly one hash belonging to a file that is still here --
     rows = [(matched.sha1, amcache_path.lower(), amcache_name, len(matched.bytes))]
-    # The persisted binary IS recorded, but under the hash of the version Amcache saw — so
-    # following hashes leads somewhere different from following paths, which is the point.
+    # The persisted binary IS recorded, but under a deliberately stale value. This models the
+    # pivot shape without retaining historical bytes, so do not describe it as a verified
+    # digest of an earlier version. Following hashes still leads somewhere different from
+    # following paths, which is the point.
     rows.append((_absent_sha1(skey, "stale-persisted"), persisted_path.lower(),
                  persisted_name, len(persisted.bytes) + 4096))
     for i, n in enumerate(suite.pick_many(skey, "amcache-decoys", absent_targets, 6)):

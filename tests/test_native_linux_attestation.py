@@ -36,6 +36,7 @@ _inside = _SCRIPT_GLOBALS["_inside"]
 _native_tools = _SCRIPT_GLOBALS["_native_tools"]
 _normalized_disassembly = _SCRIPT_GLOBALS["_normalized_disassembly"]
 _portable_verifier_environment = _SCRIPT_GLOBALS["_portable_verifier_environment"]
+_run = _SCRIPT_GLOBALS["_run"]
 _scene_manifest = _SCRIPT_GLOBALS["_scene_manifest"]
 _scene_postcondition = _SCRIPT_GLOBALS["_scene_postcondition"]
 _timestamp = _SCRIPT_GLOBALS["_timestamp"]
@@ -581,7 +582,36 @@ def test_bash_roundtrip_mock_proves_nonexecution_and_never_sources_history(tmp_p
     assert control["positive_control_observed"] is True
     assert observed["kwargs"]["env"]["HOME"].endswith("/home")
     assert observed["kwargs"]["env"]["HISTFILE"] == "/dev/null"
+    assert observed["kwargs"]["env"]["HISTTIMEFORMAT"] == "%s "
     assert observed["kwargs"]["env"]["BASH_ENV"] == "/dev/null"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="GNU Bash is unavailable")
+def test_bash_roundtrip_real_shell_preserves_extended_timestamps(tmp_path):
+    scene = tmp_path / "scene"
+    history = scene / "home" / "v" / ".bash_history"
+    history.parent.mkdir(parents=True)
+    history.write_bytes(
+        b"#1705294800\n: 'ARTIFACTFORGE-SYNTHETIC-LINUX'\n"
+        b"#1705294801\n/home/v/.local/bin/helper\n"
+    )
+
+    evidence, failures = _bash_attestation(
+        history,
+        scene,
+        shutil.which("bash"),
+        _run,
+    )
+
+    assert failures == []
+    assert evidence["result"]["returncode"] == 0
+    assert evidence["byte_identical_roundtrip"] is True
+    assert evidence["roundtrip_sha256"] == evidence["source_sha256"]
+    control = evidence["nonexecution_control"]
+    assert control["control_roundtrip_byte_identical"] is True
+    assert control["control_roundtrip_sha256"] == control["control_history_sha256"]
+    assert control["history_command_was_not_executed"] is True
+    assert control["positive_control_observed"] is True
 
 
 def test_bash_lane_cannot_false_pass_when_runner_returns_zero_without_evidence(tmp_path):

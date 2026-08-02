@@ -849,6 +849,7 @@ def _bash_attestation(
                 "HISTFILESIZE": "4096",
                 "HISTIGNORE": "",
                 "HISTSIZE": "4096",
+                "HISTTIMEFORMAT": "%s ",
                 "HOME": str(home),
                 "LC_ALL": "C",
                 "PATH": "/usr/bin:/bin",

@@ -17,6 +17,9 @@ env:
   # make that provenance claim false. CI-only EvidenceForge is installed explicitly after
   # this frozen project sync and remains outside the package metadata.
   UV_FROZEN: "1"
+  # Bootstrap through an isolated venv so PEP 668 runner Python installations stay untouched.
+  # Keep the installer version centralized and exact; every job verifies what it installed.
+  UV_VERSION: "0.11.17"
   # One place to bump the pin. The seed formulas in artifactforge/ef_seeds.py are verified
   # against this exact tag, and tests/ef_contract/test_golden_formulas.py compares them to
   # upstream's own code on every run.
@@ -44,9 +47,12 @@ jobs:
       # whole subject is provenance. Pinned for the same reason ruff is.
       - name: Install uv
         run: |
-          python3 -m pip install --quiet --user "uv==0.11.17"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/uv" --version
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            "uv==$UV_VERSION"
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
       - name: Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
@@ -223,6 +229,9 @@ jobs:
         # The property everything else rests on: the same seed must produce the same bytes.
         # Generated twice into separate trees under a different PYTHONHASHSEED, TZ and locale.
         run: |
+          # Benchmark publication intentionally requires a caller-owned, already-existing
+          # real parent directory. Keep that fail-closed boundary and satisfy it explicitly.
+          mkdir -p out
           uv run artifactforge bench new out/a --n 8 --kind dev
           PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge bench new out/b --n 8 --kind dev
           diff -r out/a/scenarios out/b/scenarios
@@ -249,12 +258,14 @@ jobs:
 
       - name: Install uv and ArtifactForge
         run: |
-          python3 -m pip install --quiet --user "uv==0.11.17"
-          USER_BASE="$(python3 -m site --user-base)"
-          echo "$USER_BASE/bin" >> "$GITHUB_PATH"
-          "$USER_BASE/bin/uv" --version
-          "$USER_BASE/bin/uv" python install 3.12
-          "$USER_BASE/bin/uv" sync --frozen --extra dev --python 3.12
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            "uv==$UV_VERSION"
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
+          "$UV_BOOTSTRAP/bin/uv" python install 3.12
+          "$UV_BOOTSTRAP/bin/uv" sync --frozen --extra dev --python 3.12
 
       - name: Structural Mach-O safety mutations
         run: |
@@ -357,11 +368,14 @@ jobs:
 
       - name: Install uv and ArtifactForge
         run: |
-          python3 -m pip install --quiet --user "uv==0.11.17"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/uv" --version
-          "$HOME/.local/bin/uv" python install 3.12
-          "$HOME/.local/bin/uv" sync --frozen --extra dev --python 3.12
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            "uv==$UV_VERSION"
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
+          "$UV_BOOTSTRAP/bin/uv" python install 3.12
+          "$UV_BOOTSTRAP/bin/uv" sync --frozen --extra dev --python 3.12
 
       - name: Native-lane contract and Linux safety mutations
         run: |
@@ -519,9 +533,12 @@ jobs:
       # whole subject is provenance. Pinned for the same reason ruff is.
       - name: Install uv
         run: |
-          python3 -m pip install --quiet --user "uv==0.11.17"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/uv" --version
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            "uv==$UV_VERSION"
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
       - name: Python
         run: uv python install 3.12.13
 
@@ -648,9 +665,12 @@ jobs:
       # whole subject is provenance. Pinned for the same reason ruff is.
       - name: Install uv
         run: |
-          python3 -m pip install --quiet --user "uv==0.11.17"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/uv" --version
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            "uv==$UV_VERSION"
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
       - run: uv python install 3.12
       - name: Install against EvidenceForge main
         run: |

@@ -72,6 +72,7 @@ from artifactforge.gates import GateReport
 SUPPORTED_FAMILIES = frozenset(("windows", "macos"))
 EXPECTED_CLASSES = frozenset((family, rule) for rule, family in RULE_FAMILIES.items())
 EXPECTED_CANDIDATES = 5
+EXPECTED_CHANCE = Fraction(1, EXPECTED_CANDIDATES)
 FAMILYWISE_ALPHA = DEFAULT_FAMILYWISE_ALPHA
 MIN_SCENES_PER_CLASS = MIN_SCENES_PER_FAMILY
 
@@ -85,7 +86,7 @@ def _require_supported_tasks(tasks, where: str) -> None:
         raise ValueError(f"{where} contains unsupported benchmark families: {unsupported!r}")
 
 
-def _chance_floor(tasks) -> float:
+def _chance_floor(tasks) -> Fraction:
     """Exact candidate-aware chance, with no special zero for derived scalar values."""
     _require_supported_tasks(tasks, "chance-floor corpus")
     probabilities = []
@@ -96,8 +97,12 @@ def _chance_floor(tasks) -> float:
                 raise ValueError(
                     f"{task.family}/{question.id} has no valid candidate-count contract"
                 )
-            probabilities.append(1 / count)
-    return sum(probabilities) / len(probabilities) if probabilities else 0.0
+            probabilities.append(Fraction(1, count))
+    return (
+        sum(probabilities, Fraction()) / len(probabilities)
+        if probabilities
+        else Fraction()
+    )
 
 
 def _scene_class_counts(tasks) -> Counter:
@@ -666,12 +671,16 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
         try:
             chance = _chance_floor(holdout_tasks)
         except (AttributeError, TypeError, ValueError) as exc:
-            chance = 0.0
+            chance = Fraction()
             contract_valid = False
             r.fail(f"candidate-aware chance contract is invalid: {exc}")
-        r.metrics["chance_floor"] = round(chance, 4)
-        if chance != 1 / EXPECTED_CANDIDATES:
-            r.fail(f"candidate-aware chance is {chance:.1%}, not the exact 20% v2 contract")
+        chance_float = float(chance)
+        r.metrics["chance_floor"] = round(chance_float, 4)
+        if chance != EXPECTED_CHANCE:
+            r.fail(
+                f"candidate-aware chance is {chance_float:.1%}, "
+                "not the exact 20% v2 contract"
+            )
 
         try:
             reference, reference_coverage, _reference_detail = _score(
@@ -702,7 +711,7 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
             and contract_valid
             and positive_control_valid
             and boundary_controls_valid
-            and chance == 1 / EXPECTED_CANDIDATES
+            and chance == EXPECTED_CHANCE
             and reference == 1.0
             and reference_coverage == 1.0
         )
@@ -714,7 +723,7 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
             )
             r.denominator = (
                 f"reference {reference:.0%}; shortcut inference not run; "
-                f"candidate chance {chance:.1%}"
+                f"candidate chance {chance_float:.1%}"
             )
             return r
 
@@ -949,7 +958,7 @@ def run(holdout_tasks: list, dev_tasks: list | None = None) -> GateReport:
         f"reference {reference:.0%}; registered shortcuts tested at familywise alpha "
         f"{float(FAMILYWISE_ALPHA):.1%}; every complete attack and composition ensemble "
         f"independently calibrated; worst observed {worst:.1%}; exact candidate chance "
-        f"{chance:.1%}; green means no registered shortcut detected, not universal shortcut "
-        "resistance or equivalence to chance"
+        f"{chance_float:.1%}; green means no registered shortcut detected, "
+        "not universal shortcut resistance or equivalence to chance"
     )
     return r

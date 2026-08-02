@@ -1293,8 +1293,17 @@ def test_ci_consumes_the_frozen_oracle_lock_in_every_project_lane():
     with open(os.path.join(ROOT, ".github", "workflows", "ci.yml")) as f:
         workflow = f.read()
     assert 'UV_FROZEN: "1"' in workflow
+    assert 'UV_VERSION: "0.11.17"' in workflow
     assert 'uv pip install -e ".[dev]"' not in workflow
     assert workflow.count("sync --frozen --extra dev --python") == 5
+    assert "pip install --quiet --user" not in workflow
+    assert "--break-system-packages" not in workflow
+    assert workflow.count('UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"') == 5
+    assert workflow.count('python3 -m venv "$UV_BOOTSTRAP"') == 5
+    assert workflow.count('"$UV_BOOTSTRAP/bin/python" -m pip install') == 5
+    assert workflow.count('"uv==$UV_VERSION"') == 5
+    assert workflow.count('echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"') == 5
+    assert workflow.count('"$UV_BOOTSTRAP/bin/uv" --version') == 5
 
 
 def test_every_tracked_metric_is_present(card):

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,7 @@ def test_reference_and_adversaries_are_layout_invariant(tmp_path):
         for name, solver in ADVERSARIES.items()
     }
     chance_before = solvability._chance_floor(tasks)  # noqa: SLF001 - direct control contract
+    assert chance_before == Fraction(1, 5)
 
     _bury_artifacts(tasks)
 

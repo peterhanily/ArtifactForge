@@ -1,18 +1,18 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "generator": {
-    "artifactforge_version": "0.4.0",
-    "git_commit": "80865a6",
+    "artifactforge_version": "0.5.0",
+    "git_commit": "8d909ad",
     "sqlite_version": "3.50.4",
     "source": {
       "schema": "artifactforge-source-provenance-v1",
-      "git_commit": "80865a6594dc97abeaaf1387b00de9eeebafc1f8",
-      "git_tree": "210d9ad63a63390ce828753523d3e8023c9681ad",
+      "git_commit": "8d909ad55b79ba81fcece26eb90ed6b6082a1585",
+      "git_tree": "f782a805c01ded69260086c3a41f6721d1d9d269",
       "worktree_clean": true,
       "dirty_snapshot_sha256": null,
       "untracked_file_count": 0,
-      "pyproject_sha256": "sha256:2657c966b9e9055179daf94bae201ed6b33dc07f9737dcb93e2358f2bc3708da",
-      "uv_lock_sha256": "sha256:214110466a0bd1e8a59f68ea4a7c035a221d12b60236bc29945519869f4363b3"
+      "pyproject_sha256": "sha256:6187a0531c8d819d3443c3b57e33107f4845ee631367a53eeb09b68ecd3d0bdc",
+      "uv_lock_sha256": "sha256:36f7d04f2f59a8c349910227231c441e8220f61d75477f5e0b185f8f9be7b162"
     }
   },
   "gates": {
@@ -20,17 +20,17 @@
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "oracle_reads_passed": 1240,
-      "oracle_reads_total": 1240,
-      "semantic_checks_passed": 780,
-      "semantic_checks_total": 780
+      "oracle_reads_passed": 1440,
+      "oracle_reads_total": 1440,
+      "semantic_checks_passed": 980,
+      "semantic_checks_total": 980
     },
     "identity": {
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "checks_total": 1300,
-      "checks_joined": 1300
+      "checks_total": 3400,
+      "checks_joined": 3400
     },
     "inertness": {
       "verdict": "pass",
@@ -42,23 +42,287 @@
       "binary_safety_checks_total": 300
     },
     "solvability": {
-      "verdict": "fail",
-      "fails": [
-        "the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
-      ],
+      "verdict": "pass",
+      "fails": [],
       "gaps": [],
-      "chance_floor": 0.042,
+      "population_contract_valid": true,
+      "statistical_inference_contract_valid": true,
+      "statistical_inference_performed": true,
+      "registered_attack_execution_valid": true,
+      "trained_rank_union_fit_valid": true,
+      "trained_rank_union_prediction_valid": true,
+      "trained_rank_union_evaluation_performed": true,
+      "trained_rank_union_inference_valid": true,
+      "trained_partial_union_fit_valid": true,
+      "trained_partial_union_prediction_valid": true,
+      "trained_partial_union_evaluation_performed": true,
+      "trained_partial_union_inference_valid": true,
+      "measured_evaluator_key_binding_valid": true,
+      "development_evaluator_key_binding_valid": true,
+      "measured_macos_quarantine_uuid_event_agreement_v1_scene_count": 20,
+      "measured_windows_amcache_fileid_byte_agreement_v1_scene_count": 20,
+      "development_macos_quarantine_uuid_event_agreement_v1_scene_count": 20,
+      "development_windows_amcache_fileid_byte_agreement_v1_scene_count": 20,
+      "resolved_questions_passed": 200,
+      "resolved_questions_total": 200,
+      "multi_artifact_dependencies_passed": 200,
+      "multi_artifact_dependencies_total": 200,
+      "development_resolved_questions_passed": 200,
+      "development_resolved_questions_total": 200,
+      "development_multi_artifact_dependencies_passed": 200,
+      "development_multi_artifact_dependencies_total": 200,
+      "counterfactual_checks_passed": 480,
+      "counterfactual_checks_total": 480,
+      "counterfactual_macos_passed": 220,
+      "counterfactual_macos_total": 220,
+      "counterfactual_windows_passed": 260,
+      "counterfactual_windows_total": 260,
+      "corpus_role_contract_valid": true,
+      "positive_control_checks_passed": 10,
+      "positive_control_checks_total": 10,
+      "positive_control_excluded_low_information": [
+        "constant",
+        "listing",
+        "null"
+      ],
+      "positive_control_alternate_link_solver_score": 1.0,
+      "positive_control_alternate_link_solver_coverage": 1.0,
+      "positive_control_alternate_link_reference_score": 1.0,
+      "positive_control_footprint_solver_score": 1.0,
+      "positive_control_footprint_solver_coverage": 1.0,
+      "positive_control_footprint_reference_score": 1.0,
+      "positive_control_lexical_solver_score": 1.0,
+      "positive_control_lexical_solver_coverage": 1.0,
+      "positive_control_lexical_reference_score": 1.0,
+      "positive_control_mechanical_solver_score": 1.0,
+      "positive_control_mechanical_solver_coverage": 1.0,
+      "positive_control_mechanical_reference_score": 1.0,
+      "positive_control_metadata_solver_score": 1.0,
+      "positive_control_metadata_solver_coverage": 1.0,
+      "positive_control_metadata_reference_score": 1.0,
+      "positive_control_pool_solver_score": 1.0,
+      "positive_control_pool_solver_coverage": 1.0,
+      "positive_control_pool_reference_score": 1.0,
+      "positive_control_scalar_solver_score": 1.0,
+      "positive_control_scalar_solver_coverage": 1.0,
+      "positive_control_scalar_reference_score": 1.0,
+      "positive_control_selector_solver_score": 1.0,
+      "positive_control_selector_solver_coverage": 1.0,
+      "positive_control_selector_reference_score": 1.0,
+      "positive_control_trained_partial_union_passed": true,
+      "positive_control_partial_union_dev_correct": 30,
+      "positive_control_partial_union_dev_total": 30,
+      "positive_control_partial_union_measurement_correct": 30,
+      "positive_control_partial_union_measurement_total": 30,
+      "positive_control_partial_union_mapped_questions": 30,
+      "positive_control_partial_union_source_covered": 30,
+      "positive_control_partial_union_fallback_count": 0,
+      "positive_control_partial_union_selected_attacks": [
+        "footprint",
+        "lexical"
+      ],
+      "positive_control_partial_union_cross_slot_selections": 10,
+      "positive_control_trained_rank_union_passed": true,
+      "positive_control_rank_union_dev_correct": 30,
+      "positive_control_rank_union_dev_total": 30,
+      "positive_control_rank_union_measurement_correct": 30,
+      "positive_control_rank_union_measurement_total": 30,
+      "positive_control_rank_union_mapped_questions": 30,
+      "chance_floor": 0.2,
       "reference_solver_score": 1.0,
-      "footprint_solver_score": 0.7273,
-      "mechanical_solver_score": 0.2727,
-      "blind_solver_score": 0.0,
-      "listing_solver_score": 0.0091,
-      "null_solver_score": 0.0,
-      "constant_solver_score": 0.0,
+      "reference_solver_coverage": 1.0,
+      "blind_solver_score": 1.0,
+      "blind_solver_coverage": 1.0,
       "blind_control_score": 1.0,
-      "join_questions_macos": 120,
-      "join_questions_windows": 100,
-      "adversarial_floor": 0.7273
+      "blind_control_coverage": 1.0,
+      "parent_escape_control_score": 1.0,
+      "parent_escape_control_coverage": 1.0,
+      "parent_escape_export_score": 0.0,
+      "parent_escape_export_coverage": 0.0,
+      "randomization_comparisons": 39,
+      "randomization_familywise_alpha": 0.05,
+      "randomization_adjusted_alpha": 0.00128205,
+      "power_macos_quarantine_uuid_event_agreement_v1_critical_hits": 36,
+      "power_macos_quarantine_uuid_event_agreement_v1_signal_probability": 0.5,
+      "power_macos_quarantine_uuid_event_agreement_v1_target": 0.99,
+      "power_macos_quarantine_uuid_event_agreement_v1_achieved": 0.99481844,
+      "power_windows_amcache_fileid_byte_agreement_v1_critical_hits": 36,
+      "power_windows_amcache_fileid_byte_agreement_v1_signal_probability": 0.5,
+      "power_windows_amcache_fileid_byte_agreement_v1_target": 0.99,
+      "power_windows_amcache_fileid_byte_agreement_v1_achieved": 0.99481844,
+      "alternate_link_solver_score": 0.245,
+      "alternate_link_solver_coverage": 1.0,
+      "alternate_link_randomization_p": 0.09246823,
+      "alternate_link_windows_amcache_fileid_byte_agreement_v1_score": 0.2,
+      "alternate_link_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.52975005,
+      "alternate_link_macos_quarantine_uuid_event_agreement_v1_score": 0.29,
+      "alternate_link_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.03433547,
+      "footprint_solver_score": 0.18,
+      "footprint_solver_coverage": 1.0,
+      "footprint_randomization_p": 0.75758774,
+      "footprint_windows_amcache_fileid_byte_agreement_v1_score": 0.21,
+      "footprint_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.44090998,
+      "footprint_macos_quarantine_uuid_event_agreement_v1_score": 0.15,
+      "footprint_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.89513237,
+      "mechanical_solver_score": 0.21,
+      "mechanical_solver_coverage": 1.0,
+      "mechanical_randomization_p": 0.39666964,
+      "mechanical_windows_amcache_fileid_byte_agreement_v1_score": 0.23,
+      "mechanical_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.27938242,
+      "mechanical_macos_quarantine_uuid_event_agreement_v1_score": 0.19,
+      "mechanical_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.61858804,
+      "metadata_solver_score": 0.255,
+      "metadata_solver_coverage": 1.0,
+      "metadata_randomization_p": 0.0526283,
+      "metadata_windows_amcache_fileid_byte_agreement_v1_score": 0.22,
+      "metadata_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.35629984,
+      "metadata_macos_quarantine_uuid_event_agreement_v1_score": 0.29,
+      "metadata_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.03433547,
+      "pool_solver_score": 0.16,
+      "pool_solver_coverage": 1.0,
+      "pool_randomization_p": 0.91447866,
+      "pool_windows_amcache_fileid_byte_agreement_v1_score": 0.16,
+      "pool_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.84348801,
+      "pool_macos_quarantine_uuid_event_agreement_v1_score": 0.16,
+      "pool_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.84348801,
+      "scalar_solver_score": 0.2,
+      "scalar_solver_coverage": 1.0,
+      "scalar_randomization_p": 1.0,
+      "scalar_windows_amcache_fileid_byte_agreement_v1_score": 0.2,
+      "scalar_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 1.0,
+      "scalar_macos_quarantine_uuid_event_agreement_v1_score": 0.2,
+      "scalar_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 1.0,
+      "selector_solver_score": 0.2,
+      "selector_solver_coverage": 1.0,
+      "selector_randomization_p": 0.52103011,
+      "selector_windows_amcache_fileid_byte_agreement_v1_score": 0.2,
+      "selector_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.52975005,
+      "selector_macos_quarantine_uuid_event_agreement_v1_score": 0.2,
+      "selector_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.52975005,
+      "lexical_solver_score": 0.255,
+      "lexical_solver_coverage": 1.0,
+      "lexical_randomization_p": 0.0526283,
+      "lexical_windows_amcache_fileid_byte_agreement_v1_score": 0.22,
+      "lexical_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 0.35629984,
+      "lexical_macos_quarantine_uuid_event_agreement_v1_score": 0.29,
+      "lexical_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 0.03433547,
+      "listing_solver_score": 0.0,
+      "listing_solver_coverage": 0.0,
+      "listing_randomization_p": 1.0,
+      "listing_windows_amcache_fileid_byte_agreement_v1_score": 0.0,
+      "listing_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 1.0,
+      "listing_macos_quarantine_uuid_event_agreement_v1_score": 0.0,
+      "listing_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 1.0,
+      "null_solver_score": 0.0,
+      "null_solver_coverage": 0.0,
+      "null_randomization_p": 1.0,
+      "null_windows_amcache_fileid_byte_agreement_v1_score": 0.0,
+      "null_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 1.0,
+      "null_macos_quarantine_uuid_event_agreement_v1_score": 0.0,
+      "null_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 1.0,
+      "constant_solver_score": 0.0,
+      "constant_solver_coverage": 1.0,
+      "constant_randomization_p": 1.0,
+      "constant_windows_amcache_fileid_byte_agreement_v1_score": 0.0,
+      "constant_windows_amcache_fileid_byte_agreement_v1_score_randomization_p": 1.0,
+      "constant_macos_quarantine_uuid_event_agreement_v1_score": 0.0,
+      "constant_macos_quarantine_uuid_event_agreement_v1_score_randomization_p": 1.0,
+      "trained_rank_union_score": 0.19,
+      "trained_rank_union_output_coverage": 1.0,
+      "trained_rank_union_randomization_p": 0.659457,
+      "trained_rank_union_macos_quarantine_uuid_event_agreement_v1_dev_score": 0.41,
+      "trained_rank_union_macos_quarantine_uuid_event_agreement_v1_slot_attacks": [
+        "alternate_link",
+        "alternate_link",
+        "mechanical",
+        "mechanical",
+        "alternate_link"
+      ],
+      "trained_rank_union_macos_quarantine_uuid_event_agreement_v1_randomization_p": 0.71579795,
+      "trained_rank_union_windows_amcache_fileid_byte_agreement_v1_dev_score": 0.4,
+      "trained_rank_union_windows_amcache_fileid_byte_agreement_v1_slot_attacks": [
+        "alternate_link",
+        "mechanical",
+        "alternate_link",
+        "pool",
+        "alternate_link"
+      ],
+      "trained_rank_union_windows_amcache_fileid_byte_agreement_v1_randomization_p": 0.53926994,
+      "trained_partial_union_score": 0.19,
+      "trained_partial_union_output_coverage": 1.0,
+      "trained_partial_union_source_coverage": 1.0,
+      "trained_partial_union_source_covered": 200,
+      "trained_partial_union_fallback_count": 0,
+      "trained_partial_union_source_total": 200,
+      "trained_partial_union_randomization_p": 0.659457,
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_score": 0.18,
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_source_coverage": 1.0,
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_fallback_count": 0,
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_source_total": 100,
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_slot_attacks": [
+        "alternate_link",
+        "alternate_link",
+        "mechanical",
+        "mechanical",
+        "alternate_link"
+      ],
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_source_slots": [
+        1,
+        3,
+        4,
+        0,
+        2
+      ],
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_dev_hits": [
+        8,
+        9,
+        8,
+        10,
+        6
+      ],
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_dev_source_coverage": [
+        20,
+        20,
+        20,
+        20,
+        20
+      ],
+      "trained_partial_union_macos_quarantine_uuid_event_agreement_v1_randomization_p": 0.71579795,
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_score": 0.2,
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_source_coverage": 1.0,
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_fallback_count": 0,
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_source_total": 100,
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_slot_attacks": [
+        "alternate_link",
+        "mechanical",
+        "alternate_link",
+        "pool",
+        "alternate_link"
+      ],
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_source_slots": [
+        1,
+        2,
+        4,
+        4,
+        3
+      ],
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_dev_hits": [
+        9,
+        8,
+        6,
+        8,
+        9
+      ],
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_dev_source_coverage": [
+        20,
+        20,
+        20,
+        20,
+        20
+      ],
+      "trained_partial_union_windows_amcache_fileid_byte_agreement_v1_randomization_p": 0.53926994,
+      "adversarial_floor": 0.255,
+      "worst_shortcut_score": 0.255
     }
   },
   "status": {
@@ -74,21 +338,17 @@
       "gaps": []
     },
     "benchmark_validity": {
-      "verdict": "fail",
+      "verdict": "pass",
       "experimental": true,
       "gates": [
         "solvability"
       ],
-      "fails": [
-        "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
-      ],
+      "fails": [],
       "gaps": []
     }
   },
-  "honest_gaps": [
-    "Gate 4 (solvability) FAILING: the 'footprint' adversary scores 72.7% against a 30% threshold \u2014 that many answers are obtainable without forensic work"
-  ],
-  "verdict": "fail",
+  "honest_gaps": [],
+  "verdict": "pass",
   "verdict_scope": "all_gates",
   "measurement": {
     "purpose": "reproducible-scorecard-measurement",
@@ -97,7 +357,119 @@
     "scenario_count": 40,
     "deterministic": true,
     "reportable": false,
-    "suite_derivation_domain": "artifactforge/bench/v1",
+    "suite_derivation_domain": "artifactforge/bench/v2",
+    "benchmark_contract": {
+      "protocol": {
+        "public_document_schema": "artifactforge-benchmark-public-v2",
+        "public_export_schema": "artifactforge-benchmark-public-export-v1",
+        "tree_canonicalization": "artifactforge-benchmark-scenarios-tree-v1",
+        "suite_derivation_domain": "artifactforge/bench/v2",
+        "scene_value_derivation_domain": "artifactforge/bench/v1",
+        "public_export_inventory": [
+          "public.json",
+          "scenarios/**"
+        ],
+        "public_export_limitation": "This filesystem export removes co-located evaluator-private material; arbitrary same-process filesystem access still requires an OS sandbox or separate trust domain.",
+        "same_process_python_is_security_boundary": false,
+        "resource_limits": {
+          "maximum_scenarios": 200,
+          "current_artifact_files_per_scene": {
+            "windows": 11,
+            "macos": 16
+          },
+          "public_files_at_maximum": 2701,
+          "recursive_file_limit": 4096,
+          "recursive_total_bytes_limit": 268435456,
+          "public_json_bytes": 16777216,
+          "answer_document_bytes": 1048576,
+          "answer_value_characters": 4096,
+          "key_hex_bytes": 64
+        }
+      },
+      "questions": {
+        "rules": [
+          {
+            "family": "windows",
+            "rule": "amcache-fileid-byte-agreement-v1"
+          },
+          {
+            "family": "macos",
+            "rule": "quarantine-uuid-event-agreement-v1"
+          }
+        ],
+        "questions_per_scene": 5,
+        "candidates_per_question": 5,
+        "answer_assignment": "five-way-bijection-v1"
+      },
+      "inference": {
+        "method": "exact-conditional-scene-permutation-v1",
+        "ensembles": [
+          "trained-partial-union-v1",
+          "trained-rank-union-v1"
+        ],
+        "randomization_unit": "scene",
+        "permutations_per_scene": 120,
+        "multiple_testing": "bonferroni-v1",
+        "comparisons": 39,
+        "familywise_alpha": "1/20",
+        "minimum_scenes_per_class": 20,
+        "alternative": {
+          "model": "whole-scene-recovery-mixture-v1",
+          "signal_probability": "1/2"
+        },
+        "target_power": "99/100"
+      },
+      "counterfactuals": {
+        "engine": "parser-valid-local-effect-v1",
+        "source_tree_must_remain_unchanged": true,
+        "checks_per_scene": {
+          "windows": 13,
+          "macos": 11
+        },
+        "windows_mutations": [
+          "windows-fileid-swap",
+          "windows-fileid-absent",
+          "windows-resident-pe-replacement"
+        ],
+        "macos_mutations": [
+          "macos-xattr-uuid-swap",
+          "macos-database-uuid-swap",
+          "macos-xattr-uuid-absent"
+        ]
+      },
+      "shortcut_controls": {
+        "registered_adversaries": [
+          "alternate_link",
+          "constant",
+          "footprint",
+          "lexical",
+          "listing",
+          "mechanical",
+          "metadata",
+          "null",
+          "pool",
+          "scalar",
+          "selector"
+        ],
+        "complete_adversaries": [
+          "alternate_link",
+          "footprint",
+          "lexical",
+          "mechanical",
+          "metadata",
+          "pool",
+          "scalar",
+          "selector"
+        ],
+        "mandatory_positive_controls": 10,
+        "union_control": "production-partial-wrapper-independent-dev-measurement-v1",
+        "truth_construction": "independent-observable-ranking-oracle-v2",
+        "partial_union_model_control": "production-partial-wrapper-independent-dev-measurement-v1",
+        "rank_union_model_control": "production-wrapper-independent-dev-measurement-v2",
+        "blind_public_key_control": true,
+        "parent_escape_control": "co-located-100-exported-0-v1"
+      }
+    },
     "key_derivation": {
       "algorithm": "HMAC-SHA256",
       "domain": "artifactforge/scorecard/measurement-key/v1",
@@ -131,17 +503,19 @@
             "macos"
           ],
           "scenario_count": 40,
+          "maximum_scenario_count": 200,
           "family_counts": {
             "windows": 20,
             "macos": 20
           },
           "deterministic": true,
           "benchmark_reportable": false,
-          "suite_derivation_domain": "artifactforge/bench/v1",
+          "suite_derivation_domain": "artifactforge/bench/v2",
+          "scene_value_derivation_domain": "artifactforge/bench/v1",
           "public_key": {
             "source": "PUBLIC_DEV_KEY",
             "identity_algorithm": "SHA256",
-            "key_id": "sha256:b6124b72a04c3b4311ffa48255a24085797def1df3ba332df9cec8cf5e261cc2"
+            "key_id": "sha256:1c009055734efab7b12d4b7a450cbd4ed090ce2e7736f825c287375abe5601ff"
           },
           "content_namespace": "artifactforge::suite",
           "family_schedule": {

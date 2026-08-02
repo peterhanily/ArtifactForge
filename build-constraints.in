@@ -1,0 +1,4 @@
+# The official release producer resolves this isolated PEP 517 closure with
+# `uv pip compile --python-version 3.11 --generate-hashes`. Keep the direct
+# backend pin identical to `[build-system].requires` in pyproject.toml.
+hatchling==1.31.0

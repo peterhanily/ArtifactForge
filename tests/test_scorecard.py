@@ -549,6 +549,9 @@ def test_committed_scorecard_has_exact_measurement_and_source_provenance(card):
     assert (
         provenance["uv_lock_sha256"] == "sha256:" + hashlib.sha256(git_show("uv.lock")).hexdigest()
     )
+    assert provenance["build_constraints_sha256"] == (
+        "sha256:" + hashlib.sha256(git_show("build-constraints.txt")).hexdigest()
+    )
     tree = subprocess.run(
         ["git", "rev-parse", f"{commit}^{{tree}}"],
         cwd=ROOT,
@@ -569,6 +572,7 @@ def _clean_source_provenance():
         "untracked_file_count": 0,
         "pyproject_sha256": "sha256:" + "2" * 64,
         "uv_lock_sha256": "sha256:" + "3" * 64,
+        "build_constraints_sha256": "sha256:" + "4" * 64,
     }
 
 
@@ -1304,6 +1308,45 @@ def test_ci_consumes_the_frozen_oracle_lock_in_every_project_lane():
     assert workflow.count('"uv==$UV_VERSION"') == 5
     assert workflow.count('echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"') == 5
     assert workflow.count('"$UV_BOOTSTRAP/bin/uv" --version') == 5
+
+
+def test_release_build_backend_and_complete_closure_are_pinned_and_hashed():
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as f:
+        build_system = tomllib.load(f)["build-system"]
+    assert build_system == {
+        "requires": ["hatchling==1.31.0"],
+        "build-backend": "hatchling.build",
+    }
+
+    with open(os.path.join(ROOT, "build-constraints.in"), encoding="utf-8") as f:
+        requested = [line for line in f.read().splitlines() if line and not line.startswith("#")]
+    assert requested == ["hatchling==1.31.0"]
+
+    with open(os.path.join(ROOT, "build-constraints.txt"), encoding="utf-8") as f:
+        constraints = f.read()
+    pins = {
+        line.split()[0]
+        for line in constraints.splitlines()
+        if line and not line[0].isspace() and not line.startswith("#")
+    }
+    assert pins == {
+        "hatchling==1.31.0",
+        "packaging==26.2",
+        "pathspec==1.1.1",
+        "pluggy==1.6.0",
+        "trove-classifiers==2026.6.1.19",
+    }
+    assert constraints.count("--hash=sha256:") == 2 * len(pins)
+
+    with open(os.path.join(ROOT, ".github", "workflows", "ci.yml")) as f:
+        workflow = f.read()
+    assert 'SOURCE_DATE_EPOCH: "0"' in workflow
+    assert workflow.count("--build-constraint build-constraints.txt --require-hashes") == 2
+    assert "artifactforge-dist-a/artifactforge-*.tar.gz" in workflow
+    assert "artifactforge-dist-b/artifactforge-*.tar.gz" in workflow
+    assert "artifactforge-dist-a/artifactforge-*.whl" in workflow
+    assert "artifactforge-dist-b/artifactforge-*.whl" in workflow
+    assert '"Generator: hatchling 1.31.0\\n"' in workflow
 
 
 def test_every_tracked_metric_is_present(card):

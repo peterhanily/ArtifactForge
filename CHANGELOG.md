@@ -90,6 +90,14 @@ inside runner-temporary virtual environments rather than modifying PEP 668-manag
 the determinism lane explicitly creates the trusted parent required by fail-closed benchmark
 publication.
 
+The isolated PEP 517 producer is now reproducible across time as well as across same-session
+environment changes. `pyproject.toml` pins Hatchling exactly; a generated build-constraints
+file pins and hashes its complete five-package closure; scorecard source provenance records the
+constraint digest; and CI builds sdist-then-wheel twice with hash enforcement, a fixed standard
+build epoch, different umasks/hash seeds/timezones/locales and byte comparisons. The no-dependency
+packaged-fixture smoke now covers all three platform families and checks the wheel's recorded
+backend plus both constraint files in the sdist.
+
 ### Documentation
 
 Recorded the post-Linux consumer audit for a proposed digest-evidence graph. No unmet consumer

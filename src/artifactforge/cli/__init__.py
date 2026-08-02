@@ -256,6 +256,8 @@ def _git_source_provenance() -> dict:
         "untracked_file_count": len(untracked),
         "pyproject_sha256": "sha256:" + _file_sha256(_REPOSITORY_ROOT / "pyproject.toml"),
         "uv_lock_sha256": "sha256:" + _file_sha256(_REPOSITORY_ROOT / "uv.lock"),
+        "build_constraints_sha256": "sha256:"
+        + _file_sha256(_REPOSITORY_ROOT / "build-constraints.txt"),
     }
 
 

@@ -20,6 +20,9 @@ env:
   # Bootstrap through an isolated venv so PEP 668 runner Python installations stay untouched.
   # Keep the installer version centralized and exact; every job verifies what it installed.
   UV_VERSION: "0.11.17"
+  # Hatchling consumes this standard build timestamp. A fixed epoch makes release archives
+  # independent of checkout/build time; the hashed build closure fixes the producer itself.
+  SOURCE_DATE_EPOCH: "0"
   # One place to bump the pin. The seed formulas in artifactforge/ef_seeds.py are verified
   # against this exact tag, and tests/ef_contract/test_golden_formulas.py compares them to
   # upstream's own code on every run.
@@ -128,32 +131,72 @@ jobs:
           cmp fixture-run/linux-a.tar fixture-run/linux-b.tar
           echo "Windows and Linux fixture trees and release archives are byte-identical"
 
-      - name: Wheel — packaged schemas and zero-dependency fixture smoke
+      - name: Distributions — constrained reproducible sdist, wheel and no-dependency smoke
         if: matrix.python-version == '3.12'
         run: |
-          uv build --wheel --out-dir wheel-dist
-          uv venv wheel-smoke --python ${{ matrix.python-version }}
-          uv pip install --python wheel-smoke/bin/python --no-deps \
-            wheel-dist/artifactforge-*.whl
-          wheel-smoke/bin/artifactforge fixture build \
-            examples/fixtures/macos-14-loose-v1.json wheel-fixture
-          wheel-smoke/bin/artifactforge fixture verify wheel-fixture
-          wheel-smoke/bin/artifactforge fixture build \
-            examples/fixtures/linux-glibc-x86_64-loose-v1.json wheel-linux-fixture
-          wheel-smoke/bin/artifactforge fixture verify wheel-linux-fixture
-          wheel-smoke/bin/python - <<'PY'
+          umask 022
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv build \
+            --build-constraint build-constraints.txt --require-hashes \
+            --out-dir "$RUNNER_TEMP/artifactforge-dist-a"
+          umask 077
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv build \
+            --build-constraint build-constraints.txt --require-hashes \
+            --out-dir "$RUNNER_TEMP/artifactforge-dist-b"
+          cmp "$RUNNER_TEMP"/artifactforge-dist-a/artifactforge-*.tar.gz \
+            "$RUNNER_TEMP"/artifactforge-dist-b/artifactforge-*.tar.gz
+          cmp "$RUNNER_TEMP"/artifactforge-dist-a/artifactforge-*.whl \
+            "$RUNNER_TEMP"/artifactforge-dist-b/artifactforge-*.whl
+
+          uv venv "$RUNNER_TEMP/artifactforge-wheel-smoke" \
+            --python ${{ matrix.python-version }}
+          uv pip install \
+            --python "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/python" --no-deps \
+            "$RUNNER_TEMP"/artifactforge-dist-a/artifactforge-*.whl
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture build \
+            examples/fixtures/windows-loose-v1.json \
+            "$RUNNER_TEMP/artifactforge-wheel-windows-fixture"
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture verify \
+            "$RUNNER_TEMP/artifactforge-wheel-windows-fixture"
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture build \
+            examples/fixtures/macos-14-loose-v1.json \
+            "$RUNNER_TEMP/artifactforge-wheel-macos-fixture"
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture verify \
+            "$RUNNER_TEMP/artifactforge-wheel-macos-fixture"
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v1.json \
+            "$RUNNER_TEMP/artifactforge-wheel-linux-fixture"
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture verify \
+            "$RUNNER_TEMP/artifactforge-wheel-linux-fixture"
+          "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/python" - <<'PY'
           from importlib.resources import files
+          import os
           from pathlib import Path
+          import tarfile
+          import zipfile
           from artifactforge.gates.oracles import load_binary_plist, load_sqlite
+
+          runner = Path(os.environ["RUNNER_TEMP"])
+          dist = runner / "artifactforge-dist-a"
+          wheel = next(dist.glob("artifactforge-*.whl"))
+          sdist = next(dist.glob("artifactforge-*.tar.gz"))
+          with zipfile.ZipFile(wheel) as archive:
+              wheel_meta = next(name for name in archive.namelist()
+                                if name.endswith(".dist-info/WHEEL"))
+              metadata = archive.read(wheel_meta).decode("utf-8")
+          assert "Generator: hatchling 1.31.0\n" in metadata
+          with tarfile.open(sdist, "r:gz") as archive:
+              members = archive.getnames()
+          assert any(name.endswith("/build-constraints.in") for name in members)
+          assert any(name.endswith("/build-constraints.txt") for name in members)
 
           names = sorted(path.name for path in files("artifactforge.fixture.schemas").iterdir())
           assert names == ["fixture-manifest-v1.schema.json", "fixture-spec-v1.schema.json"]
-          payload = Path("wheel-fixture/artifacts")
+          payload = runner / "artifactforge-wheel-macos-fixture" / "artifacts"
           databases = [payload / name for name in ("knowledgeC.db", "TCC.db", "QuarantineEventsV2")]
           plists = sorted(payload.glob("*.plist"))
           assert all(load_sqlite(path).tables for path in databases)
           assert len(plists) == 3 and all(load_binary_plist(path) for path in plists)
-          linux_payload = Path("wheel-linux-fixture/artifacts")
+          linux_payload = runner / "artifactforge-wheel-linux-fixture" / "artifacts"
           linux_files = sorted(path for path in linux_payload.rglob("*") if path.is_file())
           assert len(linux_files) == 9
           assert sum(path.read_bytes()[:4] == b"\x7fELF" for path in linux_files) == 5

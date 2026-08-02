@@ -1298,9 +1298,8 @@ def test_ci_consumes_the_frozen_oracle_lock_in_every_project_lane():
 
 
 def test_every_tracked_metric_is_present(card):
-    """A metric the scorecard does not carry cannot regress, so its absence is the bug."""
-    missing = [label for label, kind, *_ in regressions(card, card) if kind == "missing"]
-    assert not missing, f"tracked metrics absent from the committed scorecard: {missing}"
+    """Every committed metric must compare cleanly with itself, including boolean controls."""
+    assert regressions(card, card) == []
     assert len(_METRICS) >= 8
 
 
@@ -1373,6 +1372,26 @@ def _set_metric(card, path, value):
     for part in parts[:-1]:
         node = node[part]
     node[parts[-1]] = value
+
+
+def test_boolean_metrics_preserve_type_and_order(card):
+    boolean_metrics = [
+        (path, label)
+        for path, _direction, _tolerance, label in _METRICS
+        if isinstance(_metric_value(card, path), bool)
+    ]
+    assert boolean_metrics, "the Gate 4 boolean-control comparison surface disappeared"
+
+    for path, label in boolean_metrics:
+        assert _metric_value(card, path) is True
+
+        regressed = deepcopy(card)
+        _set_metric(regressed, path, False)
+        assert (label, "regressed", True, False) in regressions(card, regressed)
+
+        type_drifted = deepcopy(card)
+        _set_metric(type_drifted, path, 1)
+        assert (label, "invalid", True, 1) in regressions(card, type_drifted)
 
 
 def test_nonvacuous_metrics_have_exact_paths_directions_and_zero_tolerance():

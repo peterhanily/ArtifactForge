@@ -726,6 +726,20 @@ def regressions(baseline: dict, current: dict) -> list:
         if was is None or now is None:
             out.append((label, "missing", was, now))
             continue
+        was_boolean = isinstance(was, bool)
+        now_boolean = isinstance(now, bool)
+        if was_boolean or now_boolean:
+            # Boolean contract assertions are first-class tracked metrics, but Python's bool
+            # is also an int subclass. Compare a bool only with a bool so True <-> 1 cannot
+            # silently change the scorecard's type contract. Higher-better means True is the
+            # passing state; lower-better retains the exact inverse ordering if one is added.
+            if not (was_boolean and now_boolean):
+                out.append((label, "invalid", was, now))
+                continue
+            worse = (was and not now) if direction == "higher_better" else (not was and now)
+            if worse:
+                out.append((label, "regressed", was, now))
+            continue
         if not valid_number(was) or not valid_number(now):
             out.append((label, "invalid", was, now))
             continue

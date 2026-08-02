@@ -759,6 +759,7 @@ def _desktop_attestation(
 _BASH_SCRIPT = r"""
 set -eu
 umask 077
+HISTTIMEFORMAT=${HISTTIMEFORMAT:?}
 source_history=$1
 roundtrip=$2
 control_history=$3

@@ -84,8 +84,9 @@ being promoted into performance prose.
 The exact five-candidate chance contract is evaluated with rational arithmetic through the
 Gate 4 decision boundary, avoiding Python-version-dependent floating-point reduction. Native
 Linux attestation preserves extended Bash-history timestamps by setting a deterministic
-`HISTTIMEFORMAT`; a real Bash subprocess regression proves byte-identical source and control
-roundtrips without executing history commands. CI installs its centralized pinned uv version
+`HISTTIMEFORMAT` and activating Bash's special-variable hook inside the isolated shell; a real
+Bash subprocess regression proves byte-identical source and control roundtrips without executing
+history commands. CI installs its centralized pinned uv version
 inside runner-temporary virtual environments rather than modifying PEP 668-managed Python, and
 the determinism lane explicitly creates the trusted parent required by fail-closed benchmark
 publication.

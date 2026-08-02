@@ -548,6 +548,9 @@ def test_bash_roundtrip_mock_proves_nonexecution_and_never_sources_history(tmp_p
         assert command[:4] == ["/bin/bash", "--noprofile", "--norc", "-c"]
         assert "history -r" in command[4]
         assert "history -w" in command[4]
+        assert command[4].index("HISTTIMEFORMAT=${HISTTIMEFORMAT:?}") < command[4].index(
+            'history -r "$control_history"'
+        )
         assert command[4].index('history -r "$control_history"') < command[4].index(
             'history -r "$source_history"'
         )
@@ -563,7 +566,7 @@ def test_bash_roundtrip_mock_proves_nonexecution_and_never_sources_history(tmp_p
         return _result()
 
     evidence, failures = _bash_attestation(history, scene, "/bin/bash", runner)
-    assert failures == []
+    assert failures == [], evidence
     assert evidence["byte_identical_roundtrip"] is True
     control = evidence["nonexecution_control"]
     assert control["control_roundtrip_byte_identical"] is True
@@ -603,7 +606,7 @@ def test_bash_roundtrip_real_shell_preserves_extended_timestamps(tmp_path):
         _run,
     )
 
-    assert failures == []
+    assert failures == [], evidence
     assert evidence["result"]["returncode"] == 0
     assert evidence["byte_identical_roundtrip"] is True
     assert evidence["roundtrip_sha256"] == evidence["source_sha256"]

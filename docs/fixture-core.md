@@ -33,8 +33,11 @@ output exists and is complete, but crash durability could not be confirmed. Ther
 
 `verify` requires canonical manifest bytes, recomputes every size and SHA-256, requires the
 recursive inventory to be exact, and regenerates the fixture from its embedded recipe. The
-optional `--assurance` additionally runs Gates 1 and 3 over the payload. Missing parser
-oracles are failures, not skips. Gate 2 is intentionally absent here: its join truth is not
+optional `--assurance` additionally runs Gates 1 and 3 over the payload and therefore requires
+the development parser-oracle extra (`uv sync --extra dev` for this checkout). The default
+zero-dependency install supports build, exact verification, inspection, diff and release
+without parser assurance. Missing assurance oracles produce a normal red gate and exit 1—not a
+skip or an import traceback. Gate 2 is intentionally absent here: its join truth is not
 published in the manifest.
 
 `inspect` verifies before summarising. `diff` verifies both inputs before reporting recipe and

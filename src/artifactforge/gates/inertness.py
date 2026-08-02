@@ -1077,11 +1077,20 @@ def run(scene_dir: str) -> GateReport:
 
         if fmt == "pe":
             binary_safety_total += 1
-            ok, why = _pe_code_is_inert(data)
-            if ok:
-                binary_safety_passed += 1
+            try:
+                ok, why = _pe_code_is_inert(data)
+            except ImportError as exc:
+                missing = getattr(exc, "name", None) or "pefile"
+                r.fail(
+                    f"{name}: PE binary-safety oracle 'pefile' is not installed "
+                    f"(required module {missing!r} is unavailable) — a missing oracle is a "
+                    "failure, not a skip"
+                )
             else:
-                r.fail(f"{name}: {fmt} PE is not inert — {why}")
+                if ok:
+                    binary_safety_passed += 1
+                else:
+                    r.fail(f"{name}: {fmt} PE is not inert — {why}")
         elif fmt == "macho":
             binary_safety_total += 1
             ok, why = _macho_code_is_inert(data)

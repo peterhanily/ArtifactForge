@@ -445,6 +445,29 @@ def test_assurance_runs_only_gates_one_and_three_and_missing_oracle_is_red(monke
     assert result.assurance_reports[1].ok
 
 
+def test_assurance_missing_pe_safety_oracle_is_red_not_an_exception(monkeypatch, tmp_path):
+    root = tmp_path / "fixture"
+    build_fixture(_spec(), root)
+
+    def missing(_data):
+        raise ModuleNotFoundError("No module named 'pefile'", name="pefile")
+
+    monkeypatch.setattr(operations.inertness, "_pe_code_is_inert", missing)
+    result = verify_fixture(root, assurance=True)
+
+    assert not result.ok
+    assert [report.gate for report in result.assurance_reports] == [1, 3]
+    gate3 = result.assurance_reports[1]
+    assert not gate3.ok
+    assert gate3.metrics["binary_safety_checks_passed"] == 0
+    assert gate3.metrics["binary_safety_checks_total"] == 5
+    assert any(
+        "PE binary-safety oracle 'pefile' is not installed" in failure
+        and "failure, not a skip" in failure
+        for failure in gate3.fails
+    )
+
+
 def test_linux_fixture_assurance_runs_only_gates_one_and_three_and_passes(tmp_path):
     root = tmp_path / "fixture"
     build_fixture(_spec("linux"), root)

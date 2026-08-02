@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+Recorded the post-Linux consumer audit for a proposed digest-evidence graph. No unmet consumer
+exists: Fixture Core already owns public payload integrity, Gate 2 owns private join truth, and
+EvidenceForge's non-byte-backed logical identity belongs in its upstream scenario model. A
+future external digest-alias consumer may justify an ephemeral view computed inside a held
+verified fixture snapshot; resolved edges and causal claims remain out of scope.
+
 ## 0.4.0 - 2026-08-01
 
 ### Added

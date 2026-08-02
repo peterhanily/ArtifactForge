@@ -92,7 +92,9 @@ Answering anything about it requires reading two artifacts together, which is th
   materialized binary's bytes once and derives its content digests and structural hashes from
   them. The selected Amcache-to-disk, answer-key-to-disk and Linux guest-path-to-served-byte
   joins reuse that identity. Deliberate stale and absent Amcache decoys do not claim to be
-  resident file bytes.
+  resident file bytes. The distinct byte, fixture, evaluator and modeled-log boundaries—and
+  the decision not to publish a catch-all graph—are in
+  [`docs/identity-boundaries.md`](docs/identity-boundaries.md).
 - **Fixture Core v1.** A strict public recipe builds `fixture.json` plus an exact `artifacts/`
   payload; hidden and nested relative paths are ordinary first-class members. Verification
   re-hashes and regenerates every byte, inspection and semantic diff are stable interfaces,

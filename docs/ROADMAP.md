@@ -54,6 +54,20 @@ PyXDG/raw for desktop entries, and dissect.target/raw for Bash history, with ind
 meaning and inertness mutations. It is generator assurance and Fixture Core material only;
 Gate 4 remains the unchanged Windows/macOS benchmark population.
 
+## Digest-evidence graph deferred after consumer audit
+
+No current consumer needs a new graph. Fixture Core already publishes the complete
+path/size/SHA-256 integrity relation; Gate 2 consumes private family-specific scene truth; and
+benchmark joins/answers must not cross into served artifacts. EvidenceForge's proposed
+role-specific logical-content reference can represent content without materialized bytes and
+therefore belongs in its own scenario schema, not in an ArtifactForge byte graph.
+
+The decision and reconsideration trigger are in
+[`identity-boundaries.md`](identity-boundaries.md). If a named external caller later needs
+additional whole-file digest aliases, the maximum justified first step is an ephemeral view
+computed inside Fixture Core's held verified snapshot. It must expose equality observations,
+not roles, match edges, provenance, authenticity or causality.
+
 ## Not built
 
 - **Windows 10 prefetch.** The current uncompressed SCCA v17 writer and XP path hash agree

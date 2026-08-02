@@ -32,6 +32,12 @@ hashes from those bytes and their parsed structures. The selected Amcache-to-dis
 answer-key-to-disk pivots reuse that identity, and Gate 2 re-derives those declared checks from
 disk. Deliberate stale and absent Amcache decoys are outside that content-blob claim.
 
+There is deliberately no general evidence graph. Byte-derived `Content`, public fixture
+integrity, private scene truth, evaluator answers and EvidenceForge's modeled logical-content
+references have different evidence and disclosure boundaries. The consumer audit, future
+trigger and smallest acceptable snapshot-bound digest-view shape are in
+[`identity-boundaries.md`](identity-boundaries.md).
+
 ## §3 Layering
 
 Dependencies point one way:

@@ -406,3 +406,38 @@ def test_both_strict_json_schemas_are_packaged_resources():
     assert "linux-glibc-x86_64-loose-v1" in (
         manifest_schema["$defs"]["profile"]["properties"]["id"]["enum"]
     )
+
+
+def test_public_fixture_schemas_have_no_semantic_answer_or_join_fields():
+    """Fixture integrity must not quietly become a published evidence graph."""
+    resources = files("artifactforge.fixture.schemas")
+    schemas = {
+        name: json.loads(resources.joinpath(name).read_text())
+        for name in ("fixture-spec-v1.schema.json", "fixture-manifest-v1.schema.json")
+    }
+
+    def property_names(value):
+        if isinstance(value, dict):
+            yield from value.get("properties", {})
+            for child in value.values():
+                yield from property_names(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from property_names(child)
+
+    semantic_fields = {
+        "answer",
+        "answers",
+        "caused_by",
+        "join",
+        "joins",
+        "match",
+        "pivot",
+        "question",
+        "role",
+        "same_file",
+        "subject",
+    }
+    for name, schema in schemas.items():
+        leaked = semantic_fields & set(property_names(schema))
+        assert not leaked, f"{name} publishes private semantic fields: {sorted(leaked)}"

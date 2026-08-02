@@ -63,7 +63,7 @@ def test_reads_both_seed_forms_from_an_output_tree(tmp_path):
                                                             "with_description"}
 
 
-def test_one_binary_seen_on_several_hosts_is_one_identity(tmp_path):
+def test_one_sysmon_seed_seen_on_several_hosts_has_one_materialization_key(tmp_path):
     fv, _desc, prod, comp, orig = META
     digest = _digest(seed_from_host_metadata(IMAGE, fv, prod, comp, orig))
     root = tmp_path

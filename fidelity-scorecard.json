@@ -1,18 +1,18 @@
 {
   "schema_version": "1.0",
   "generator": {
-    "artifactforge_version": "0.3.1",
-    "git_commit": "56951da",
+    "artifactforge_version": "0.4.0",
+    "git_commit": "80865a6",
     "sqlite_version": "3.50.4",
     "source": {
       "schema": "artifactforge-source-provenance-v1",
-      "git_commit": "56951da6aa0c2c5dc361ced6adfdd3597aa754ee",
-      "git_tree": "0a269e10100953c7089b02589e900485c100a76c",
+      "git_commit": "80865a6594dc97abeaaf1387b00de9eeebafc1f8",
+      "git_tree": "210d9ad63a63390ce828753523d3e8023c9681ad",
       "worktree_clean": true,
       "dirty_snapshot_sha256": null,
       "untracked_file_count": 0,
-      "pyproject_sha256": "sha256:89cdea38f4f651b558dc0ebce3dd2b3a64bd3730ef9d1f373d00c2f15eb7f6f5",
-      "uv_lock_sha256": "sha256:3b86ba117df50a903a1cf784f37b88cb8cec508b59ae0132522b480d83fd5cae"
+      "pyproject_sha256": "sha256:2657c966b9e9055179daf94bae201ed6b33dc07f9737dcb93e2358f2bc3708da",
+      "uv_lock_sha256": "sha256:214110466a0bd1e8a59f68ea4a7c035a221d12b60236bc29945519869f4363b3"
     }
   },
   "gates": {
@@ -20,26 +20,26 @@
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "oracle_reads_passed": 880,
-      "oracle_reads_total": 880,
-      "semantic_checks_passed": 420,
-      "semantic_checks_total": 420
+      "oracle_reads_passed": 1240,
+      "oracle_reads_total": 1240,
+      "semantic_checks_passed": 780,
+      "semantic_checks_total": 780
     },
     "identity": {
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "checks_total": 400,
-      "checks_joined": 400
+      "checks_total": 1300,
+      "checks_joined": 1300
     },
     "inertness": {
       "verdict": "pass",
       "fails": [],
       "gaps": [],
-      "formats_marked": 440,
-      "formats_total": 440,
-      "binary_safety_checks_passed": 200,
-      "binary_safety_checks_total": 200
+      "formats_marked": 620,
+      "formats_total": 620,
+      "binary_safety_checks_passed": 300,
+      "binary_safety_checks_total": 300
     },
     "solvability": {
       "verdict": "fail",
@@ -92,6 +92,7 @@
   "verdict_scope": "all_gates",
   "measurement": {
     "purpose": "reproducible-scorecard-measurement",
+    "scope": "benchmark-validity",
     "suite_kind": "scorecard-measurement",
     "scenario_count": 40,
     "deterministic": true,
@@ -102,6 +103,77 @@
       "domain": "artifactforge/scorecard/measurement-key/v1",
       "seed_id": "sha256:bfef513b7964dc28fc977731a2f47446deed38c9de8ac5d78ac115e6aae2634d",
       "key_id": "sha256:afcdc4a30f38cd368b7b09f0e11b08da9b5c2f68a5b644b96a77f749958538b6"
+    },
+    "generator_assurance": {
+      "purpose": "deterministic-generator-assurance",
+      "families": [
+        "windows",
+        "macos",
+        "linux"
+      ],
+      "family_counts": {
+        "windows": 20,
+        "macos": 20,
+        "linux": 20
+      },
+      "windows_macos_scenario_count": 40,
+      "linux_scenario_count": 20,
+      "scenario_count": 60,
+      "deterministic": true,
+      "benchmark_reportable": false,
+      "linux_benchmark_included": false,
+      "corpora": {
+        "windows_macos": {
+          "purpose": "windows-macos-generator-assurance",
+          "suite_kind": "dev",
+          "families": [
+            "windows",
+            "macos"
+          ],
+          "scenario_count": 40,
+          "family_counts": {
+            "windows": 20,
+            "macos": 20
+          },
+          "deterministic": true,
+          "benchmark_reportable": false,
+          "suite_derivation_domain": "artifactforge/bench/v1",
+          "public_key": {
+            "source": "PUBLIC_DEV_KEY",
+            "identity_algorithm": "SHA256",
+            "key_id": "sha256:b6124b72a04c3b4311ffa48255a24085797def1df3ba332df9cec8cf5e261cc2"
+          },
+          "content_namespace": "artifactforge::suite",
+          "family_schedule": {
+            "algorithm": "zero-based-index-parity-v1",
+            "index_origin": 0,
+            "even_index_family": "windows",
+            "odd_index_family": "macos"
+          }
+        },
+        "linux": {
+          "purpose": "linux-generator-assurance",
+          "corpus_kind": "generator-assurance-linux",
+          "family": "linux",
+          "scenario_count": 20,
+          "deterministic": true,
+          "benchmark_reportable": false,
+          "benchmark_included": false,
+          "profile": "linux-glibc-x86_64-loose-v1",
+          "scene_derivation_domain": "artifactforge/generator-assurance/linux-scene/v1",
+          "content_namespace": "artifactforge::generator-assurance/linux/v1",
+          "count_contract": {
+            "algorithm": "ceil-half-windows-macos-v1",
+            "windows_macos_scenario_count": 40
+          },
+          "key_derivation": {
+            "algorithm": "HMAC-SHA256",
+            "domain": "artifactforge/generator-assurance/key/v1",
+            "seed_id": "sha256:2b63b8c425c79a35b014113a1e52a69f64c3034f6c7d1a6140864b60f09bd2b8",
+            "key_id": "sha256:b9b64534d4208b1b703361a01aa444efce78480fb03e4897948428566a9aa8cd"
+          }
+        }
+      }
     }
   }
 }

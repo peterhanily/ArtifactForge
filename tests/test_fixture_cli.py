@@ -20,6 +20,7 @@ from artifactforge.fixture.operations import VerificationResult
 
 ROOT = Path(__file__).parents[1]
 SPEC = ROOT / "examples" / "fixtures" / "windows-loose-v1.json"
+LINUX_SPEC = ROOT / "examples" / "fixtures" / "linux-glibc-x86_64-loose-v1.json"
 
 
 def _args(**values):
@@ -62,6 +63,27 @@ def test_human_output_leads_with_the_outcome(tmp_path, capsys):
     assert built.out.startswith("fixture build: PASS")
     assert fixture_cli.cmd_verify(_args(fixture=fixture, assurance=False, json=False)) == 0
     assert capsys.readouterr().out.startswith("fixture verify: PASS")
+
+
+def test_linux_example_builds_inspects_and_verifies_through_the_cli(tmp_path, capsys):
+    fixture = tmp_path / "fixture"
+    assert fixture_cli.cmd_build(
+        _args(spec=LINUX_SPEC, output=fixture, json=True)
+    ) == 0
+    built = json.loads(capsys.readouterr().out)
+    assert built["ok"] is True
+
+    assert fixture_cli.cmd_inspect(_args(fixture=fixture, json=True)) == 0
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected["fixture_id"] == "linux-autostart-001"
+    assert inspected["profile"] == "linux-glibc-x86_64-loose-v1"
+    assert inspected["payload"]["file_count"] == 9
+
+    assert fixture_cli.cmd_verify(
+        _args(fixture=fixture, assurance=False, json=True)
+    ) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["ok"] is True
 
 
 def test_existing_output_and_malformed_spec_are_usage_exit_two(tmp_path, capsys):

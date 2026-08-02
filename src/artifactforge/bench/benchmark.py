@@ -177,7 +177,7 @@ def generate_suite(n: int, root: str, *, key: bytes = suite.PUBLIC_DEV_KEY,
     paths = suite.suite_paths(root)
     os.makedirs(paths["scenarios"], exist_ok=True)
     suite.write_key(root, key)
-    store = ContentStore("artifactforge::suite", paths["content"])
+    store = ContentStore(suite.WINDOWS_MACOS_CONTENT_NAMESPACE, paths["content"])
 
     tasks, public = [], []
     for i in range(n):

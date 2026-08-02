@@ -48,6 +48,12 @@ The serialized quarantine xattr is still a plain sidecar, not a parser-gated for
 Any future expansion of either writer must expand both the raw reader and its parser-valid
 mutation controls in the same change. Apple's `plutil` remains useful native attestation, not
 the portable CI oracle.
+
+The first Linux loose profile is now closed on the same terms: LIEF/pyelftools for ELF,
+PyXDG/raw for desktop entries, and dissect.target/raw for Bash history, with independent
+meaning and inertness mutations. It is generator assurance and Fixture Core material only;
+Gate 4 remains the unchanged Windows/macOS benchmark population.
+
 ## Not built
 
 - **Windows 10 prefetch.** The current uncompressed SCCA v17 writer and XP path hash agree
@@ -56,10 +62,12 @@ the portable CI oracle.
   version-consistent replacement
   requires a v30 layout plus deterministic MAM/LZXPRESS compression, with independent parser
   and semantic mutation controls retained.
-- **Linux.** No ELF writer, no `HostProfile` constructor, no scene. The layering supports it —
-  `content/` would gain `elf.py` beside `pe.py` and `macho.py`, and Gate 1 would need two ELF
-  parsers, of which `pyelftools` and LIEF are the obvious pair. This is the largest missing
-  family and the cheapest of the three to add.
+- **Broader or activation-ready Linux.** The first profile is deliberately just five minimal
+  glibc/x86-64 ELF files, three XDG autostart records and one Bash history. There is no
+  compiler-shaped ELF, package metadata, systemd unit, cron, auditd, journald, login/session
+  state or alternate shell history. Fixture ABI v1 does not bind POSIX modes, so modeling a
+  runnable filesystem or successful autostart would require an explicit ABI v2 rather than a
+  quiet reinterpretation of v1.
 - **More Windows artifacts.** EVTX, ShimCache, LNK, SRUM, USN journal. EVTX is the valuable
   one and also the hardest: the binary XML template model is substantially more work than
   everything currently in `artifacts/` put together.

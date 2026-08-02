@@ -21,6 +21,7 @@ Concretely, the generated native code regions are:
 | PE (x86-64) | `.text` | `ret` | `C3` |
 | PE (16-bit) | MS-DOS stub | print a sentence, exit | `0E 1F BA 0E 00 B4 09 CD 21 B8 01 4C CD 21` |
 | Mach-O (arm64) | `__text` | `mov w0, #0 ; ret` | `00 00 80 52  C0 03 5F D6` |
+| ELF (x86-64) | sole RX `.text`/`PT_LOAD` | `xor edi,edi ; mov eax,60 ; syscall` | `31 FF B8 3C 00 00 00 0F 05` |
 
 PE `.text` contains zero padding after its return; Mach-O `__text` is exactly the two listed
 instructions. Gate 3 reads what actually lands on disk. Its PE check parses `.text` and rejects
@@ -32,6 +33,14 @@ The PE check independently pins the complete DOS header/stub profile, sole execu
 entry point, import-only data-directory profile and modeled system DLL set. The Mach-O check
 likewise fixes the allowed load commands, segment protections, section types and Apple system
 libraries, so initializer tables and alternate pre-main mechanisms are red.
+
+The ELF check independently requires the exact 8,784-byte main-object layout, one nine-byte
+RX load at the entry, non-overlapping R/RX/RW file and virtual ranges, zero-only unclaimed
+slack, an RW/NX stack, RELRO and a five-tag dynamic allowlist. The main object has no imported
+callable symbol or alternate entry surface. This is not a claim that an execution attempt runs
+only those nine bytes: the file declares `/lib64/ld-linux-x86-64.so.2` and `libc.so.6`, so
+external loader/dependency code—which is outside the emitted main-object claim—runs first.
+ArtifactForge never executes the ELF or invokes `ldd`.
 
 The DOS stub is the standard one every Windows compiler has emitted for thirty years,
 reproduced byte for byte. It is included because a PE without it is trivially distinguishable
@@ -65,10 +74,13 @@ carries an `ARTIFACTFORGE` anchor that `strings` finds:
 |---|---|
 | PE | overlay: `ARTIFACTFORGE-SYNTHETIC-<16 hex>` |
 | Mach-O | `__TEXT,__cstring`: `ARTIFACTFORGE-SYNTHETIC-<16 hex>` |
+| ELF | `.note.artifactforge`: `ARTIFACTFORGE-SYNTHETIC-<16 hex>` |
 | Registry hive | the base block's hive name, `ArtifactForgeHive` (UTF-16) |
 | Prefetch | a reserved filename-strings entry |
 | SQLite (knowledgeC, TCC, QuarantineEventsV2) | a reserved `artifactforge_synthetic` table |
 | Binary plist | a reserved `artifactforge_synthetic` key |
+| XDG desktop entry | `X-ArtifactForge-Synthetic=ARTIFACTFORGE` |
+| Bash history | exact first record `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` |
 
 The serialized `com.apple.quarantine` value is a plain sidecar, not a parser-classified format,
 and it does not carry that anchor. Its filename, reserved indicators and the scene-level
@@ -102,6 +114,8 @@ their present scope rather than treating a weaker check as proof of a stronger p
 | The PE's MS-DOS stub is the canonical one, byte for byte | same |
 | `LC_MAIN` reaches only `mov w0,#0 ; ret` and zero padding | `gates/inertness.py::_macho_code_is_inert` |
 | The Mach-O CodeDirectory covers every byte before its bounded signature region | `gates/inertness.py::_verify_macho_signature` |
+| The ELF main-object entry reaches only the exact nine-byte direct-exit RX load | `gates/inertness.py::_elf_code_is_inert` |
+| ELF file/virtual loads do not overlap and every unclaimed byte is zero | same |
 | Every classified structured format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
 | A format with no declared marker fails | same — an unknown format is a failure, not a skip |
 | No URL outside RFC 2606 | `gates/inertness.py::_indicator_hygiene` |
@@ -113,6 +127,9 @@ their present scope rather than treating a weaker check as proof of a stronger p
 | Replacing a modeled system DLL import with an arbitrary load-before-entry DLL turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_pe_imports_an_unmodeled_dll` |
 | Moving Mach-O `LC_MAIN`, changing its exit instruction, or shortening signature coverage turns Gate 3 red | the three `test_inertness_reddens_when_macho_*` mutations |
 | Reclassifying the Mach-O GOT as a pre-main initializer table turns Gate 3 red after signature repair | `tests/test_gate_mutations.py::test_inertness_reddens_when_macho_got_becomes_an_initializer_table` |
+| Changing ELF structure, hiding bytes in slack, overlapping virtual loads or changing file size turns Gate 3 red | the `test_independent_elf_safety_parser_rejects_*` mutations in `tests/test_linux_scene.py` |
+| Moving the ELF entry or changing its instruction bytes turns the exact Gate 1 profile red | the `test_parseable_elf_*` mutations in `tests/test_linux_validity.py` |
+| Changing the exact Bash marker/row shape or XDG field bounds turns Gate 1 red | `test_bash_parsers_accept_but_exact_linux_scene_profile_rejects_history_shape_mutations` and `test_xdg_parser_valid_utf8_value_overflow_fails_exact_profile` |
 | Tampering with the DOS stub turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_the_dos_stub_is_tampered_with` |
 | Redirecting the DOS entry registers while retaining the familiar message bytes turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_dos_entry_registers_change` |
 | A routable domain turns Gate 3 red | `tests/test_gate_mutations.py::test_inertness_reddens_when_an_indicator_could_be_real` |

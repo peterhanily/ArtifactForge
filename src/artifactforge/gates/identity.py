@@ -26,9 +26,13 @@ import hashlib
 import os
 import plistlib
 import sqlite3
+import struct
 
 from artifactforge.gates import GateReport
 from artifactforge.inventory import InventoryError, InventoryFile, captured_regular_tree
+
+
+_LINUX_HISTORY_MARKER = ": 'ARTIFACTFORGE-SYNTHETIC-LINUX'"
 
 
 def _check(r: GateReport, spans: str, what: str, got, want):
@@ -54,6 +58,18 @@ def _named(
             f"{where}: required artifact basename {name!r} is ambiguous across "
             + ", ".join(file.relative_path for file in matches)
         )
+        return None
+    return matches[0]
+
+
+def _relative(
+    r: GateReport, files: tuple[InventoryFile, ...], relative_path: str, where: str
+) -> InventoryFile | None:
+    """Resolve an exact recursive served path; Linux evidence never falls back to basename."""
+    matches = [file for file in files if file.relative_path == relative_path]
+    if len(matches) != 1:
+        observed = "absent" if not matches else f"present {len(matches)} times"
+        r.fail(f"{where}: exact served artifact {relative_path!r} is {observed}")
         return None
     return matches[0]
 
@@ -222,6 +238,382 @@ def _macos(
         _check(r, "LaunchAgent->subject", "program", pl["ProgramArguments"][0], s["app_path"])
 
 
+def _linux_guest_to_served(home_dir: str, guest_path: str) -> str | None:
+    """Gate-local transcription of the Linux loose-export mapping."""
+    from pathlib import PurePosixPath
+
+    if not isinstance(home_dir, str) or not isinstance(guest_path, str):
+        return None
+    path = PurePosixPath(guest_path)
+    if (
+        not home_dir.startswith("/")
+        or not guest_path.startswith(home_dir + "/")
+        or guest_path.startswith("//")
+        or guest_path.endswith("/")
+        or "\\" in guest_path
+        or path.as_posix() != guest_path
+        or any(part in {"", ".", ".."} for part in guest_path.split("/")[1:])
+    ):
+        return None
+    return guest_path[1:]
+
+
+def _linux_elf_note_marker(data: bytes) -> str | None:
+    """Extract the exact synthetic marker from one ELF note without writer imports.
+
+    Gate 3 owns the complete ELF structural profile.  Gate 2 still needs an independent,
+    byte-backed derivation for the marker carried in each resident identity record, so this
+    deliberately small reader walks the ELF64 little-endian section table and accepts exactly
+    one ``.note.artifactforge`` note with the project's public name/type/description shape.
+    """
+
+    elf_header = struct.Struct("<16sHHIQQQIHHHHHH")
+    section_header = struct.Struct("<IIQQQQIIQQ")
+    if len(data) < elf_header.size or data[:7] != b"\x7fELF\x02\x01\x01":
+        return None
+    try:
+        header = elf_header.unpack_from(data)
+    except struct.error:
+        return None
+    section_table_offset = header[6]
+    section_entry_size = header[11]
+    section_count = header[12]
+    string_table_index = header[13]
+    if (
+        section_entry_size != section_header.size
+        or not 1 <= section_count <= 64
+        or string_table_index >= section_count
+        or section_table_offset + section_count * section_entry_size > len(data)
+    ):
+        return None
+
+    try:
+        sections = [
+            section_header.unpack_from(data, section_table_offset + index * section_entry_size)
+            for index in range(section_count)
+        ]
+    except struct.error:
+        return None
+    string_section = sections[string_table_index]
+    string_offset, string_size = string_section[4], string_section[5]
+    if string_section[1] != 3 or string_offset + string_size > len(data):
+        return None
+    names = data[string_offset:string_offset + string_size]
+
+    def section_name(section: tuple[int, ...]) -> bytes | None:
+        offset = section[0]
+        if offset >= len(names):
+            return None
+        end = names.find(b"\x00", offset)
+        return None if end < 0 else names[offset:end]
+
+    matches = [
+        section
+        for section in sections
+        if section[1] == 7 and section_name(section) == b".note.artifactforge"
+    ]
+    if len(matches) != 1:
+        return None
+    note_offset, note_size = matches[0][4], matches[0][5]
+    if note_offset + note_size > len(data):
+        return None
+    note = data[note_offset:note_offset + note_size]
+    if len(note) < 12:
+        return None
+    try:
+        name_size, description_size, note_type = struct.unpack_from("<III", note)
+    except struct.error:
+        return None
+    name_start = 12
+    name_end = name_start + name_size
+    description_start = (name_end + 3) & ~3
+    description_end = description_start + description_size
+    note_end = (description_end + 3) & ~3
+    if (
+        note_end != len(note)
+        or note_type != 0xAF01
+        or note[name_start:name_end] != b"ArtifactForge\x00"
+        or any(note[name_end:description_start])
+        or any(note[description_end:note_end])
+    ):
+        return None
+    description = note[description_start:description_end]
+    prefix = b"ARTIFACTFORGE-SYNTHETIC-"
+    suffix = description[len(prefix):]
+    if (
+        not description.startswith(prefix)
+        or len(suffix) != 16
+        or any(character not in b"0123456789abcdef" for character in suffix)
+    ):
+        return None
+    return description.decode("ascii")
+
+
+def _linux(r: GateReport, scene_files: tuple[InventoryFile, ...], join: dict) -> None:
+    """Re-derive the XDG/history/ELF thread from exact recursive paths and bytes."""
+    from artifactforge.gates.oracles import load_bash_history, load_desktop_entry
+
+    home_dir = join.get("home_dir")
+    residents = join.get("residents")
+    subject = join.get("subject")
+    autostart = join.get("autostart")
+    history_claim = join.get("bash_history")
+    if (
+        not isinstance(home_dir, str)
+        or not isinstance(residents, list)
+        or not isinstance(subject, dict)
+        or not isinstance(autostart, list)
+        or not isinstance(history_claim, dict)
+    ):
+        r.fail("linux join: required home/resident/subject/autostart/history records are malformed")
+        return
+
+    history_served = history_claim.get("served_relpath")
+    declared_scene_paths = [
+        record.get("served_relpath")
+        for records in (residents, autostart)
+        for record in records
+        if isinstance(record, dict) and isinstance(record.get("served_relpath"), str)
+    ]
+    if isinstance(history_served, str):
+        declared_scene_paths.append(history_served)
+    _check(
+        r,
+        "declared Linux scene->served tree",
+        "exact complete artifact inventory",
+        sorted(file.relative_path for file in scene_files),
+        sorted(declared_scene_paths),
+    )
+
+    actual_elf = {
+        file.relative_path: file
+        for file in scene_files
+        if file.data is not None and file.data[:4] == b"\x7fELF"
+    }
+    declared_paths = [
+        record.get("served_relpath")
+        for record in residents
+        if isinstance(record, dict)
+    ]
+    _check(
+        r,
+        "join inventory->disk",
+        "resident ELF served paths",
+        sorted(actual_elf),
+        declared_paths,
+    )
+
+    guest_to_record: dict[str, dict] = {}
+    for index, record in enumerate(residents):
+        if not isinstance(record, dict):
+            r.fail(f"linux join: resident record {index} is not an object")
+            continue
+        guest = record.get("guest_path")
+        served = record.get("served_relpath")
+        if not isinstance(guest, str) or not isinstance(served, str):
+            r.fail(f"linux join: resident record {index} has malformed paths")
+            continue
+        expected_served = _linux_guest_to_served(home_dir, guest)
+        _check(
+            r,
+            "guest namespace->served tree",
+            f"exact path mapping for {guest}",
+            served,
+            expected_served,
+        )
+        if guest in guest_to_record:
+            r.fail(f"linux join: duplicate resident guest path {guest!r}")
+        guest_to_record[guest] = record
+        file = _relative(r, scene_files, served, "resident ELF")
+        if file is None or file.data is None:
+            continue
+        _check(
+            r,
+            f"disk->{record.get('role', 'resident')}",
+            "name",
+            file.name,
+            record.get("name"),
+        )
+        _check(
+            r,
+            f"disk->{record.get('role', 'resident')}",
+            "sha256",
+            hashlib.sha256(file.data).hexdigest(),
+            record.get("sha256"),
+        )
+        _check(
+            r,
+            f"disk->{record.get('role', 'resident')}",
+            "sha1",
+            hashlib.sha1(file.data).hexdigest(),  # noqa: S324 - forensic identity
+            record.get("sha1"),
+        )
+        _check(
+            r,
+            f"disk->{record.get('role', 'resident')}",
+            "md5",
+            hashlib.md5(file.data).hexdigest(),  # noqa: S324 - forensic identity
+            record.get("md5"),
+        )
+        _check(
+            r,
+            f"ELF note->{record.get('role', 'resident')}",
+            "marker",
+            _linux_elf_note_marker(file.data),
+            record.get("marker"),
+        )
+
+    desktop_exec_by_path = {}
+    actual_desktop_paths = []
+    for file in scene_files:
+        if not file.relative_path.endswith(".desktop"):
+            continue
+        actual_desktop_paths.append(file.relative_path)
+        try:
+            desktop_exec_by_path[file.relative_path] = load_desktop_entry(file.path).exec_path
+        except Exception as exc:  # Gate 1 owns detailed parser refusal; Gate 2 must still fail.
+            r.fail(
+                f"{file.relative_path}: cannot derive XDG Exec for identity — "
+                f"{type(exc).__name__}: {str(exc)[:100]}"
+            )
+    declared_desktop_exec_by_path = {
+        record.get("served_relpath"): record.get("exec_guest_path")
+        for record in autostart
+        if isinstance(record, dict)
+        and isinstance(record.get("served_relpath"), str)
+        and isinstance(record.get("exec_guest_path"), str)
+    }
+    declared_desktop_paths = sorted(
+        record.get("served_relpath")
+        for record in autostart
+        if isinstance(record, dict) and isinstance(record.get("served_relpath"), str)
+    )
+    _check(
+        r,
+        "join inventory->XDG autostart",
+        "exact desktop-entry served paths",
+        sorted(actual_desktop_paths),
+        declared_desktop_paths,
+    )
+    for index, record in enumerate(autostart):
+        if not isinstance(record, dict):
+            r.fail(f"linux join: autostart record {index} is not an object")
+            continue
+        _check(
+            r,
+            "XDG guest namespace->served tree",
+            f"exact path mapping for autostart record {index}",
+            record.get("served_relpath"),
+            _linux_guest_to_served(home_dir, record.get("guest_path")),
+        )
+    _check(
+        r,
+        "XDG autostart->resident ELF",
+        "exact per-file Exec mapping",
+        sorted(desktop_exec_by_path.items()),
+        sorted(declared_desktop_exec_by_path.items()),
+    )
+    desktop_execs = list(desktop_exec_by_path.values())
+    nonresident_desktop = sorted(set(desktop_execs) - set(guest_to_record))
+    _check(
+        r,
+        "XDG autostart->resident ELF",
+        "every Exec target is resident",
+        nonresident_desktop,
+        [],
+    )
+
+    actual_history_paths = sorted(
+        file.relative_path for file in scene_files if file.name == ".bash_history"
+    )
+    declared_history_paths = [history_served] if isinstance(history_served, str) else []
+    _check(
+        r,
+        "join inventory->Bash history",
+        "exact history served paths",
+        actual_history_paths,
+        declared_history_paths,
+    )
+    history_commands = []
+    direct_history = []
+    if isinstance(history_served, str):
+        history_file = _relative(r, scene_files, history_served, "Bash history")
+        if history_file is not None:
+            try:
+                entries = load_bash_history(
+                    history_file.path,
+                    resident_paths=sorted(guest_to_record),
+                )
+                history_commands = [entry.command for entry in entries]
+                direct_history = [command for command in history_commands if command.startswith("/")]
+            except Exception as exc:
+                r.fail(
+                    f"{history_served}: cannot derive Bash commands for identity — "
+                    f"{type(exc).__name__}: {str(exc)[:100]}"
+                )
+    else:
+        r.fail("linux join: Bash history served path is malformed")
+    _check(
+        r,
+        "Bash guest namespace->served tree",
+        "exact history path mapping",
+        history_served,
+        _linux_guest_to_served(home_dir, history_claim.get("guest_path")),
+    )
+    expected_history = history_claim.get("direct_exec_guest_paths")
+    observed_history_profile = (
+        len(history_commands),
+        history_commands[0] if history_commands else None,
+        tuple(command for command in history_commands if not command.startswith("/")),
+        sorted(direct_history),
+    )
+    expected_history_profile = (
+        4,
+        _LINUX_HISTORY_MARKER,
+        (_LINUX_HISTORY_MARKER,),
+        expected_history,
+    )
+    _check(
+        r,
+        "Bash history->declared join",
+        "exact four-record scene profile",
+        observed_history_profile,
+        expected_history_profile,
+    )
+    _check(
+        r,
+        "Bash history->resident ELF",
+        "exact direct-execution target set",
+        sorted(direct_history),
+        expected_history,
+    )
+    _check(
+        r,
+        "Bash history->resident ELF",
+        "every direct command names a resident",
+        sorted(set(direct_history) - set(guest_to_record)),
+        [],
+    )
+
+    observed_subjects = sorted(set(desktop_execs) & set(direct_history))
+    subject_guest = subject.get("guest_path")
+    _check(
+        r,
+        "XDG autostart->Bash history->resident ELF",
+        "unique shared subject",
+        observed_subjects,
+        [subject_guest],
+    )
+    declared_subject_record = guest_to_record.get(subject_guest)
+    _check(
+        r,
+        "shared subject->resident identity",
+        "subject record",
+        subject,
+        declared_subject_record,
+    )
+
+
 def run(scene_dir: str, join: dict) -> GateReport:
     r = GateReport(2, "identity",
                    "do the declared answer-bearing pivots agree with emitted bytes?")
@@ -235,6 +627,8 @@ def run(scene_dir: str, join: dict) -> GateReport:
                 _windows(r, scene_files, join)
             elif join.get("family") == "macos":
                 _macos(r, scene_files, join)
+            elif join.get("family") == "linux":
+                _linux(r, scene_files, join)
             else:
                 r.fail(f"scene family {join.get('family')!r} has no identity gate implementation")
     except InventoryError as exc:

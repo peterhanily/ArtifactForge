@@ -8,6 +8,7 @@ filesystem — so a scene composed from them regenerates byte-identical.
 Depends on: model, content. Nothing here may import compose, bench or ingest.
 """
 from artifactforge.artifacts.hive import build_amcache_hive, build_run_hive
+from artifactforge.artifacts.linux import build_bash_history, build_desktop_entry
 from artifactforge.artifacts.macos import (
     build_knowledgec,
     build_launch_agent,
@@ -22,4 +23,5 @@ __all__ = [
     "build_prefetch", "prefetch_name_hash",
     "build_knowledgec", "build_tcc", "build_quarantine_events",
     "quarantine_xattr", "build_launch_agent",
+    "build_bash_history", "build_desktop_entry",
 ]

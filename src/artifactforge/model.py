@@ -54,3 +54,13 @@ def windows_profile(hostname="WKSTN-01", username="v", version="10.0.19045") -> 
 
 def macos_profile(hostname="mac-01", username="v", version="14.4.1") -> HostProfile:
     return HostProfile("macos", version, hostname, username)
+
+
+def linux_profile(hostname="linux-01", username="v", version="glibc-x86_64") -> HostProfile:
+    """The exact Linux loose-artifact profile currently emitted by ArtifactForge.
+
+    The version names the userspace/architecture contract rather than pretending the loose
+    files came from a complete distribution image.  In particular, the ELF writer declares
+    the conventional x86-64 glibc interpreter; the fixture does not model a booted host.
+    """
+    return HostProfile("linux", version, hostname, username)

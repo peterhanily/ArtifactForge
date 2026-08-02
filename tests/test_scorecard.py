@@ -21,6 +21,7 @@ from artifactforge.gates import GateReport
 from artifactforge.scorecard import (
     BENCHMARK_VALIDITY_GATES,
     GENERATOR_ASSURANCE_GATES,
+    _MEASUREMENT_IDENTITY,
     _METRICS,
     SCHEMA_VERSION,
     build_scorecard,
@@ -117,6 +118,7 @@ def test_scorecard_measurement_key_has_stable_disclosed_provenance():
     assert suite.SCORECARD_MEASUREMENT_KEY_DOMAIN != suite.DOMAIN
     assert provenance == {
         "purpose": "reproducible-scorecard-measurement",
+        "scope": "benchmark-validity",
         "suite_kind": "scorecard-measurement",
         "scenario_count": 40,
         "deterministic": True,
@@ -128,6 +130,67 @@ def test_scorecard_measurement_key_has_stable_disclosed_provenance():
             "seed_id": "sha256:" + hashlib.sha256(
                 suite.SCORECARD_MEASUREMENT_SEED).hexdigest(),
             "key_id": suite.scorecard_measurement_key_id(),
+        },
+        "generator_assurance": {
+            "purpose": "deterministic-generator-assurance",
+            "families": ["windows", "macos", "linux"],
+            "family_counts": {"windows": 20, "macos": 20, "linux": 20},
+            "windows_macos_scenario_count": 40,
+            "linux_scenario_count": 20,
+            "scenario_count": 60,
+            "deterministic": True,
+            "benchmark_reportable": False,
+            "linux_benchmark_included": False,
+            "corpora": {
+                "windows_macos": {
+                    "purpose": "windows-macos-generator-assurance",
+                    "suite_kind": "dev",
+                    "families": ["windows", "macos"],
+                    "scenario_count": 40,
+                    "family_counts": {"windows": 20, "macos": 20},
+                    "deterministic": True,
+                    "benchmark_reportable": False,
+                    "suite_derivation_domain": "artifactforge/bench/v1",
+                    "public_key": {
+                        "source": "PUBLIC_DEV_KEY",
+                        "identity_algorithm": "SHA256",
+                        "key_id": suite.public_dev_key_id(),
+                    },
+                    "content_namespace": "artifactforge::suite",
+                    "family_schedule": {
+                        "algorithm": "zero-based-index-parity-v1",
+                        "index_origin": 0,
+                        "even_index_family": "windows",
+                        "odd_index_family": "macos",
+                    },
+                },
+                "linux": {
+                    "purpose": "linux-generator-assurance",
+                    "corpus_kind": "generator-assurance-linux",
+                    "family": "linux",
+                    "scenario_count": 20,
+                    "deterministic": True,
+                    "benchmark_reportable": False,
+                    "benchmark_included": False,
+                    "profile": "linux-glibc-x86_64-loose-v1",
+                    "scene_derivation_domain": (
+                        "artifactforge/generator-assurance/linux-scene/v1"
+                    ),
+                    "content_namespace": "artifactforge::generator-assurance/linux/v1",
+                    "count_contract": {
+                        "algorithm": "ceil-half-windows-macos-v1",
+                        "windows_macos_scenario_count": 40,
+                    },
+                    "key_derivation": {
+                        "algorithm": "HMAC-SHA256",
+                        "domain": "artifactforge/generator-assurance/key/v1",
+                        "seed_id": "sha256:" + hashlib.sha256(
+                            suite.GENERATOR_ASSURANCE_SEED
+                        ).hexdigest(),
+                        "key_id": suite.generator_assurance_key_id(),
+                    },
+                },
+            },
         },
     }
     assert provenance["key_derivation"]["seed_id"].startswith("sha256:")
@@ -335,22 +398,66 @@ def test_scorecard_measurement_generator_uses_only_the_public_measurement_key(
     )]
 
 
-@pytest.mark.parametrize(("path", "replacement"), [
-    (("suite_kind",), "some-other-kind"),
-    (("scenario_count",), 41),
-    (("suite_derivation_domain",), "artifactforge/bench/v2"),
-    (("key_derivation", "domain"), "artifactforge/scorecard/measurement-key/v2"),
-    (("key_derivation", "key_id"), "sha256:different"),
-])
-def test_measurement_identity_changes_make_scorecards_incomparable(path, replacement):
-    baseline = {"measurement": suite.scorecard_measurement_provenance(40)}
-    current = deepcopy(baseline)
-    node = current["measurement"]
-    for part in path[:-1]:
-        node = node[part]
-    node[path[-1]] = replacement
+def _provenance_leaf_paths(value, prefix=""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else key
+            yield from _provenance_leaf_paths(child, child_prefix)
+    else:
+        yield prefix
 
-    assert measurement_incompatibilities(baseline, current)
+
+def _different(value):
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 1
+    if isinstance(value, str):
+        return value + "-changed"
+    if isinstance(value, list):
+        return [*value, "changed"]
+    raise AssertionError(f"no mutation for provenance value {value!r}")
+
+
+def test_every_measurement_provenance_leaf_is_part_of_compatibility_identity():
+    provenance = {"measurement": suite.scorecard_measurement_provenance(40)}
+    leaves = set(_provenance_leaf_paths(provenance))
+    identity_paths = {path for path, _label in _MEASUREMENT_IDENTITY}
+    assert identity_paths == leaves
+
+
+def test_every_measurement_identity_change_makes_scorecards_incomparable():
+    baseline = {"measurement": suite.scorecard_measurement_provenance(40)}
+    labels = dict(_MEASUREMENT_IDENTITY)
+
+    for path, label in _MEASUREMENT_IDENTITY:
+        current = deepcopy(baseline)
+        node = current
+        parts = path.split(".")
+        for part in parts[:-1]:
+            node = node[part]
+        node[parts[-1]] = _different(node[parts[-1]])
+
+        mismatches = measurement_incompatibilities(baseline, current)
+        assert (label, "changed") == (mismatches[0][0], mismatches[0][1]), path
+        assert labels[path] == label
+
+
+def test_pre_corpus_binding_generator_provenance_is_incompatible():
+    current = {"measurement": suite.scorecard_measurement_provenance(40)}
+    baseline = deepcopy(current)
+    del baseline["measurement"]["generator_assurance"]["corpora"]
+
+    mismatches = measurement_incompatibilities(baseline, current)
+    assert mismatches
+    assert all(kind == "missing" for _label, kind, _was, _now in mismatches)
+    assert {label for label, _kind, _was, _now in mismatches} >= {
+        "Windows/macOS assurance suite kind",
+        "Windows/macOS assurance public-key identity",
+        "Windows/macOS assurance content namespace",
+        "Linux assurance corpus profile",
+        "Linux assurance key identity",
+    }
 
 
 def test_missing_measurement_provenance_is_incompatible():
@@ -417,10 +524,19 @@ def test_package_version_is_consistent_with_release_metadata(card):
         packages = tomllib.load(f)["package"]
     lock_version = next(p["version"] for p in packages if p["name"] == "artifactforge")
 
-    assert project_version == "0.3.1"
+    assert project_version == "0.4.0"
     assert __version__ == project_version
     assert lock_version == project_version
     assert card["generator"]["artifactforge_version"] == project_version
+
+
+def test_ci_consumes_the_frozen_oracle_lock_in_every_project_lane():
+    """Fingerprinting uv.lock is meaningful only if CI actually installs from it."""
+    with open(os.path.join(ROOT, ".github", "workflows", "ci.yml")) as f:
+        workflow = f.read()
+    assert 'UV_FROZEN: "1"' in workflow
+    assert 'uv pip install -e ".[dev]"' not in workflow
+    assert workflow.count("sync --frozen --extra dev --python") == 5
 
 
 def test_every_tracked_metric_is_present(card):
@@ -428,6 +544,92 @@ def test_every_tracked_metric_is_present(card):
     missing = [label for label, kind, *_ in regressions(card, card) if kind == "missing"]
     assert not missing, f"tracked metrics absent from the committed scorecard: {missing}"
     assert len(_METRICS) >= 8
+
+
+_NONVACUOUS_METRIC_CONTRACT = {
+    "gates.identity.checks_total": (
+        "higher_better", 0, "identity: cross-artifact joins declared"),
+    "gates.inertness.formats_total": (
+        "higher_better", 0, "inertness: marked formats declared"),
+    "gates.solvability.blind_control_score": (
+        "higher_better", 0, "solvability: blind adversary control"),
+}
+
+
+def _metric_value(card, path):
+    node = card
+    for part in path.split("."):
+        node = node[part]
+    return node
+
+
+def _set_metric(card, path, value):
+    node = card
+    parts = path.split(".")
+    for part in parts[:-1]:
+        node = node[part]
+    node[parts[-1]] = value
+
+
+def test_nonvacuous_metrics_have_exact_paths_directions_and_zero_tolerance():
+    """A passing numerator cannot stand in for its denominator or positive control."""
+    configured = {
+        path: (direction, tolerance, label)
+        for path, direction, tolerance, label in _METRICS
+    }
+    assert len(configured) == len(_METRICS), "tracked metric paths must be unique"
+    for path, contract in _NONVACUOUS_METRIC_CONTRACT.items():
+        assert configured[path] == contract
+
+
+@pytest.mark.parametrize("path", sorted(_NONVACUOUS_METRIC_CONTRACT))
+def test_committed_scorecard_carries_every_nonvacuous_metric(card, path):
+    value = _metric_value(card, path)
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def test_committed_scorecard_nonvacuous_metrics_have_coherent_denominators_and_control(card):
+    identity = card["gates"]["identity"]
+    inertness = card["gates"]["inertness"]
+    solvability = card["gates"]["solvability"]
+
+    assert identity["checks_total"] >= identity["checks_joined"] > 0
+    assert inertness["formats_total"] >= inertness["formats_marked"] > 0
+    assert 0.0 <= solvability["blind_control_score"] <= 1.0
+
+
+@pytest.mark.parametrize("path", sorted(_NONVACUOUS_METRIC_CONTRACT))
+def test_nonvacuous_metric_decrease_is_a_regression(card, path):
+    current = deepcopy(card)
+    baseline_value = _metric_value(card, path)
+    decrement = 1 if isinstance(baseline_value, int) else 0.0001
+    worse_value = baseline_value - decrement
+    _set_metric(current, path, worse_value)
+
+    label = _NONVACUOUS_METRIC_CONTRACT[path][2]
+    assert (label, "regressed", baseline_value, worse_value) in regressions(card, current)
+
+
+@pytest.mark.parametrize(("required_path", "lookalike_path"), [
+    ("gates.identity.checks_total", "gates.identity.checks_joined"),
+    ("gates.inertness.formats_total", "gates.inertness.formats_marked"),
+    ("gates.solvability.blind_control_score", "gates.solvability.blind_solver_score"),
+])
+def test_passing_sibling_metric_cannot_substitute_for_required_metric(
+        card, required_path, lookalike_path):
+    current = deepcopy(card)
+    node = current
+    parts = required_path.split(".")
+    for part in parts[:-1]:
+        node = node[part]
+    del node[parts[-1]]
+
+    # The superficially similar numerator/hold-out metric remains present; it must not make
+    # the denominator/DEV positive control disappear cleanly from a comparison.
+    assert _metric_value(current, lookalike_path) is not None
+    label = _NONVACUOUS_METRIC_CONTRACT[required_path][2]
+    assert (label, "missing", _metric_value(card, required_path), None) in regressions(
+        card, current)
 
 
 def test_scorecard_leaks_no_local_path(card):

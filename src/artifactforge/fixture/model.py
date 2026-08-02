@@ -38,6 +38,7 @@ PAYLOAD_ROOT = "artifacts"
 PROFILE_FAMILIES = {
     "windows-loose-v1": "windows",
     "macos-14-loose-v1": "macos",
+    "linux-glibc-x86_64-loose-v1": "linux",
 }
 
 _FIXTURE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -172,8 +173,8 @@ class FixtureSpec:
                 "spec.fixture_id must match [a-z0-9][a-z0-9._-]{0,63}"
             )
         family = _text(self.family, "spec.family")
-        if family not in {"windows", "macos"}:
-            raise FixtureValidationError("spec.family must be 'windows' or 'macos'")
+        if family not in {"windows", "macos", "linux"}:
+            raise FixtureValidationError("spec.family must be 'windows', 'macos' or 'linux'")
         if not isinstance(self.profile, ProfileSpec):
             raise FixtureValidationError("spec.profile must be a ProfileSpec")
         expected_family = PROFILE_FAMILIES[self.profile.id]

@@ -1,0 +1,12 @@
+{
+  "schema": "artifactforge-fixture-spec-v1",
+  "purpose": "public-reproducible-fixture",
+  "fixture_id": "linux-autostart-001",
+  "family": "linux",
+  "profile": {
+    "id": "linux-glibc-x86_64-loose-v1",
+    "hostname": "linux-01",
+    "username": "v"
+  },
+  "seed_hex": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+}

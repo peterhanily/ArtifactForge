@@ -32,13 +32,23 @@ from artifactforge.fixture.operations import (
 def _spec(family: str = "windows") -> FixtureSpec:
     if family == "windows":
         profile = ProfileSpec("windows-loose-v1", "WKSTN-01", "v")
-    else:
+        fixture_id = "windows-fixture-001"
+        seed_hex = "01" * 32
+    elif family == "macos":
         profile = ProfileSpec("macos-14-loose-v1", "mac-01", "v")
+        fixture_id = "macos-fixture-001"
+        seed_hex = "02" * 32
+    elif family == "linux":
+        profile = ProfileSpec("linux-glibc-x86_64-loose-v1", "linux-01", "v")
+        fixture_id = "linux-autostart-001"
+        seed_hex = "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+    else:
+        raise AssertionError(f"unsupported test family: {family}")
     return FixtureSpec(
-        fixture_id=f"{family}-fixture-001",
+        fixture_id=fixture_id,
         family=family,
         profile=profile,
-        seed_hex=("01" if family == "windows" else "02") * 32,
+        seed_hex=seed_hex,
     )
 
 
@@ -56,7 +66,10 @@ def _rewrite_manifest_for_current_payload(root: Path) -> None:
     (root / "fixture.json").write_bytes(updated.canonical_bytes())
 
 
-@pytest.mark.parametrize("family,expected_files", [("windows", 11), ("macos", 16)])
+@pytest.mark.parametrize(
+    ("family", "expected_files"),
+    [("windows", 11), ("macos", 16), ("linux", 9)],
+)
 def test_builds_canonical_answer_free_fixture_and_verifies(tmp_path, family, expected_files):
     root = tmp_path / family
     manifest = build_fixture(_spec(family), root)
@@ -77,11 +90,32 @@ def test_builds_canonical_answer_free_fixture_and_verifies(tmp_path, family, exp
         "gates": [],
     }
 
+    if family == "linux":
+        assert b"answer" not in manifest.canonical_bytes().lower()
+        assert b"join" not in manifest.canonical_bytes().lower()
+        assert b'"mode"' not in manifest.canonical_bytes()
+        assert all(
+            set(entry.to_mapping()) == {"path", "size", "sha256"}
+            for entry in manifest.payload.files
+        )
+        assert tuple(entry.path for entry in manifest.payload.files) == (
+            "home/v/.bash_history",
+            "home/v/.config/autostart/artifactforge-1-session-check.desktop",
+            "home/v/.config/autostart/artifactforge-2-theme-agent.desktop",
+            "home/v/.config/autostart/artifactforge-3-profile-agent.desktop",
+            "home/v/.local/bin/font-index",
+            "home/v/.local/bin/print-helper",
+            "home/v/.local/bin/profile-agent",
+            "home/v/.local/bin/session-check",
+            "home/v/.local/bin/theme-agent",
+        )
 
-def test_same_recipe_is_byte_identical(tmp_path):
+
+@pytest.mark.parametrize("family", ["windows", "macos", "linux"])
+def test_same_recipe_is_byte_identical(tmp_path, family):
     first, second = tmp_path / "first", tmp_path / "second"
-    build_fixture(_spec(), first)
-    build_fixture(_spec(), second)
+    build_fixture(_spec(family), first)
+    build_fixture(_spec(family), second)
 
     first_paths = sorted(path.relative_to(first) for path in first.rglob("*") if path.is_file())
     second_paths = sorted(path.relative_to(second) for path in second.rglob("*") if path.is_file())
@@ -114,6 +148,23 @@ def test_scene_key_uses_fixture_domain_and_exact_profile(monkeypatch, tmp_path):
     assert {(profile.os_family, profile.version) for _key, profile in seen} == {
         ("windows", "loose-v1")
     }
+
+
+def test_linux_fixture_dispatches_the_exact_glibc_x86_64_profile(monkeypatch, tmp_path):
+    seen = []
+    real_builder = operations.build_linux_scene
+
+    def capture(**arguments):
+        seen.append(arguments["profile"])
+        return real_builder(**arguments)
+
+    monkeypatch.setattr(operations, "build_linux_scene", capture)
+    build_fixture(_spec("linux"), tmp_path / "fixture")
+
+    assert [(profile.os_family, profile.version) for profile in seen] == [
+        ("linux", "glibc-x86_64"),
+        ("linux", "glibc-x86_64"),
+    ]
 
 
 @pytest.mark.parametrize("kind", ["file", "directory", "broken-symlink"])
@@ -392,3 +443,15 @@ def test_assurance_runs_only_gates_one_and_three_and_missing_oracle_is_red(monke
     assert any("not installed" in failure for failure in result.assurance_reports[0].fails)
     assert not result.assurance_reports[0].ok
     assert result.assurance_reports[1].ok
+
+
+def test_linux_fixture_assurance_runs_only_gates_one_and_three_and_passes(tmp_path):
+    root = tmp_path / "fixture"
+    build_fixture(_spec("linux"), root)
+
+    result = verify_fixture(root, assurance=True)
+
+    assert result.ok
+    assert [report.gate for report in result.assurance_reports] == [1, 3]
+    assert result.assurance_ok is True
+    assert result.assurance_summary["verdict"] == "pass"

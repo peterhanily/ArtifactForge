@@ -6,7 +6,8 @@ ArtifactForge generates **forensic artifacts**: the files a responder finds on a
 they dig in. A synthetic PE with a real import table and a real IMPHASH; Windows registry
 hives carrying Run-key persistence and an Amcache installation record; a prefetch file; macOS
 knowledgeC, TCC and QuarantineEventsV2 databases, a quarantine xattr value serialized as a
-sidecar file, and a LaunchAgent plist.
+sidecar file, and a LaunchAgent plist; or nested Linux ELF64 files, XDG autostart entries and
+timestamped Bash history.
 
 Everything is a pure function of a seed. No wall clock, no entropy, no PID. The same scenario
 regenerates byte-identical forever, which is the property every other claim rests on.
@@ -48,7 +49,8 @@ Dependencies point one way:
 - `fixture` — turns a public recipe into a canonical, byte-bound loose-file bundle. It drops
   the private scene join and stays separate from benchmark suites because its manifest
   publishes content digests.
-- `bench` — turns scenes into gradeable tasks, and holds the adversary solvers.
+- `bench` — turns Windows/macOS scenes into gradeable tasks, and holds the adversary solvers.
+  Linux scenes are generator assurance and Fixture Core inputs only.
 - `gates`, `scorecard` — measurement.
 - `ingest` — the EvidenceForge companion adapter, outside the chain. Nothing in the chain may
   import it, and upstream's private seed formulas are never re-exported as ArtifactForge API.
@@ -76,7 +78,15 @@ The benchmark boundary is absolute: fixture manifests set `benchmark_eligible` t
 must never appear under a suite's served `scenarios/` tree. Their hashes and seed are public,
 which is useful for reproducibility and disqualifying for a hold-out. Deterministic USTAR
 release archives add no authenticity claim; they preserve exact bytes with fixed metadata.
-The full contract is in `docs/fixture-core.md`.
+The v1 manifest does not bind POSIX modes and release normalizes artifact files to 0644. That
+is sufficient for loose evidence but deliberately cannot represent an activation-ready Linux
+filesystem. The full contract is in `docs/fixture-core.md`.
+
+The shared scene stager also rejects the case-insensitive basenames
+`ARTIFACT_ANSWERS.json`, `GROUND_TRUTH.json`, `JOIN_MANIFEST.json` and `fixture.json` at any
+depth, plus the Fixture Core schema marker under any name. This is defense in depth around the
+exact allowlist: a future builder cannot accidentally serve a known answer or evaluation
+manifest merely by adding it to that allowlist.
 
 ## §4 Scope and validation gate
 
@@ -133,6 +143,15 @@ knowledgeC, TCC or QuarantineEventsV2 meanings. Binary-plist consensus is type-e
 filename/label, program path, persistence settings and disclosure. Parser-only and
 meaning-only mutations prove both layers turn red independently.
 
+For Linux, LIEF and pyelftools independently enumerate the ELF header, interpreter, sole
+`DT_NEEDED` library, segments, sections, dynamic allowlist and ArtifactForge note. PyXDG and a
+bounded raw reader agree on an exact single-group XDG 1.5 desktop-entry subset; dissect.target
+and a bounded raw reader agree on strictly timestamped one-line Bash-history records. The raw
+text readers never expand `Exec` or evaluate command text. Their profile checks require exact
+resident absolute paths and reject arguments, field codes, shell syntax, multiline history,
+unsafe command verbs and non-profile keys. The scene profile further fixes four history rows:
+the exact Linux disclosure marker first, followed by three distinct resident paths.
+
 ### Gate 2 — identity
 
 *Do the declared answer-bearing identities and cross-artifact pivots agree with the emitted
@@ -143,7 +162,12 @@ declared value in the gate's scope is re-derived from those bytes, through a rea
 the value is structural, and only then compared. Every check names
 the artifacts it spans, because a check confined to one artifact cannot detect a broken pivot.
 The gate does not claim that stale or absent decoy Amcache `FileId`s correspond to bytes shipped
-in the scene.
+in the scene. Linux's join is path-exact rather than basename-based: XDG names three resident
+guest paths, Bash history names another three, their unique intersection names the subject,
+and `/home/<user>/...` maps to exactly `home/<user>/...` in the served recursive tree before
+the subject name, SHA-256, SHA-1, MD5 and ELF-note marker are re-derived from its bytes. The
+gate binds each served desktop path to that file's parsed `Exec` value and inventories the
+single declared history path, so swapping two valid records cannot preserve the join.
 
 ### Gate 3 — inertness
 
@@ -153,17 +177,35 @@ synthetic?*
 Generated binaries reproduce the forensic **signal** — a real import table, a real symbol
 table, real content and structural hashes — without a payload. PE `.text` is `ret` plus zero
 padding and the DOS stub is the fixed print-and-exit stub; Mach-O `__text` is
-`mov w0,#0 ; ret`. For PE, Gate 3 independently pins the DOS profile, sole executable section,
+`mov w0,#0 ; ret`; ELF's sole RX segment is the nine bytes
+`xor edi,edi ; mov eax,60 ; syscall`, which directly exits zero. The ELF declares
+`/lib64/ld-linux-x86-64.so.2` and `libc.so.6`, so a real execution attempt enters the dynamic
+loader before that bounded entry body. The main object imports and calls no libc symbol and
+has no alternate entry surface; external loader/dependency code is out of scope. For PE, Gate 3
+independently pins the DOS profile, sole executable section,
 entry point, import-only data directories and modeled system DLLs. For Mach-O it fixes the
 load-command, library, segment and section profile, requires `LC_MAIN` to name the sole
 instruction entry, and independently verifies the CodeDirectory's page hashes and exact
-pre-signature coverage boundary.
+pre-signature coverage boundary. For ELF it independently parses the headers and tables,
+requires the exact entry body, file size and section geometry, non-overlapping R/RX/RW file
+and virtual ranges, zero-only unclaimed slack, NX stack, RELRO and the dynamic-tag allowlist,
+and rejects alternate executable sections, initializers, finalizers, TLS, relocations,
+imported symbols and hidden payload bytes.
 Every classified structured format anywhere in the recursive tree—including beneath a dot
 directory—carries an in-band `ARTIFACTFORGE` anchor. Plain sidecars, including the quarantine
 xattr value, are not counted by that marker gate, but are still inspected for indicator
 hygiene. Domains must be RFC
 2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that might be
 real.
+
+A separate Ubuntu 24.04/x86-64 native lane first verifies a complete Fixture Core root with
+exact reproduction and portable Gates 1 and 3, then records GNU `readelf`/`objdump`, `file`,
+`desktop-file-validate` and Bash observations only from a held private snapshot byte-equal to
+the verified payload manifest. The canonical record binds Git/GitHub-run identity, CPython and
+portable-parser versions, package and native-tool bytes before and after observation, exact
+fixture/snapshot pre/post state, disassembly and a Bash history read/writeback control. It never
+executes an emitted ELF, invokes `ldd`, launches XDG content, or sources/evaluates history;
+native acceptance therefore does not expand the portable gate's activation claims.
 
 ### Gate 4 — solvability
 
@@ -177,6 +219,10 @@ the committed scorecard's 4.2% chance floor. The number is published in the READ
 in the scorecard; `docs/ROADMAP.md` says what the repair
 takes. Raising the threshold to make it pass is the one response ruled out: a red gate
 reporting a true fact is the system working.
+
+Gate 4's population remains Windows and macOS only. Linux is appended to the deterministic
+Gates 1–3 generator-assurance corpus but receives no public question set, benchmark answer or
+score. Adding a new parser-valid family therefore cannot dilute the existing 72.7% failure.
 
 A reference solver scoring 100% proves the artifacts *encode* the ground truth. It does not
 prove that is the only way to get it — and here it was not: because the generator is open

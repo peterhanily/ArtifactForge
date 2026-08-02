@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 from artifactforge import pools
 from artifactforge.artifacts.hive import build_amcache_hive, build_run_hive
@@ -38,6 +39,7 @@ from artifactforge.artifacts.macos import (
     quarantine_xattr,
 )
 from artifactforge.artifacts.prefetch import build_prefetch, prefetch_name_hash
+from artifactforge.artifacts.linux import build_bash_history, build_desktop_entry
 from artifactforge import suite
 from artifactforge.content import ContentStore
 from artifactforge.inventory import open_real_directory, write_regular_file_at
@@ -97,6 +99,29 @@ def _write(staging: str, name: str, data: bytes) -> None:
         write_regular_file_at(root_fd, name, data)
     finally:
         os.close(root_fd)
+
+
+def _linux_served_path(profile: HostProfile, guest_path: str) -> str:
+    """Map one exact guest path into the recursive loose export namespace.
+
+    The mapping is deliberately boring and reversible: an absolute guest path loses exactly
+    its leading slash.  No basename search or host-path projection is allowed, so two files
+    with the same basename in different guest directories remain different evidence.
+    """
+    home = profile.home_dir
+    path = PurePosixPath(guest_path)
+    if (
+        profile.os_family != "linux"
+        or not guest_path.startswith(home + "/")
+        or not guest_path.startswith("/")
+        or guest_path.startswith("//")
+        or guest_path.endswith("/")
+        or "\\" in guest_path
+        or path.as_posix() != guest_path
+        or any(part in {"", ".", ".."} for part in guest_path.split("/")[1:])
+    ):
+        raise ValueError(f"Linux guest path is outside the exact home export profile: {guest_path!r}")
+    return guest_path[1:]
 
 
 def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
@@ -275,3 +300,125 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
         },
     }
     return Scene("macos", scene_dir, artifacts, join)
+
+
+def build_linux_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
+                      scene_dir: str, staging_dir: str) -> Scene:
+    """Build the bounded glibc/x86-64 loose-artifact assurance scene.
+
+    This is not a benchmark task and does not claim a working desktop session.  It emits five
+    real inert ELF files, three structurally valid XDG autostart records, and one timestamped
+    Bash history.  The unique evidence thread is the resident named by both an autostart
+    ``Exec`` value and a direct history command.  Every guest path has one exact recursive
+    served-path counterpart.
+    """
+    if profile.os_family != "linux" or profile.version != "glibc-x86_64":
+        raise ValueError(
+            "Linux loose scenes require the exact linux/glibc-x86_64 host profile"
+        )
+
+    names = suite.pick_many(skey, "linux-residents", pools.LINUX_EXECUTABLE_NAMES, 5)
+    roles = (
+        "subject",
+        "autostart-decoy-1",
+        "autostart-decoy-2",
+        "history-decoy-1",
+        "history-decoy-2",
+    )
+    resident_by_role = {}
+    for role, name in zip(roles, names):
+        guest_path = f"{profile.home_dir}/.local/bin/{name}"
+        served_relpath = _linux_served_path(profile, guest_path)
+        content = store.materialize("elf:" + suite.content_seed(skey, f"linux:{role}"))
+        _write(staging_dir, served_relpath, content.bytes)
+        resident_by_role[role] = {
+            "role": role,
+            "name": name,
+            "guest_path": guest_path,
+            "served_relpath": served_relpath,
+            "sha256": content.sha256,
+            "sha1": content.sha1,
+            "md5": content.md5,
+            "marker": content.marker,
+        }
+
+    autostart_roles = roles[:3]
+    desktop_records = []
+    for index, role in enumerate(autostart_roles, start=1):
+        resident = resident_by_role[role]
+        desktop_guest = (
+            f"{profile.home_dir}/.config/autostart/"
+            f"artifactforge-{index}-{resident['name']}.desktop"
+        )
+        desktop_served = _linux_served_path(profile, desktop_guest)
+        _write(
+            staging_dir,
+            desktop_served,
+            build_desktop_entry(
+                f"User helper {index}",
+                "Synthetic ArtifactForge XDG autostart evidence",
+                resident["guest_path"],
+            ),
+        )
+        desktop_records.append({
+            "role": role,
+            "guest_path": desktop_guest,
+            "served_relpath": desktop_served,
+            "exec_guest_path": resident["guest_path"],
+        })
+
+    history_roles = (roles[0], roles[3], roles[4])
+    history_guest = f"{profile.home_dir}/.bash_history"
+    history_served = _linux_served_path(profile, history_guest)
+    all_guest_paths = tuple(
+        resident_by_role[role]["guest_path"] for role in roles
+    )
+    history_entries = [
+        (PINNED_UNIX, ": 'ARTIFACTFORGE-SYNTHETIC-LINUX'"),
+        *[
+            (PINNED_UNIX + index, resident_by_role[role]["guest_path"])
+            for index, role in enumerate(history_roles, start=1)
+        ],
+    ]
+    _write(
+        staging_dir,
+        history_served,
+        build_bash_history(history_entries, resident_paths=all_guest_paths),
+    )
+
+    residents = sorted(resident_by_role.values(), key=lambda item: item["served_relpath"])
+    allowlist = sorted([
+        *(resident["served_relpath"] for resident in residents),
+        *(record["served_relpath"] for record in desktop_records),
+        history_served,
+    ])
+    artifacts = suite.stage(scene_dir, staging_dir, allowlist)
+    subject = dict(resident_by_role["subject"])
+    join = {
+        "family": "linux",
+        "profile": "linux-glibc-x86_64-loose-v1",
+        "os": f"{profile.os_family} {profile.version}",
+        "host": profile.hostname,
+        "user": profile.username,
+        "home_dir": profile.home_dir,
+        "residents": residents,
+        "subject": subject,
+        "autostart": sorted(desktop_records, key=lambda item: item["served_relpath"]),
+        "bash_history": {
+            "guest_path": history_guest,
+            "served_relpath": history_served,
+            "direct_exec_guest_paths": sorted(
+                resident_by_role[role]["guest_path"] for role in history_roles
+            ),
+        },
+        "decoys": {
+            "resident_elfs": len(residents),
+            "autostart_entries": len(desktop_records),
+            "history_direct_execs": len(history_roles),
+        },
+        "pivots": {
+            "subject": "the one resident named by both XDG autostart Exec and Bash history",
+            "digest": "guest path -> exact served relative path -> resident ELF bytes",
+        },
+    }
+    return Scene("linux", scene_dir, artifacts, join)

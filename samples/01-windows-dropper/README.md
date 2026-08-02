@@ -6,7 +6,7 @@ Five binaries. One Run-key value names a program that is present; Amcache's reco
 
 Regenerate with `scripts/make-samples.sh`. The bytes are deterministic, so a regeneration that differs is a change in the generator, not in the weather.
 
-## What real tools see
+## What the declared readers see
 
 ### pefile — every binary present
 

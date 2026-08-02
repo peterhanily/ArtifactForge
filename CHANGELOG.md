@@ -1,6 +1,58 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-08-01
+
+### Added
+
+A bounded `linux-glibc-x86_64-loose-v1` profile adds recursive Linux loose evidence without
+putting Linux into the benchmark. Each scene has five deterministic ELF64 x86-64 `ET_DYN`
+files, three XDG 1.5 autostart records and one timestamped Bash history. XDG and history each
+name three resident guest paths; their unique intersection identifies one subject, whose
+guest path maps exactly to its served relative path and real byte-derived digests.
+
+Gate 1 pairs LIEF with pyelftools, PyXDG with a bounded first-party desktop-entry reader, and
+dissect.target with a bounded first-party Bash-history reader. Gate 3 independently binds the
+ELF header/tables, exact file geometry and zero-only slack, sole nine-byte direct-exit body,
+R/RX/RW file and virtual ranges, NX stack, RELRO, dynamic allowlist and marker. Gate 2 binds
+each served desktop file to its parsed `Exec`, binds the complete nine-file inventory and exact
+four-row history profile, and re-derives every resident name, digest and ELF-note marker. A
+public Fixture Core recipe and a third
+committed sample exercise all three parser pairs over the nested loose tree.
+
+A pinned Ubuntu 24.04/x86-64 native CI lane accepts only a complete Fixture Core root, embeds
+canonical/integrity/exact-reproduction verification and Gates 1 and 3, then observes a held
+private snapshot byte-equal to the verified payload. Its canonical evidence binds source,
+fixture, exact gate reports, CPython/parser versions, packages and pre/post native-tool bytes
+for GNU `readelf`/`objdump`, `file`, `desktop-file-validate` and Bash. It validates rather than
+executes: no ELF, desktop entry or history command is launched, and the Bash history
+round-trip includes a positive non-execution control.
+
+Every CI project lane now consumes the committed `uv.lock` with frozen resolution, matching
+the lock digest carried by release scorecard provenance.
+
+### Security
+
+Linux generation never executes an ELF, invokes `ldd`, launches a desktop entry or
+sources/evaluates history. Desktop `Exec` is one exact resident absolute path without
+arguments, field codes or shell syntax. History accepts only strictly timestamped exact
+resident paths and one quoted no-op disclosure record, rejecting operators, substitution,
+interpreters, network clients and destructive verbs.
+
+Benchmark staging now rejects known answer/evaluation basenames—`ARTIFACT_ANSWERS.json`,
+`GROUND_TRUTH.json`, `JOIN_MANIFEST.json` and `fixture.json`—case-insensitively at any depth,
+as well as Fixture Core's schema marker under any filename.
+
+### Changed
+
+Generator assurance now covers a deterministic balanced Windows/macOS/Linux population for
+Gates 1–3. Gate 4 remains Windows/macOS-only and its deliberately failing reference 100%,
+footprint 72.7% and chance 4.2% measurements are unchanged. Linux fixture releases remain
+loose evidence rather than activation-ready filesystems: Fixture ABI v1 does not bind modes
+and deterministic archives normalize artifact files to 0644. XDG records are naming evidence,
+not proof of working persistence; Bash history is not proof of execution; the ELF's dynamic
+loader would run before its direct-exit entry, while the main object imports or calls no libc
+symbol and exposes no alternate entry surface. External loader/dependency code is out of that
+main-object claim.
 
 ## 0.3.1 - 2026-08-01
 

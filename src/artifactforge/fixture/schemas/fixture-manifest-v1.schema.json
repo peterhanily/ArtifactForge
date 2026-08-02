@@ -122,7 +122,8 @@
         "id": {
           "enum": [
             "windows-loose-v1",
-            "macos-14-loose-v1"
+            "macos-14-loose-v1",
+            "linux-glibc-x86_64-loose-v1"
           ]
         },
         "hostname": {
@@ -160,7 +161,8 @@
         "family": {
           "enum": [
             "windows",
-            "macos"
+            "macos",
+            "linux"
           ]
         },
         "profile": {
@@ -212,6 +214,29 @@
                 "properties": {
                   "id": {
                     "const": "macos-14-loose-v1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "linux"
+              }
+            },
+            "required": [
+              "family"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "properties": {
+                  "id": {
+                    "const": "linux-glibc-x86_64-loose-v1"
                   }
                 }
               }

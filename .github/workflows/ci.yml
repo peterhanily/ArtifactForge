@@ -4,14 +4,19 @@ name: CI
 permissions:
   contents: read
 
-# The gate is not just unit tests — it is real DFIR parsers (pefile, regipy, windowsprefetch,
-# YARA) reading freshly generated artifacts, so "a responder's tools can read this" is checked
-# on every change rather than asserted in a README.
+# The gate is not just unit tests — it is real DFIR parsers (including LIEF, pyelftools,
+# PyXDG, dissect.target, pefile, regipy and libscca) reading freshly generated artifacts, so
+# "a responder's tools can read this" is checked on every change rather than asserted.
 on:
   push:
   pull_request:
 
 env:
+  # Every project-backed uv command consumes the committed dependency closure. The
+  # scorecard fingerprints uv.lock, so silently resolving a different oracle set here would
+  # make that provenance claim false. CI-only EvidenceForge is installed explicitly after
+  # this frozen project sync and remains outside the package metadata.
+  UV_FROZEN: "1"
   # One place to bump the pin. The seed formulas in artifactforge/ef_seeds.py are verified
   # against this exact tag, and tests/ef_contract/test_golden_formulas.py compares them to
   # upstream's own code on every run.
@@ -47,8 +52,7 @@ jobs:
 
       - name: Install ArtifactForge + real-parser oracles
         run: |
-          uv venv --python ${{ matrix.python-version }}
-          uv pip install -e ".[dev]"
+          uv sync --frozen --extra dev --python ${{ matrix.python-version }}
 
       - name: Oracle versions (fail fast if broken)
         # A silently-missing oracle turns a real gate into a skipped test, and a skipped test
@@ -57,9 +61,18 @@ jobs:
         # checked nothing.
         run: |
           uv run python - <<'PY'
+          import importlib.metadata
           import sqlite3
           import lief, macholib, pefile, pyregf, pyscca, regipy, windowsprefetch, yara
-          from artifactforge.gates.oracles import loads_binary_plist, loads_sqlite
+          from dissect.target import Target
+          from elftools.elf.elffile import ELFFile
+          from xdg.DesktopEntry import DesktopEntry
+          from artifactforge.gates.oracles import (
+              loads_bash_history,
+              loads_binary_plist,
+              loads_desktop_entry,
+              loads_sqlite,
+          )
           print("pefile          ", pefile.__version__)
           print("lief            ", lief.__version__)
           print("macholib        ", macholib.__version__)
@@ -68,8 +81,13 @@ jobs:
           print("windowsprefetch ", getattr(windowsprefetch, "__version__", "(unversioned)"))
           print("libscca         ", pyscca.get_version())
           print("yara-python     ", yara.__version__)
+          print("pyelftools      ", importlib.metadata.version("pyelftools"))
+          print("PyXDG           ", importlib.metadata.version("PyXDG"))
+          print("dissect.target  ", importlib.metadata.version("dissect.target"))
           print("sqlite3         ", sqlite3.sqlite_version)
-          print("shipped raw     ", loads_sqlite.__name__, loads_binary_plist.__name__)
+          print("Linux adapters  ", ELFFile.__name__, DesktopEntry.__name__, Target.__name__)
+          print("shipped raw     ", loads_sqlite.__name__, loads_binary_plist.__name__,
+                loads_desktop_entry.__name__, loads_bash_history.__name__)
           PY
 
       - name: Lint
@@ -91,7 +109,18 @@ jobs:
           uv run artifactforge fixture release \
             fixture-run/windows-b fixture-run/windows-b.tar --assurance
           cmp fixture-run/windows-a.tar fixture-run/windows-b.tar
-          echo "fixture trees and release archives are byte-identical"
+          uv run artifactforge fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v1.json fixture-run/linux-a
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v1.json fixture-run/linux-b
+          uv run artifactforge fixture verify fixture-run/linux-a --assurance
+          uv run artifactforge fixture diff fixture-run/linux-a fixture-run/linux-b
+          uv run artifactforge fixture release \
+            fixture-run/linux-a fixture-run/linux-a.tar --assurance
+          uv run artifactforge fixture release \
+            fixture-run/linux-b fixture-run/linux-b.tar --assurance
+          cmp fixture-run/linux-a.tar fixture-run/linux-b.tar
+          echo "Windows and Linux fixture trees and release archives are byte-identical"
 
       - name: Wheel — packaged schemas and zero-dependency fixture smoke
         if: matrix.python-version == '3.12'
@@ -103,6 +132,9 @@ jobs:
           wheel-smoke/bin/artifactforge fixture build \
             examples/fixtures/macos-14-loose-v1.json wheel-fixture
           wheel-smoke/bin/artifactforge fixture verify wheel-fixture
+          wheel-smoke/bin/artifactforge fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v1.json wheel-linux-fixture
+          wheel-smoke/bin/artifactforge fixture verify wheel-linux-fixture
           wheel-smoke/bin/python - <<'PY'
           from importlib.resources import files
           from pathlib import Path
@@ -115,6 +147,12 @@ jobs:
           plists = sorted(payload.glob("*.plist"))
           assert all(load_sqlite(path).tables for path in databases)
           assert len(plists) == 3 and all(load_binary_plist(path) for path in plists)
+          linux_payload = Path("wheel-linux-fixture/artifacts")
+          linux_files = sorted(path for path in linux_payload.rglob("*") if path.is_file())
+          assert len(linux_files) == 9
+          assert sum(path.read_bytes()[:4] == b"\x7fELF" for path in linux_files) == 5
+          assert sum(path.suffix == ".desktop" for path in linux_files) == 3
+          assert sum(path.name == ".bash_history" for path in linux_files) == 1
           print(names)
           PY
 
@@ -124,16 +162,15 @@ jobs:
       - name: Gate 2 — identity (must PASS)
         run: uv run artifactforge gate identity --n 40
 
-      # Every classified format has two implementations. SQLite and binary plists pair their
-      # standard-library parser with a bounded first-party raw reader over the same byte
-      # snapshot, then require typed consensus and an exact semantic profile. A missing
-      # required oracle fails here rather than skipping.
+      # Every classified format has two implementations. SQLite, binary plists, XDG entries
+      # and Bash history pair an external/standard parser with a bounded first-party reader;
+      # ELF pairs LIEF with pyelftools. All pairs require typed consensus and exact profiles.
       - name: Gate 1 — validity (must PASS)
         run: uv run artifactforge gate validity --n 40
 
-      # Checked on emitted bytes: PE and Mach-O follow their format-specific inert instruction
-      # policies, classified structured formats carry their marker, and indicators stay in
-      # reserved synthetic namespaces. Plain xattr sidecars are the documented marker exception.
+      # Checked on emitted bytes: PE, Mach-O and ELF follow format-specific instruction and
+      # executable-region policies; classified structured formats carry their marker; and
+      # indicators stay in reserved namespaces. Plain xattr sidecars are the marker exception.
       - name: Gate 3 — inertness (must PASS)
         run: uv run artifactforge gate inertness --n 40
 
@@ -223,8 +260,7 @@ jobs:
           echo "$USER_BASE/bin" >> "$GITHUB_PATH"
           "$USER_BASE/bin/uv" --version
           "$USER_BASE/bin/uv" python install 3.12
-          "$USER_BASE/bin/uv" venv --python 3.12
-          "$USER_BASE/bin/uv" pip install -e ".[dev]"
+          "$USER_BASE/bin/uv" sync --frozen --extra dev --python 3.12
 
       - name: Structural Mach-O safety mutations
         run: |
@@ -295,6 +331,181 @@ jobs:
           path: native-macos-attestation.json
           if-no-files-found: ignore
 
+  # The fixture-bound attestation runs canonical/reproduction verification plus portable Gates
+  # 1 and 3 in-process, then adds complementary native Linux observations on a pinned
+  # Ubuntu/amd64 runner. It retains the exact bound reports and every native response as
+  # canonical JSON. Nothing executes an emitted ELF, invokes ldd, launches an XDG entry, or
+  # sources/evaluates Bash history. The history control proves both non-execution and that the
+  # positive-control sentinel is observable.
+  linux-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Native tools and package evidence (missing means FAIL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bash binutils desktop-file-utils file
+          test "$(uname -m)" = x86_64
+          for tool in readelf objdump file desktop-file-validate bash dpkg-query uname; do
+            command -v "$tool"
+          done
+          readelf --version
+          objdump --version
+          file --version
+          bash --version
+          dpkg-query --show --showformat='${binary:Package}\t${Version}\t${Architecture}\n' \
+            bash binutils desktop-file-utils file
+
+      - name: Install uv and ArtifactForge
+        run: |
+          python3 -m pip install --quiet --user "uv==0.11.17"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" --version
+          "$HOME/.local/bin/uv" python install 3.12
+          "$HOME/.local/bin/uv" sync --frozen --extra dev --python 3.12
+
+      - name: Native-lane contract and Linux safety mutations
+        run: |
+          uv run pytest -q -rs \
+            tests/test_native_linux_attestation.py \
+            tests/test_elf.py \
+            tests/test_linux_artifacts.py
+
+      - name: Generate the exact Linux Fixture Core root
+        run: |
+          uv run artifactforge fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v1.json \
+            "$RUNNER_TEMP/artifactforge-linux-native/fixture"
+
+      - name: Fixture-bound portable assurance plus complementary native attestation
+        run: |
+          uv run python scripts/attest_linux_native.py \
+            --fixture "$RUNNER_TEMP/artifactforge-linux-native/fixture" \
+            --out "$RUNNER_TEMP/native-linux-attestation.json"
+          uv run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "native-linux-attestation.json"
+          raw = path.read_bytes()
+          report = json.loads(raw)
+          canonical = (json.dumps(
+              report,
+              allow_nan=False,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ) + "\n").encode()
+          assert raw == canonical
+          assert report["schema"] == "artifactforge-native-linux-attestation-v2"
+          assert report["schema_version"] == 2
+          assert report["generated_at_utc"].endswith("Z")
+          assert report["verdict"] == "pass", report["failures"]
+          source = report["producer"]["source"]
+          assert source["worktree_clean"] is True
+          assert len(source["git_commit"]) == 40
+          assert len(source["git_tree"]) == 40
+          assert report["producer"]["source_post_attestation"]["unchanged"] is True
+          assert report["producer"]["github_run"]["git_sha"] == source["git_commit"]
+          platform = report["platform"]
+          assert platform["system"] == "Linux"
+          assert platform["machine"].lower() in {"amd64", "x86_64"}
+          assert platform["os_release"]["fields"]["ID"] == "ubuntu"
+          assert platform["os_release"]["fields"]["VERSION_ID"] == "24.04"
+          packages = {row["package"].split(":", 1)[0]
+                      for row in platform["package_database"]["packages"]}
+          assert {"bash", "binutils", "desktop-file-utils", "file"} <= packages
+          fixture = report["fixture"]
+          assert not Path(fixture["path"]).is_absolute()
+          assert len(fixture["manifest_file"]["sha256"]) == 64
+          manifest = fixture["manifest"]
+          assert manifest["generator"]["name"] == "artifactforge"
+          assert manifest["generator"]["abi"] == "artifactforge-fixture-generator-v1"
+          assert manifest["recipe"]["family"] == "linux"
+          assert manifest["recipe"]["profile"]["id"] == \
+              "linux-glibc-x86_64-loose-v1"
+          assert manifest["payload"]["file_count"] == 9
+          portable = fixture["portable_verification"]
+          assert portable["verdict"] == "pass"
+          assert portable["failures"] == []
+          environment = portable["environment"]
+          assert environment["python"]["implementation"] == "CPython"
+          assert environment["python"]["version"]
+          assert set(environment["distributions"]) == {
+              "PyXDG", "artifactforge", "dissect.target", "lief", "pyelftools",
+          }
+          assert environment["distributions"]["artifactforge"] == \
+              manifest["generator"]["version"]
+          assert all(environment["distributions"].values())
+          assert [(item["gate"], item["name"], item["verdict"])
+                  for item in portable["reports"]] == [
+              (1, "validity", "pass"),
+              (3, "inertness", "pass"),
+          ]
+          assert fixture["post_attestation"]["unchanged"] is True
+          assert fixture["post_attestation"]["manifest_file"]["unchanged"] is True
+          scene = report["scene"]
+          assert not Path(scene["path"]).is_absolute()
+          assert scene["manifest"]["file_count"] == 9
+          assert scene["post_attestation"]["tree_sha256"] == scene["manifest"]["tree_sha256"]
+          assert scene["post_attestation"]["unchanged"] is True
+          assert scene["observed_profile"] == {
+              "desktop_entries": 3,
+              "elf_files": 5,
+              "history_files": 1,
+              "total_files": 9,
+              "unknown_files": 0,
+              "users": ["v"],
+          }
+          tools = report["tools"]["validation_tools"]
+          assert sorted(tools) == [
+              "bash", "desktop-file-validate", "file", "objdump", "readelf"
+          ]
+          for evidence in tools.values():
+              assert len(evidence["sha256"]) == 64
+              assert evidence["size"] > 0
+              assert evidence["version"]["returncode"] == 0
+              assert evidence["version"]["stdout"]
+          tool_post = report["tools"]["post_attestation"]
+          assert tool_post["unchanged"] is True
+          assert sorted(tool_post["tools"]) == [
+              "bash", "desktop-file-validate", "dpkg-query", "file", "objdump",
+              "readelf", "uname",
+          ]
+          assert all(item["unchanged"] for item in tool_post["tools"].values())
+          assert len(report["artifacts"]["elf_files"]) == 5
+          assert len(report["artifacts"]["desktop_entries"]) == 3
+          assert len(report["artifacts"]["bash_history"]) == 1
+          history = report["artifacts"]["bash_history"][0]
+          assert history["byte_identical_roundtrip"] is True
+          assert history["nonexecution_control"]["control_roundtrip_byte_identical"] is True
+          assert (history["nonexecution_control"]["control_roundtrip_sha256"] ==
+                  history["nonexecution_control"]["control_history_sha256"])
+          assert history["nonexecution_control"]["history_command_was_not_executed"] is True
+          assert history["nonexecution_control"]["positive_control_observed"] is True
+          expected = [
+              {"address": "0x1000", "bytes": "31ff", "instruction": "xor %edi,%edi"},
+              {"address": "0x1002", "bytes": "b83c000000", "instruction": "mov $0x3c,%eax"},
+              {"address": "0x1007", "bytes": "0f05", "instruction": "syscall"},
+          ]
+          assert all(item["disassembly"] == expected
+                     for item in report["artifacts"]["elf_files"])
+          PY
+
+      - name: Retain native attestation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-attestation
+          path: ${{ runner.temp }}/native-linux-attestation.json
+          if-no-files-found: ignore
+
   # EvidenceForge is a CI-only development tool, never a declared dependency: it is not on
   # PyPI, so naming it would force a git URL into the metadata and hatchling refuses to build
   # a wheel for a project carrying one.
@@ -325,8 +536,7 @@ jobs:
         # import here makes uv exit 1 with "Package metadata name does not match given name" —
         # which is what stopped this workflow from ever reaching pytest.
         run: |
-          uv venv --python 3.12.13
-          uv pip install -e ".[dev]"
+          uv sync --frozen --extra dev --python 3.12.13
           uv pip install \
             --constraint integration/evidenceforge/constraints-v1.13.1.txt \
             "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@${{ env.EF_TAG }}"
@@ -450,8 +660,7 @@ jobs:
       - run: uv python install 3.12
       - name: Install against EvidenceForge main
         run: |
-          uv venv --python 3.12
-          uv pip install -e ".[dev]"
+          uv sync --frozen --extra dev --python 3.12
           uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@main"
       - name: Golden formulas against main
         run: uv run pytest -q tests/ef_contract/test_golden_formulas.py

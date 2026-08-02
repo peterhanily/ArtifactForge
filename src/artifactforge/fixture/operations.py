@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 
 from artifactforge import __version__
-from artifactforge.compose.scene import build_macos_scene, build_windows_scene
+from artifactforge.compose.scene import build_linux_scene, build_macos_scene, build_windows_scene
 from artifactforge.content import ContentStore
 from artifactforge.fixture.canonical import CanonicalJSONError, canonical_json_bytes
 from artifactforge.fixture.model import (
@@ -118,6 +118,8 @@ def _host_profile(spec: FixtureSpec) -> HostProfile:
         return HostProfile("windows", "loose-v1", profile.hostname, profile.username)
     if profile.id == "macos-14-loose-v1" and spec.family == "macos":
         return HostProfile("macos", "14", profile.hostname, profile.username)
+    if profile.id == "linux-glibc-x86_64-loose-v1" and spec.family == "linux":
+        return HostProfile("linux", "glibc-x86_64", profile.hostname, profile.username)
     raise FixtureUsageError(
         f"unsupported family/profile combination: {spec.family!r}/{profile.id!r}"
     )
@@ -143,6 +145,8 @@ def _materialise_publication(spec: FixtureSpec, publication: Path, work: Path) -
         scene = build_windows_scene(**arguments)
     elif spec.family == "macos":
         scene = build_macos_scene(**arguments)
+    elif spec.family == "linux":
+        scene = build_linux_scene(**arguments)
     else:  # FixtureSpec rejects this, but do not let dispatch silently fall through.
         raise FixtureUsageError(f"unsupported fixture family: {spec.family!r}")
 

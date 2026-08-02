@@ -22,7 +22,9 @@ Plain sidecars are outside the parser gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
+from io import BytesIO
 import math
 import ntpath
 import os
@@ -34,7 +36,12 @@ from urllib.parse import urlsplit
 
 from artifactforge.disclosure import MARKER, NOTICE, RESERVED_NAME
 from artifactforge.gates import GateReport
-from artifactforge.gates.oracles import loads_binary_plist, loads_sqlite
+from artifactforge.gates.oracles import (
+    loads_bash_history,
+    loads_binary_plist,
+    loads_desktop_entry,
+    loads_sqlite,
+)
 from artifactforge.inventory import InventoryError, captured_regular_tree
 
 # format -> the oracles that must all read it, plus any declared gap in that oracle set.
@@ -45,6 +52,9 @@ ORACLES = {
     "prefetch": {"required": ["windowsprefetch", "pyscca"], "gap": None},
     "sqlite":   {"required": ["sqlite3", "sqlite-raw"], "gap": None},
     "plist":    {"required": ["plistlib", "bplist-raw"], "gap": None},
+    "elf":      {"required": ["lief", "pyelftools"], "gap": None},
+    "desktop-entry": {"required": ["pyxdg", "desktop-entry-raw"], "gap": None},
+    "bash-history": {"required": ["dissect.target", "bash-history-raw"], "gap": None},
 }
 
 
@@ -105,6 +115,63 @@ class _PlistView:
         if isinstance(self.value, dict):
             return f"keys={','.join(sorted(self.value))}"
         return f"top={self.typed[0]}"
+
+
+@dataclass(frozen=True)
+class _ELFView:
+    """Type-exact structural observation shared by LIEF and pyelftools."""
+
+    file_size: int
+    header: tuple[object, ...]
+    interpreters: tuple[str, ...]
+    libraries: tuple[str, ...]
+    imported_symbols: tuple[str, ...]
+    segments: tuple[tuple[object, ...], ...]
+    sections: tuple[tuple[object, ...], ...]
+    dynamic: tuple[tuple[str, int, str | None], ...]
+    entry_body: bytes
+    notes: tuple[tuple[str, int, bytes], ...]
+
+    def detail(self) -> str:
+        loads = sum(segment[0] == "LOAD" for segment in self.segments)
+        return (
+            f"type={self.header[5]},machine={self.header[6]},loads={loads},"
+            f"needed={','.join(self.libraries) or '-'}"
+        )
+
+
+@dataclass(frozen=True)
+class _DesktopEntryView:
+    version: str
+    entry_type: str
+    name: str
+    comment: str
+    exec_path: str
+    terminal: bool
+    hidden: bool
+    dbus_activatable: bool
+    synthetic_marker: str
+
+    def detail(self) -> str:
+        return f"type={self.entry_type},exec={self.exec_path},marker=exact"
+
+
+@dataclass(frozen=True)
+class _BashHistoryView:
+    entries: tuple[tuple[int, int, str, str], ...]
+
+    def detail(self) -> str:
+        return f"records={len(self.entries)},timestamped={sum(row[0] > 0 for row in self.entries)}"
+
+
+@dataclass(frozen=True)
+class _LinuxArtifactSource:
+    """Immutable text bytes plus canonical scene identity for contextual Linux checks."""
+
+    path: str
+    relative_path: str
+    snapshot: bytes | None
+    resident_guest_paths: tuple[str, ...]
 
 
 _MAX_TYPED_NODES = 256
@@ -190,6 +257,8 @@ def _classify_head(head: bytes, path: str) -> str | None:
         return "pe"
     if head[:4] == b"\xcf\xfa\xed\xfe":
         return "macho"
+    if head[:4] == b"\x7fELF":
+        return "elf"
     if head[:4] == b"regf":
         return "hive"
     if head[:16] == b"SQLite format 3\x00":
@@ -198,6 +267,10 @@ def _classify_head(head: bytes, path: str) -> str | None:
         return "plist"
     if path.lower().endswith(".pf"):
         return "prefetch"
+    if path.lower().endswith(".desktop"):
+        return "desktop-entry"
+    if os.path.basename(path) == ".bash_history":
+        return "bash-history"
     return None
 
 
@@ -279,6 +352,207 @@ def _read_pefile(path):
     return _pefile_semantics(pe)
 
 
+def _lief_enum_name(value: object, *, where: str) -> str:
+    name = getattr(value, "name", None)
+    if type(name) is not str or not name:
+        raise SemanticError(f"LIEF returned an invalid {where} enum")
+    return name
+
+
+def _elf_kind(value: object, *, prefix: str, where: str) -> str:
+    if type(value) is not str or not value.startswith(prefix):
+        raise SemanticError(f"pyelftools returned an invalid {where}: {value!r}")
+    return value.removeprefix(prefix).rstrip("_")
+
+
+def _lief_elf_view(binary) -> _ELFView:
+    header = binary.header
+    abi = _lief_enum_name(header.identity_os_abi, where="ELF OS ABI")
+    if abi == "SYSTEMV":
+        abi = "SYSV"
+    header_view = (
+        _lief_enum_name(header.identity_class, where="ELF class"),
+        _lief_enum_name(header.identity_data, where="ELF byte order"),
+        abi,
+        int(header.identity_abi_version),
+        _lief_enum_name(header.identity_version, where="ELF identity version"),
+        _lief_enum_name(header.file_type, where="ELF file type"),
+        _lief_enum_name(header.machine_type, where="ELF machine"),
+        _lief_enum_name(header.object_file_version, where="ELF object version"),
+        int(header.entrypoint),
+        int(header.program_header_offset),
+        int(header.section_header_offset),
+        int(header.processor_flag),
+        int(header.header_size),
+        int(header.program_header_size),
+        int(header.numberof_segments),
+        int(header.section_header_size),
+        int(header.numberof_sections),
+        int(header.section_name_table_idx),
+    )
+    segments = tuple(
+        (
+            _lief_enum_name(segment.type, where="ELF segment type"),
+            int(segment.flags),
+            int(segment.file_offset),
+            int(segment.virtual_address),
+            int(segment.physical_size),
+            int(segment.virtual_size),
+            int(segment.alignment),
+        )
+        for segment in binary.segments
+    )
+    sections = tuple(
+        (
+            section.name,
+            _lief_enum_name(section.type, where="ELF section type")
+            .removeprefix("SHT_")
+            .rstrip("_"),
+            int(section.flags),
+            int(section.virtual_address),
+            int(section.offset),
+            int(section.size),
+            int(section.link),
+            int(section.information),
+            int(section.alignment),
+            int(section.entry_size),
+        )
+        for section in binary.sections
+    )
+    dynamic = []
+    for entry in binary.dynamic_entries:
+        tag = _lief_enum_name(entry.tag, where="ELF dynamic tag")
+        needed = getattr(entry, "name", None) if tag == "NEEDED" else None
+        if needed is not None and type(needed) is not str:
+            raise SemanticError("LIEF returned a non-text DT_NEEDED value")
+        dynamic.append((tag, int(entry.value), needed))
+    notes = tuple(
+        (note.name.rstrip("\x00"), int(note.original_type), bytes(note.description))
+        for note in binary.notes
+    )
+    text_sections = tuple(section for section in binary.sections if section.name == ".text")
+    if len(text_sections) != 1:
+        raise SemanticError("LIEF did not find exactly one ELF .text section")
+    return _ELFView(
+        int(binary.original_size),
+        header_view,
+        (binary.interpreter,) if binary.interpreter else (),
+        tuple(binary.libraries),
+        tuple(symbol.name for symbol in binary.imported_symbols),
+        segments,
+        sections,
+        tuple(dynamic),
+        bytes(text_sections[0].content),
+        notes,
+    )
+
+
+def _read_pyelftools(path):
+    from elftools.elf.elffile import ELFFile
+
+    with open(path, "rb") as stream:
+        file_size = os.fstat(stream.fileno()).st_size
+        binary = ELFFile(stream)
+        header = binary.header
+        identity = header["e_ident"]
+        header_view = (
+            "ELF" + _elf_kind(
+                identity["EI_CLASS"], prefix="ELFCLASS", where="ELF class"
+            ),
+            _elf_kind(identity["EI_DATA"], prefix="ELFDATA2", where="ELF byte order"),
+            _elf_kind(identity["EI_OSABI"], prefix="ELFOSABI_", where="ELF OS ABI"),
+            int(identity["EI_ABIVERSION"]),
+            _elf_kind(identity["EI_VERSION"], prefix="EV_", where="ELF identity version"),
+            _elf_kind(header["e_type"], prefix="ET_", where="ELF file type"),
+            _elf_kind(header["e_machine"], prefix="EM_", where="ELF machine"),
+            _elf_kind(header["e_version"], prefix="EV_", where="ELF object version"),
+            int(header["e_entry"]),
+            int(header["e_phoff"]),
+            int(header["e_shoff"]),
+            int(header["e_flags"]),
+            int(header["e_ehsize"]),
+            int(header["e_phentsize"]),
+            int(header["e_phnum"]),
+            int(header["e_shentsize"]),
+            int(header["e_shnum"]),
+            int(header["e_shstrndx"]),
+        )
+        segment_objects = tuple(binary.iter_segments())
+        segments = tuple(
+            (
+                _elf_kind(segment.header.p_type, prefix="PT_", where="ELF segment type"),
+                int(segment.header.p_flags),
+                int(segment.header.p_offset),
+                int(segment.header.p_vaddr),
+                int(segment.header.p_filesz),
+                int(segment.header.p_memsz),
+                int(segment.header.p_align),
+            )
+            for segment in segment_objects
+        )
+        section_objects = tuple(binary.iter_sections())
+        sections = tuple(
+            (
+                section.name,
+                _elf_kind(section.header.sh_type, prefix="SHT_", where="ELF section type"),
+                int(section.header.sh_flags),
+                int(section.header.sh_addr),
+                int(section.header.sh_offset),
+                int(section.header.sh_size),
+                int(section.header.sh_link),
+                int(section.header.sh_info),
+                int(section.header.sh_addralign),
+                int(section.header.sh_entsize),
+            )
+            for section in section_objects
+        )
+        interpreters = []
+        dynamic = []
+        notes = []
+        for segment in segment_objects:
+            if segment.header.p_type == "PT_INTERP":
+                value = segment.data()
+                if not value.endswith(b"\x00") or b"\x00" in value[:-1]:
+                    raise SemanticError("pyelftools found a malformed PT_INTERP string")
+                interpreters.append(value[:-1].decode("ascii"))
+            elif segment.header.p_type == "PT_DYNAMIC":
+                for entry in segment.iter_tags():
+                    tag = _elf_kind(entry.entry.d_tag, prefix="DT_", where="ELF dynamic tag")
+                    needed = entry.needed if tag == "NEEDED" else None
+                    if needed is not None and type(needed) is not str:
+                        raise SemanticError("pyelftools returned a non-text DT_NEEDED value")
+                    dynamic.append((tag, int(entry.entry.d_val), needed))
+            elif segment.header.p_type == "PT_NOTE":
+                for note in segment.iter_notes():
+                    if type(note["n_name"]) is not str or type(note["n_type"]) is not int:
+                        raise SemanticError("pyelftools returned an invalid ELF note identity")
+                    notes.append((note["n_name"], note["n_type"], bytes(note["n_desc"])))
+        dynamic_symbols = binary.get_section_by_name(".dynsym")
+        imported_symbols = ()
+        if dynamic_symbols is not None:
+            imported_symbols = tuple(
+                symbol.name
+                for symbol in dynamic_symbols.iter_symbols()
+                if symbol["st_shndx"] == "SHN_UNDEF" and symbol.name
+            )
+        libraries = tuple(needed for tag, _value, needed in dynamic if tag == "NEEDED")
+        text_section = binary.get_section_by_name(".text")
+        if text_section is None:
+            raise SemanticError("pyelftools did not find exactly one ELF .text section")
+        return _ELFView(
+            file_size,
+            header_view,
+            tuple(interpreters),
+            libraries,
+            imported_symbols,
+            segments,
+            sections,
+            tuple(dynamic),
+            text_section.data(),
+            tuple(notes),
+        )
+
+
 def _read_lief(path):
     import lief
     b = lief.parse(path)
@@ -286,6 +560,8 @@ def _read_lief(path):
         raise ValueError("lief returned None")
     if isinstance(b, lief.PE.Binary):
         return _lief_pe_semantics(b, lief)
+    if isinstance(b, lief.ELF.Binary):
+        return _lief_elf_view(b)
     return f"format={b.format}"
 
 
@@ -538,6 +814,111 @@ def _read_bplist_raw(data):
     return _PlistView(value, _typed_value(value))
 
 
+def _linux_text_source(source: object, *, where: str) -> _LinuxArtifactSource:
+    if not isinstance(source, _LinuxArtifactSource) or type(source.snapshot) is not bytes:
+        raise SemanticError(f"{where} requires the gate's bounded immutable text snapshot")
+    return source
+
+
+def _desktop_view(values: tuple[object, ...], *, oracle: str) -> _DesktopEntryView:
+    if len(values) != 9:
+        raise SemanticError(f"{oracle} returned an invalid desktop-entry field count")
+    if any(type(value) is not str for value in (*values[:5], values[8])):
+        raise SemanticError(f"{oracle} returned a non-text desktop-entry field")
+    if any(type(value) is not bool for value in values[5:8]):
+        raise SemanticError(f"{oracle} returned a non-boolean desktop-entry field")
+    return _DesktopEntryView(*values)
+
+
+def _read_pyxdg(source):
+    from xdg.DesktopEntry import DesktopEntry
+
+    artifact = _linux_text_source(source, where="PyXDG")
+    entry = DesktopEntry(artifact.path)
+    # PyXDG 0.28's validate() predates DBusActivatable and rejects that current key.  Its
+    # parser and typed getters remain the independent observation; the strict shipped reader
+    # below owns exact-profile validation, including duplicate rejection.
+    return _desktop_view(
+        (
+            entry.getVersionString(),
+            entry.getType(),
+            entry.getName(),
+            entry.getComment(),
+            entry.getExec(),
+            entry.getTerminal(),
+            entry.getHidden(),
+            entry.get("DBusActivatable", type="boolean"),
+            entry.get("X-ArtifactForge-Synthetic"),
+        ),
+        oracle="PyXDG",
+    )
+
+
+def _read_desktop_entry_raw(source):
+    artifact = _linux_text_source(source, where="desktop-entry raw reader")
+    entry = loads_desktop_entry(artifact.snapshot)
+    return _desktop_view(
+        (
+            entry.version,
+            entry.entry_type,
+            entry.name,
+            entry.comment,
+            entry.exec_path,
+            entry.terminal,
+            entry.hidden,
+            entry.dbus_activatable,
+            entry.synthetic_marker,
+        ),
+        oracle="desktop-entry raw reader",
+    )
+
+
+def _read_dissect_bash_history(source):
+    from dissect.target import Target
+    from dissect.target.filesystem import VirtualFilesystem
+
+    artifact = _linux_text_source(source, where="dissect.target")
+    # Exercise the public bashhistory() plugin on an isolated in-memory target.  The only
+    # mapped evidence is the bounded snapshot plus inert identity metadata needed for Linux
+    # user discovery; no command is ever handed to a shell or process launcher.
+    filesystem = VirtualFilesystem()
+    filesystem.map_file_fh("/home/v/.bash_history", BytesIO(artifact.snapshot))
+    filesystem.map_file_fh(
+        "/etc/passwd",
+        BytesIO(b"v:x:1000:1000:ArtifactForge:/home/v:/bin/bash\n"),
+    )
+    filesystem.map_file_fh("/etc/os-release", BytesIO(b"ID=artifactforge\n"))
+    filesystem.makedirs("/var")
+    filesystem.makedirs("/run")
+    target = Target()
+    target.filesystems.add(filesystem)
+    target.apply()
+
+    rows = []
+    for record in target.bashhistory():
+        if record.ts is None:
+            raise SemanticError("dissect.target returned an untimestamped Bash record")
+        epoch = int(record.ts.timestamp())
+        if record.ts != datetime.fromtimestamp(epoch, timezone.utc):
+            raise SemanticError("dissect.target returned a non-integral or non-UTC timestamp")
+        order = int(record.order)
+        command = str(record.command)
+        shell = str(record.shell)
+        rows.append((epoch, order, command, shell))
+    return _BashHistoryView(tuple(rows))
+
+
+def _read_bash_history_raw(source):
+    artifact = _linux_text_source(source, where="Bash-history raw reader")
+    entries = loads_bash_history(
+        artifact.snapshot,
+        resident_paths=artifact.resident_guest_paths,
+    )
+    return _BashHistoryView(
+        tuple((entry.epoch, order, entry.command, "bash") for order, entry in enumerate(entries))
+    )
+
+
 READERS = {
     "pefile": _read_pefile,
     "lief": _read_lief,
@@ -550,6 +931,11 @@ READERS = {
     "sqlite-raw": _read_sqlite_raw,
     "plistlib": _read_plistlib,
     "bplist-raw": _read_bplist_raw,
+    "pyelftools": _read_pyelftools,
+    "pyxdg": _read_pyxdg,
+    "desktop-entry-raw": _read_desktop_entry_raw,
+    "dissect.target": _read_dissect_bash_history,
+    "bash-history-raw": _read_bash_history_raw,
 }
 
 
@@ -939,6 +1325,226 @@ def _validate_launchagent_profile(path: str, reads: dict) -> str:
     return f"label={label},program={arguments[0]},marker=exact"
 
 
+_ELF_PROFILE_HEADER = (
+    "ELF64", "LSB", "SYSV", 0, "CURRENT", "DYN", "X86_64", "CURRENT",
+    4096, 64, 8336, 0, 64, 56, 9, 64, 7, 6,
+)
+_ELF_PROFILE_SEGMENTS = (
+    ("PHDR", 4, 64, 64, 504, 504, 8),
+    ("INTERP", 4, 568, 568, 28, 28, 1),
+    ("LOAD", 4, 0, 0, 675, 675, 4096),
+    ("LOAD", 5, 4096, 4096, 9, 9, 4096),
+    ("LOAD", 6, 8192, 8192, 80, 80, 4096),
+    ("DYNAMIC", 6, 8192, 8192, 80, 80, 8),
+    ("NOTE", 4, 596, 596, 68, 68, 4),
+    ("GNU_STACK", 6, 0, 0, 0, 0, 16),
+    ("GNU_RELRO", 4, 8192, 8192, 80, 80, 1),
+)
+_ELF_PROFILE_SECTIONS = (
+    ("", "NULL", 0, 0, 0, 0, 0, 0, 0, 0),
+    (".interp", "PROGBITS", 2, 568, 568, 28, 0, 0, 1, 0),
+    (".note.artifactforge", "NOTE", 2, 596, 596, 68, 0, 0, 4, 0),
+    (".dynstr", "STRTAB", 2, 664, 664, 11, 0, 0, 1, 0),
+    (".text", "PROGBITS", 6, 4096, 4096, 9, 0, 0, 16, 0),
+    (".dynamic", "DYNAMIC", 3, 8192, 8192, 80, 3, 0, 8, 16),
+    (".shstrtab", "STRTAB", 0, 0, 8272, 62, 0, 0, 1, 0),
+)
+_ELF_PROFILE_DYNAMIC = (
+    ("NEEDED", 1, "libc.so.6"),
+    ("STRTAB", 664, None),
+    ("STRSZ", 11, None),
+    ("FLAGS_1", 0x08000000, None),
+    ("NULL", 0, None),
+)
+_ELF_PROFILE_MARKER = re.compile(br"ARTIFACTFORGE-SYNTHETIC-[0-9a-f]{16}")
+_LINUX_COMPONENT = r"[A-Za-z0-9._+@-]+"
+_LINUX_RESIDENT_PATH = re.compile(
+    rf"home/(?P<user>{_LINUX_COMPONENT})/\.local/bin/(?P<name>{_LINUX_COMPONENT})"
+)
+_LINUX_DESKTOP_PATH = re.compile(
+    rf"home/(?P<user>{_LINUX_COMPONENT})/\.config/autostart/"
+    rf"(?P<name>{_LINUX_COMPONENT})\.desktop"
+)
+_LINUX_HISTORY_PATH = re.compile(rf"home/(?P<user>{_LINUX_COMPONENT})/\.bash_history")
+_LINUX_HISTORY_MARKER = ": 'ARTIFACTFORGE-SYNTHETIC-LINUX'"
+
+
+def _linux_source(value: object, *, where: str) -> _LinuxArtifactSource:
+    if not isinstance(value, _LinuxArtifactSource):
+        raise SemanticError(f"{where} requires canonical recursive scene context")
+    return value
+
+
+def _elf_pair(reads: dict) -> _ELFView:
+    lief_view = reads.get("lief")
+    pyelftools_view = reads.get("pyelftools")
+    if type(lief_view) is not _ELFView or type(pyelftools_view) is not _ELFView:
+        raise SemanticError("typed LIEF and pyelftools ELF observations are both required")
+    if lief_view != pyelftools_view:
+        raise SemanticError("LIEF and pyelftools disagree on the type-exact ELF structure")
+    return lief_view
+
+
+def _validate_elf_consensus(_source: object, reads: dict) -> str:
+    return _elf_pair(reads).detail()
+
+
+def _validate_linux_elf_profile(source: object, reads: dict) -> str:
+    artifact = _linux_source(source, where="Linux ELF profile")
+    match = _LINUX_RESIDENT_PATH.fullmatch(artifact.relative_path)
+    if match is None:
+        raise SemanticError("Linux ELF must be served at home/<user>/.local/bin/<name>")
+    view = _elf_pair(reads)
+    if view.file_size != 8784:
+        raise SemanticError("ELF file size must be exactly 8784 bytes")
+    if view.header != _ELF_PROFILE_HEADER:
+        raise SemanticError("ELF header is outside the exact glibc/x86-64 PIE profile")
+    if view.interpreters != ("/lib64/ld-linux-x86-64.so.2",):
+        raise SemanticError("ELF must declare only the exact x86-64 glibc interpreter")
+    if view.libraries != ("libc.so.6",) or view.imported_symbols:
+        raise SemanticError("ELF must need only libc.so.6 and import no symbols")
+    if view.segments != _ELF_PROFILE_SEGMENTS:
+        raise SemanticError("ELF program-header sequence is outside the exact segment profile")
+    if view.sections != _ELF_PROFILE_SECTIONS:
+        raise SemanticError("ELF section-header sequence is outside the exact section profile")
+    if view.dynamic != _ELF_PROFILE_DYNAMIC:
+        raise SemanticError("ELF dynamic table is outside the exact tag allowlist")
+    if view.entry_body != bytes.fromhex("31ffb83c0000000f05"):
+        raise SemanticError("ELF .text is not the exact nine-byte direct-exit entry body")
+    if (
+        len(view.notes) != 1
+        or view.notes[0][:2] != ("ArtifactForge", 0xAF01)
+        or _ELF_PROFILE_MARKER.fullmatch(view.notes[0][2]) is None
+    ):
+        raise SemanticError("ELF must carry exactly one canonical ArtifactForge note")
+    return f"profile=glibc-x86_64,guest=/{artifact.relative_path},marker=exact"
+
+
+def _desktop_pair(reads: dict) -> _DesktopEntryView:
+    pyxdg = reads.get("pyxdg")
+    raw = reads.get("desktop-entry-raw")
+    if type(pyxdg) is not _DesktopEntryView or type(raw) is not _DesktopEntryView:
+        raise SemanticError("typed PyXDG and raw desktop-entry observations are both required")
+    if pyxdg != raw:
+        raise SemanticError("PyXDG and raw reader disagree on typed desktop-entry fields")
+    return raw
+
+
+def _validate_desktop_entry_consensus(_source: object, reads: dict) -> str:
+    return _desktop_pair(reads).detail()
+
+
+def _validate_xdg_plain_text(value: object, *, where: str, max_bytes: int) -> str:
+    """Enforce the gate-local UTF-8 text boundary for an emitted XDG field."""
+    if type(value) is not str or not value:
+        raise SemanticError(f"XDG autostart {where} must be non-empty text")
+    if unicodedata.normalize("NFC", value) != value:
+        raise SemanticError(f"XDG autostart {where} must be Unicode NFC")
+    if value != value.strip():
+        raise SemanticError(
+            f"XDG autostart {where} cannot have surrounding whitespace"
+        )
+    if "\\" in value:
+        raise SemanticError(f"XDG autostart {where} cannot use escape syntax")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise SemanticError(f"XDG autostart {where} cannot contain control characters")
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise SemanticError(f"XDG autostart {where} must be valid UTF-8") from exc
+    if len(encoded) > max_bytes:
+        raise SemanticError(
+            f"XDG autostart {where} exceeds the {max_bytes}-byte profile limit"
+        )
+    return value
+
+
+def _validate_xdg_autostart_profile(source: object, reads: dict) -> str:
+    artifact = _linux_source(source, where="XDG autostart profile")
+    match = _LINUX_DESKTOP_PATH.fullmatch(artifact.relative_path)
+    if match is None:
+        raise SemanticError(
+            "XDG autostart must be served at home/<user>/.config/autostart/<name>.desktop"
+        )
+    view = _desktop_pair(reads)
+    _validate_xdg_plain_text(view.name, where="Name", max_bytes=256)
+    _validate_xdg_plain_text(view.comment, where="Comment", max_bytes=1024)
+    try:
+        exec_size = len(view.exec_path.encode("ascii", errors="strict"))
+    except UnicodeEncodeError as exc:
+        raise SemanticError("XDG autostart Exec must be an ASCII path") from exc
+    if exec_size > 1024:
+        raise SemanticError("XDG autostart Exec exceeds the 1024-byte profile limit")
+    expected_exec = re.compile(
+        rf"/home/{re.escape(match.group('user'))}/\.local/bin/{_LINUX_COMPONENT}"
+    )
+    if expected_exec.fullmatch(view.exec_path) is None:
+        raise SemanticError("XDG autostart Exec must name one same-user local-bin guest path")
+    if (
+        view.version != "1.5"
+        or view.entry_type != "Application"
+        or view.terminal is not False
+        or view.hidden is not False
+        or view.dbus_activatable is not False
+        or view.synthetic_marker != MARKER
+    ):
+        raise SemanticError("XDG autostart typed values are outside the exact inert-data profile")
+    return f"profile=xdg-autostart-v1,exec={view.exec_path},marker=exact"
+
+
+def _bash_pair(reads: dict) -> _BashHistoryView:
+    dissect = reads.get("dissect.target")
+    raw = reads.get("bash-history-raw")
+    if type(dissect) is not _BashHistoryView or type(raw) is not _BashHistoryView:
+        raise SemanticError("typed dissect.target and raw Bash-history observations are required")
+    if dissect != raw:
+        raise SemanticError("dissect.target and raw reader disagree on typed Bash-history rows")
+    return raw
+
+
+def _validate_bash_history_consensus(_source: object, reads: dict) -> str:
+    return _bash_pair(reads).detail()
+
+
+def _validate_bash_history_profile(source: object, reads: dict) -> str:
+    artifact = _linux_source(source, where="Bash-history profile")
+    match = _LINUX_HISTORY_PATH.fullmatch(artifact.relative_path)
+    if match is None:
+        raise SemanticError("Bash history must be served at home/<user>/.bash_history")
+    view = _bash_pair(reads)
+    if len(view.entries) != 4:
+        raise SemanticError(
+            "Linux scene Bash history must contain exactly four timestamped records"
+        )
+    for index, (_epoch, order, _command, shell) in enumerate(view.entries):
+        if order != index or shell != "bash":
+            raise SemanticError("Bash-history order and shell observations must be exact")
+    if view.entries[0][2] != _LINUX_HISTORY_MARKER:
+        raise SemanticError(
+            "Linux scene Bash history must begin with the exact synthetic disclosure record"
+        )
+
+    expected_path = re.compile(
+        rf"/home/{re.escape(match.group('user'))}/\.local/bin/{_LINUX_COMPONENT}"
+    )
+    direct_commands = tuple(entry[2] for entry in view.entries[1:])
+    if any(expected_path.fullmatch(command) is None for command in direct_commands):
+        raise SemanticError(
+            "Linux scene Bash history must contain only three direct same-user local-bin paths "
+            "after its disclosure record"
+        )
+    if len(set(direct_commands)) != 3:
+        raise SemanticError(
+            "Linux scene Bash history direct resident paths must be exactly three and distinct"
+        )
+    residents = frozenset(artifact.resident_guest_paths)
+    if any(command not in residents for command in direct_commands):
+        raise SemanticError(
+            "Linux scene Bash history direct commands must name resident ELF bytes"
+        )
+    return "profile=extended-bash-v1,records=4,direct-resident-paths=3,marker=exact"
+
+
 SEMANTIC_VALIDATORS = {
     "pe": [("import-consensus", _validate_pe_consensus)],
     "prefetch": [("scca-v17-path-hash", _validate_scca_v17)],
@@ -950,10 +1556,27 @@ SEMANTIC_VALIDATORS = {
         ("bplist-consensus", _validate_bplist_consensus),
         ("launchagent-profile", _validate_launchagent_profile),
     ],
+    "elf": [
+        ("elf-consensus", _validate_elf_consensus),
+        ("linux-elf-profile", _validate_linux_elf_profile),
+    ],
+    "desktop-entry": [
+        ("desktop-entry-consensus", _validate_desktop_entry_consensus),
+        ("xdg-autostart-profile", _validate_xdg_autostart_profile),
+    ],
+    "bash-history": [
+        ("bash-history-consensus", _validate_bash_history_consensus),
+        ("bash-history-profile", _validate_bash_history_profile),
+    ],
 }
 
 
-_SNAPSHOT_LIMITS = {"sqlite": 16 * 1024 * 1024, "plist": 1024 * 1024}
+_SNAPSHOT_LIMITS = {
+    "sqlite": 16 * 1024 * 1024,
+    "plist": 1024 * 1024,
+    "desktop-entry": 64 * 1024,
+    "bash-history": 1024 * 1024,
+}
 _EXPECTED_RESULTS = {
     ("pe", "pefile"): _PESemantics,
     ("pe", "lief"): _PESemantics,
@@ -967,6 +1590,12 @@ _EXPECTED_RESULTS = {
     ("sqlite", "sqlite-raw"): _SQLiteView,
     ("plist", "plistlib"): _PlistView,
     ("plist", "bplist-raw"): _PlistView,
+    ("elf", "lief"): _ELFView,
+    ("elf", "pyelftools"): _ELFView,
+    ("desktop-entry", "pyxdg"): _DesktopEntryView,
+    ("desktop-entry", "desktop-entry-raw"): _DesktopEntryView,
+    ("bash-history", "dissect.target"): _BashHistoryView,
+    ("bash-history", "bash-history-raw"): _BashHistoryView,
 }
 
 
@@ -989,16 +1618,26 @@ def _classify_and_snapshot(path: str) -> tuple[str | None, bytes | None, str | N
 
 
 def _run_files(r: GateReport, files) -> tuple[int, int, int, int, set[str]]:
+    files = tuple(files)
     checked = passed = 0
     semantic_checked = semantic_passed = 0
     seen_formats = set()
+    resident_guest_paths = tuple(
+        "/" + file.relative_path
+        for file in files
+        if type(file.data) is bytes
+        and classify_bytes(file.data, file.relative_path) == "elf"
+    )
 
     for file in files:
         name = file.relative_path
         path = os.fspath(file.path)
-        if name.endswith(_SIDECAR_SUFFIXES):
-            continue
         fmt, snapshot, snapshot_error = _classify_and_snapshot(path)
+        # Sidecar suffixes exempt only genuinely unclassified prose. Magic always wins: a
+        # structured artifact cannot evade its parser pair by being named .json/.txt/.md or
+        # .quarantine.xattr.
+        if fmt is None and name.endswith(_SIDECAR_SUFFIXES):
+            continue
         if fmt is None:
             detail = snapshot_error or "no format recognised, so nothing can validate it"
             r.fail(f"{name}: {detail}")
@@ -1007,6 +1646,12 @@ def _run_files(r: GateReport, files) -> tuple[int, int, int, int, set[str]]:
             r.fail(f"{name}: format '{fmt}' has no declared oracle set")
             continue
         seen_formats.add(fmt)
+        linux_source = _LinuxArtifactSource(
+            path,
+            name,
+            snapshot,
+            resident_guest_paths,
+        )
         read_results = {}
         for oracle in ORACLES[fmt]["required"]:
             checked += 1
@@ -1014,7 +1659,10 @@ def _run_files(r: GateReport, files) -> tuple[int, int, int, int, set[str]]:
                 r.fail(f"{fmt}: {oracle} did not run — {snapshot_error}")
                 continue
             try:
-                source = snapshot if fmt in _SNAPSHOT_LIMITS else path
+                if fmt in {"desktop-entry", "bash-history"}:
+                    source = linux_source
+                else:
+                    source = snapshot if fmt in _SNAPSHOT_LIMITS else path
                 detail = READERS[oracle](source)
             except ImportError:
                 r.fail(f"{fmt}: oracle '{oracle}' is not installed — a missing "
@@ -1039,7 +1687,12 @@ def _run_files(r: GateReport, files) -> tuple[int, int, int, int, set[str]]:
         for validator_name, validator in SEMANTIC_VALIDATORS.get(fmt, ()):
             semantic_checked += 1
             try:
-                detail = validator(path, read_results)
+                semantic_source = (
+                    linux_source
+                    if fmt in {"elf", "desktop-entry", "bash-history"}
+                    else path
+                )
+                detail = validator(semantic_source, read_results)
             except Exception as exc:                     # noqa: BLE001 — a semantic refusal
                 r.fail(
                     f"{name}: semantic validator '{validator_name}' failed — "

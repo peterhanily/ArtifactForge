@@ -57,6 +57,18 @@ DOMAIN = b"artifactforge/bench/v1"
 #: Published deliberately. A dev suite is meant to be reproducible and cheatable; the honest
 #: move is to say so loudly rather than to pretend a well-known constant is a secret.
 PUBLIC_DEV_KEY = b"artifactforge-public-dev-suite-v1"
+DEV_SUITE_KIND = "dev"
+
+# These strings are part of the byte-derivation contract for the two corpora used by
+# generator assurance.  They are published in the scorecard so a later namespace change
+# cannot be mistaken for a like-for-like measurement.
+WINDOWS_MACOS_CONTENT_NAMESPACE = "artifactforge::suite"
+GENERATOR_ASSURANCE_LINUX_CONTENT_NAMESPACE = (
+    "artifactforge::generator-assurance/linux/v1"
+)
+WINDOWS_MACOS_FAMILY_SCHEDULE = "zero-based-index-parity-v1"
+GENERATOR_ASSURANCE_LINUX_COUNT_CONTRACT = "ceil-half-windows-macos-v1"
+GENERATOR_ASSURANCE_LINUX_KIND = "generator-assurance-linux"
 
 #: A disclosed seed and a distinct derivation domain for the scorecard measurement corpus.
 #: Neither is secret: reproducibility is the purpose, and the resulting suite is explicitly
@@ -65,12 +77,26 @@ PUBLIC_DEV_KEY = b"artifactforge-public-dev-suite-v1"
 SCORECARD_MEASUREMENT_SEED = b"artifactforge-public-scorecard-measurement-seed-v1"
 SCORECARD_MEASUREMENT_KEY_DOMAIN = b"artifactforge/scorecard/measurement-key/v1"
 SCORECARD_MEASUREMENT_KIND = "scorecard-measurement"
-NON_REPORTABLE_SUITE_KINDS = frozenset(("dev", SCORECARD_MEASUREMENT_KIND))
+NON_REPORTABLE_SUITE_KINDS = frozenset((DEV_SUITE_KIND, SCORECARD_MEASUREMENT_KIND))
 
-# Fixture manifests publish their seed and every payload digest. They are reproducibility
-# records and therefore answer disclosures inside a benchmark's served tree. Keep this
-# boundary in the staging primitive so a future scene builder cannot opt out by accident.
-BENCHMARK_FORBIDDEN_FILENAMES = frozenset(("fixture.json",))
+# Gates 1-3 append a deterministic Linux assurance corpus to the existing Windows/macOS
+# scenarios.  It has a separate public derivation so generator assurance cannot silently be
+# mistaken for, or leak into, Gate 4's benchmark measurement population.
+GENERATOR_ASSURANCE_SEED = b"artifactforge-public-generator-assurance-seed-v1"
+GENERATOR_ASSURANCE_KEY_DOMAIN = b"artifactforge/generator-assurance/key/v1"
+GENERATOR_ASSURANCE_SCENE_DOMAIN = b"artifactforge/generator-assurance/linux-scene/v1"
+
+# Answer keys, join manifests, ground truth, and Fixture Core manifests are disclosures inside
+# a benchmark's served tree. Keep this boundary in the staging primitive so every scene
+# builder gets the same recursive, case-insensitive protection by construction.
+BENCHMARK_FORBIDDEN_FILENAMES = frozenset(
+    (
+        "artifact_answers.json",
+        "fixture.json",
+        "ground_truth.json",
+        "join_manifest.json",
+    )
+)
 _FIXTURE_MANIFEST_MARKER = b"artifactforge-fixture-manifest-v1"
 
 _SEP = b"\x1f"
@@ -132,10 +158,107 @@ def scorecard_measurement_key_id() -> str:
     return "sha256:" + hashlib.sha256(scorecard_measurement_key()).hexdigest()
 
 
+def public_dev_key_id() -> str:
+    """A non-key fingerprint of the deliberately published development-suite key."""
+    return "sha256:" + hashlib.sha256(PUBLIC_DEV_KEY).hexdigest()
+
+
+def generator_assurance_key() -> bytes:
+    """Public deterministic key for non-benchmark Linux assurance scenes."""
+    return hmac.new(
+        GENERATOR_ASSURANCE_SEED,
+        GENERATOR_ASSURANCE_KEY_DOMAIN,
+        hashlib.sha256,
+    ).digest()
+
+
+def generator_assurance_key_id() -> str:
+    return "sha256:" + hashlib.sha256(generator_assurance_key()).hexdigest()
+
+
+def linux_assurance_count(windows_macos_scenarios: int) -> int:
+    """Append enough Linux scenes to keep three-family assurance balanced within one."""
+    if isinstance(windows_macos_scenarios, bool) or not isinstance(
+        windows_macos_scenarios, int
+    ) or windows_macos_scenarios < 1:
+        raise ValueError("generator assurance requires at least one Windows/macOS scenario")
+    return (windows_macos_scenarios + 1) // 2
+
+
+def generator_assurance_provenance(windows_macos_scenarios: int) -> dict:
+    linux_scenarios = linux_assurance_count(windows_macos_scenarios)
+    windows_macos_family_counts = {
+        "windows": (windows_macos_scenarios + 1) // 2,
+        "macos": windows_macos_scenarios // 2,
+    }
+    linux_key_derivation = {
+        "algorithm": "HMAC-SHA256",
+        "domain": GENERATOR_ASSURANCE_KEY_DOMAIN.decode(),
+        "seed_id": "sha256:" + hashlib.sha256(GENERATOR_ASSURANCE_SEED).hexdigest(),
+        "key_id": generator_assurance_key_id(),
+    }
+    return {
+        "purpose": "deterministic-generator-assurance",
+        "families": ["windows", "macos", "linux"],
+        "family_counts": {
+            **windows_macos_family_counts,
+            "linux": linux_scenarios,
+        },
+        "windows_macos_scenario_count": windows_macos_scenarios,
+        "linux_scenario_count": linux_scenarios,
+        "scenario_count": windows_macos_scenarios + linux_scenarios,
+        "deterministic": True,
+        "benchmark_reportable": False,
+        "linux_benchmark_included": False,
+        "corpora": {
+            "windows_macos": {
+                "purpose": "windows-macos-generator-assurance",
+                "suite_kind": DEV_SUITE_KIND,
+                "families": ["windows", "macos"],
+                "scenario_count": windows_macos_scenarios,
+                "family_counts": windows_macos_family_counts,
+                "deterministic": True,
+                "benchmark_reportable": False,
+                "suite_derivation_domain": DOMAIN.decode(),
+                "public_key": {
+                    "source": "PUBLIC_DEV_KEY",
+                    "identity_algorithm": "SHA256",
+                    "key_id": public_dev_key_id(),
+                },
+                "content_namespace": WINDOWS_MACOS_CONTENT_NAMESPACE,
+                "family_schedule": {
+                    "algorithm": WINDOWS_MACOS_FAMILY_SCHEDULE,
+                    "index_origin": 0,
+                    "even_index_family": "windows",
+                    "odd_index_family": "macos",
+                },
+            },
+            "linux": {
+                "purpose": "linux-generator-assurance",
+                "corpus_kind": GENERATOR_ASSURANCE_LINUX_KIND,
+                "family": "linux",
+                "scenario_count": linux_scenarios,
+                "deterministic": True,
+                "benchmark_reportable": False,
+                "benchmark_included": False,
+                "profile": "linux-glibc-x86_64-loose-v1",
+                "scene_derivation_domain": GENERATOR_ASSURANCE_SCENE_DOMAIN.decode(),
+                "content_namespace": GENERATOR_ASSURANCE_LINUX_CONTENT_NAMESPACE,
+                "count_contract": {
+                    "algorithm": GENERATOR_ASSURANCE_LINUX_COUNT_CONTRACT,
+                    "windows_macos_scenario_count": windows_macos_scenarios,
+                },
+                "key_derivation": dict(linux_key_derivation),
+            },
+        },
+    }
+
+
 def scorecard_measurement_provenance(n: int) -> dict:
     """Public provenance for a deterministic, explicitly non-reportable measurement run."""
     return {
         "purpose": "reproducible-scorecard-measurement",
+        "scope": "benchmark-validity",
         "suite_kind": SCORECARD_MEASUREMENT_KIND,
         "scenario_count": n,
         "deterministic": True,
@@ -147,6 +270,7 @@ def scorecard_measurement_provenance(n: int) -> dict:
             "seed_id": "sha256:" + hashlib.sha256(SCORECARD_MEASUREMENT_SEED).hexdigest(),
             "key_id": scorecard_measurement_key_id(),
         },
+        "generator_assurance": generator_assurance_provenance(n),
     }
 
 
@@ -244,7 +368,7 @@ def stage(scene_dir: str, staging_dir: str, allowlist) -> list:
     )
     if forbidden:
         raise ValueError(
-            "fixture manifests publish benchmark answers and cannot enter a served scene: "
+            "benchmark disclosure metadata cannot enter a served scene: "
             + ", ".join(forbidden)
         )
     try:
@@ -263,7 +387,7 @@ def stage(scene_dir: str, staging_dir: str, allowlist) -> list:
             raise AssertionError("staging inventory did not capture file bytes")
         if _FIXTURE_MANIFEST_MARKER in data:
             raise ValueError(
-                "fixture manifests publish benchmark answers and cannot enter a served scene: "
+                "benchmark disclosure metadata cannot enter a served scene: "
                 + name
             )
         prepared.append((name, data))

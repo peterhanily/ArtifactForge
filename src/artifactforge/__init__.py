@@ -17,6 +17,8 @@ the public surface below so upstream's private seed formulas are not re-exported
 ArtifactForge API. See docs/DESIGN.md.
 """
 from artifactforge.artifacts import (
+    build_bash_history,
+    build_desktop_entry,
     build_amcache_hive,
     build_knowledgec,
     build_launch_agent,
@@ -35,23 +37,30 @@ from artifactforge.bench import (
     generate_suite,
     grade,
 )
-from artifactforge.compose import Scene, build_macos_scene, build_windows_scene
-from artifactforge.content import Content, ContentStore, build_pe_stub, imphash_of
-from artifactforge.model import HostProfile, deterministic_uuid, macos_profile, windows_profile
+from artifactforge.compose import Scene, build_linux_scene, build_macos_scene, build_windows_scene
+from artifactforge.content import Content, ContentStore, build_elf, build_pe_stub, imphash_of
+from artifactforge.model import (
+    HostProfile,
+    deterministic_uuid,
+    linux_profile,
+    macos_profile,
+    windows_profile,
+)
 
 __all__ = [
     # content
-    "Content", "ContentStore", "build_pe_stub", "imphash_of",
+    "Content", "ContentStore", "build_pe_stub", "build_elf", "imphash_of",
     # model
-    "HostProfile", "windows_profile", "macos_profile", "deterministic_uuid",
+    "HostProfile", "windows_profile", "macos_profile", "linux_profile", "deterministic_uuid",
     # artifacts
     "build_run_hive", "build_amcache_hive", "build_prefetch",
     "build_knowledgec", "build_tcc", "build_quarantine_events",
     "quarantine_xattr", "build_launch_agent",
+    "build_desktop_entry", "build_bash_history",
     # compose
-    "Scene", "build_windows_scene", "build_macos_scene",
+    "Scene", "build_windows_scene", "build_macos_scene", "build_linux_scene",
     # bench
     "Task", "PublicTask", "Question", "Score",
     "generate_suite", "generate_batch", "grade",
 ]
-__version__ = "0.3.1"
+__version__ = "0.4.0"

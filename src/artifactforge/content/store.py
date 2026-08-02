@@ -9,12 +9,13 @@ reuse one file identity. This claim is deliberately about materialized ``Content
 not every hash-shaped decoy field a composed scene may carry.
 
 Bytes are a pure function of the seed, so the same identity regenerates byte-identical
-forever. Both writers are hand-assembled rather than driven by a toolchain or by LIEF,
+forever. The writers are hand-assembled rather than driven by a toolchain or by LIEF,
 neither of which promises determinism.
 
 The native code emitted here is payload-free: PE ``.text`` is ``ret`` plus zero padding, while
-Mach-O ``__text`` is ``mov w0,#0 ; ret``. The PE also carries the fixed DOS print-and-exit stub.
-See ``artifactforge.gates.inertness`` for the exact checks and their current scope.
+Mach-O ``__text`` is ``mov w0,#0 ; ret`` and ELF ``.text`` is a direct ``exit(0)`` syscall. The
+PE also carries the fixed DOS print-and-exit stub. See ``artifactforge.gates.inertness`` for
+the exact checks and their current scope.
 """
 from __future__ import annotations
 
@@ -204,7 +205,7 @@ class Content:
 
     bytes: bytes
     path: str
-    fmt: str            # "pe" | "macho"
+    fmt: str            # "pe" | "macho" | "elf"
     sha256: str
     sha1: str
     md5: str
@@ -221,7 +222,7 @@ class Content:
 #: A Mach-O id is "macho:<signing identifier>:<...>". The signing identifier has to be part of
 #: the identity because it lives inside the CodeDirectory, so it changes the file's length and
 #: therefore its SHA256; passing it separately would break the content_id -> bytes contract.
-KNOWN_FORMATS = ("pe", "macho")
+KNOWN_FORMATS = ("pe", "macho", "elf")
 
 
 class ContentStore:
@@ -267,7 +268,7 @@ class ContentStore:
             imports = _pick_imports(seed)
             data = _assemble_pe(seed, imports)
             extra["imphash"] = imphash_of(imports)
-        else:
+        elif fmt == "macho":
             from artifactforge.content import macho
             parts = content_id.split(":")
             if len(parts) < 3 or not parts[1]:
@@ -278,6 +279,10 @@ class ContentStore:
             data = macho.build_macho(seed, imports, sign_identifier=parts[1])
             extra["symhash"] = macho.symhash_of(imports)
             extra["cdhash"] = macho.cdhash_of_file(data)
+        else:
+            from artifactforge.content.elf import build_elf
+
+            data = build_elf(seed)
         sha256 = hashlib.sha256(data).hexdigest()
         return Content(data, self._store(sha256, data), fmt, sha256,
                        hashlib.sha1(data).hexdigest(), hashlib.md5(data).hexdigest(),

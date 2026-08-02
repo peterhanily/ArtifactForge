@@ -8,6 +8,18 @@ live in it — the served directory is staged by allowlist from a separate build
 
 Depends on: model, suite, content, artifacts. Nothing here may import bench or ingest.
 """
-from artifactforge.compose.scene import Scene, build_macos_scene, build_windows_scene
+from artifactforge.compose.scene import (
+    Scene,
+    build_linux_scene,
+    build_macos_scene,
+    build_windows_scene,
+)
+from artifactforge.compose.assurance import generate_linux_assurance
 
-__all__ = ["Scene", "build_windows_scene", "build_macos_scene"]
+__all__ = [
+    "Scene",
+    "build_windows_scene",
+    "build_macos_scene",
+    "build_linux_scene",
+    "generate_linux_assurance",
+]

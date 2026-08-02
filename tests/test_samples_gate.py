@@ -14,6 +14,8 @@ import glob
 import hashlib
 import json
 import os
+from pathlib import Path
+import shutil
 
 import pytest
 
@@ -49,11 +51,28 @@ def test_every_committed_sample_is_inert_and_marked(sample):
 
 
 @pytest.mark.parametrize("sample", SAMPLES, ids=_ids)
-def test_the_committed_answer_key_still_matches_the_committed_bytes(sample):
+def test_the_committed_answer_key_still_matches_the_committed_bytes(sample, tmp_path):
     """The join is re-derived from the files as committed, not from the generator."""
     pytest.importorskip("regipy")
     truth = _ground_truth(sample)
-    report = identity.run(sample, truth["join"])
+    join = truth["join"]
+    identity_scene = sample
+    if join.get("family") == "linux":
+        # Gate 2's Linux scene contract is an exact artifact-only inventory.  Keep the
+        # gallery README and public answer metadata outside the tree being measured.
+        declared = [
+            *(record["served_relpath"] for record in join["residents"]),
+            *(record["served_relpath"] for record in join["autostart"]),
+            join["bash_history"]["served_relpath"],
+        ]
+        source_root = Path(sample)
+        for relative_path in declared:
+            source = source_root / relative_path
+            destination = tmp_path / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        identity_scene = os.fspath(tmp_path)
+    report = identity.run(identity_scene, join)
     assert report.ok, report.render()
     assert report.metrics["checks_joined"] == report.metrics["checks_total"]
 

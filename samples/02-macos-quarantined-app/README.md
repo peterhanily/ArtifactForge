@@ -6,7 +6,7 @@ Five applications, each with a real Mach-O binary and a quarantine record. Two h
 
 Regenerate with `scripts/make-samples.sh`. The bytes are deterministic, so a regeneration that differs is a change in the generator, not in the weather.
 
-## What real tools see
+## What the declared readers see
 
 ### LIEF — every Mach-O present, with the symhash recomputed from its symbol table
 

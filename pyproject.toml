@@ -1,6 +1,6 @@
 [project]
 name = "artifactforge"
-version = "0.3.1"
+version = "0.4.0"
 description = "Deterministic, parser-gated synthetic forensic artifacts with byte-derived identity."
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -22,6 +22,9 @@ dependencies = []
 #   prefetch  windowsprefetch + libscca
 #   SQLite    sqlite3 + the bounded first-party raw reader
 #   bplist    plistlib + the bounded first-party raw reader
+#   ELF       LIEF + pyelftools
+#   XDG       PyXDG + the bounded first-party raw reader
+#   Bash      dissect.target + the bounded first-party raw reader
 dev = [
     "pytest>=8",
     "pefile",
@@ -32,6 +35,13 @@ dev = [
     "libregf-python",
     "windowsprefetch",
     "libscca-python",
+    # These versions define the Linux oracle adapter contract. PyXDG is used as a typed
+    # parser only (its validator rejects modern DBusActivatable and overwrites duplicate
+    # keys); the shipped reader owns the strict profile. Gate 1 reaches dissect.target through
+    # its public Target plugin API, and the pin makes that adapter contract reproducible.
+    "pyelftools==0.33",
+    "PyXDG==0.28",
+    "dissect.target==3.25.1",
     # Pin below 0.16: ruff 0.16 turns on new default lint rules that flag pre-existing code,
     # which breaks CI on an unpinned upgrade. Cap so CI is reproducible; bump deliberately
     # (and clear the new findings) when adopting 0.16+.

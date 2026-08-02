@@ -19,6 +19,8 @@ artifactforge fixture verify out/windows --assurance
 artifactforge fixture inspect out/windows
 artifactforge fixture diff out/windows another/windows
 artifactforge fixture release out/windows dist/windows-dropper-001.tar --assurance
+artifactforge fixture build examples/fixtures/linux-glibc-x86_64-loose-v1.json out/linux
+artifactforge fixture verify out/linux --assurance
 ```
 
 `build` refuses any existing output path, including a broken symlink. It builds beside the
@@ -90,6 +92,28 @@ until a v30 writer and deterministic MAM/LZXPRESS compression exist.
 quarantine sidecars. Gate 1 gives each SQLite database and binary plist two implementations
 over one bounded byte snapshot, requires type-exact consensus, and applies its named semantic
 profile. The second readers deliberately accept only the subset this profile emits.
+
+`linux-glibc-x86_64-loose-v1` emits exactly five nested ELF64 x86-64 `ET_DYN` files beneath
+`home/<user>/.local/bin/`, three XDG desktop entries beneath that user's
+`.config/autostart/`, and one extended `.bash_history`. LIEF/pyelftools, PyXDG/a bounded raw
+reader, and dissect.target/a bounded raw reader form its three Gate 1 pairs; Gate 3 separately
+binds the exact ELF layout and direct-exit entry. This name is deliberately specific: it is a
+minimal glibc/x86-64 loose profile, not generic Linux or a compiler-shaped program. The ELF
+declares the platform loader and `libc.so.6`; a real execution attempt would enter that loader
+before its nine-byte entry even though the main object imports and calls no libc symbol. The
+external loader and dependency code are outside that main-object entry claim.
+
+The Linux fixture is evidence, not an activation-ready filesystem. ABI v1 does not bind POSIX
+modes, and release archives normalize regular files—including the ELF members—to 0644. XDG
+acceptance does not prove desktop persistence and history text does not prove execution.
+`--assurance` remains exactly Gates 1 and 3 for this profile; Gate 2's private cross-artifact
+join is deliberately not published in `fixture.json`.
+
+On Ubuntu/x86-64, `scripts/attest_linux_native.py --fixture <root> --out <new.json>` adds
+complementary native observations. It refuses a detached scene, runs the strongest Fixture Core
+verification before discovering native tools, and retains the manifest, exact gate reports,
+portable-parser versions and a byte-equal private observation snapshot. The output must be a
+new file outside both fixture and source trees.
 
 ## Integrity is not authenticity
 

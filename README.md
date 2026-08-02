@@ -60,7 +60,7 @@ $ artifactforge bench grade suite --submission answers.jsonl
 
 $ artifactforge gate identity
 Gate 2 — identity: do the declared answer-bearing pivots agree with emitted bytes?
-  VERDICT: PASS (0 fail, 0 declared gaps) — 40/40 cross-artifact identity checks hold
+  VERDICT: PASS (0 fail, 0 declared gaps) — 130/130 cross-artifact identity checks hold
 ```
 
 The scene above holds five binaries. Persistence launches one of them; Amcache's recorded
@@ -82,10 +82,17 @@ Answering anything about it requires reading two artifacts together, which is th
   compared type-for-type with `sqlite3`/`plistlib`, then checked against exact macOS profiles.
   EvidenceForge cannot produce any of this — its `os_category` is windows or linux, with no
   macOS at all.
+- **Linux loose artifacts** — deterministic ELF64 little-endian x86-64 `ET_DYN` files with a
+  real interpreter, dynamic table, three R/RX/RW load segments, NX stack, RELRO and an in-band
+  note; XDG 1.5 autostart desktop entries; and timestamped Bash history. LIEF and pyelftools
+  independently read each ELF, PyXDG is paired with a bounded raw desktop-entry reader, and
+  dissect.target is paired with a bounded raw history reader. The exact assurance profile is
+  `linux-glibc-x86_64-loose-v1`.
 - **One identity behind the answer-bearing file pivots.** `ContentStore` synthesizes each
   materialized binary's bytes once and derives its content digests and structural hashes from
-  them. The selected Amcache-to-disk and answer-key-to-disk joins reuse that identity. Deliberate
-  stale and absent Amcache decoys do not claim to be resident file bytes.
+  them. The selected Amcache-to-disk, answer-key-to-disk and Linux guest-path-to-served-byte
+  joins reuse that identity. Deliberate stale and absent Amcache decoys do not claim to be
+  resident file bytes.
 - **Fixture Core v1.** A strict public recipe builds `fixture.json` plus an exact `artifacts/`
   payload; hidden and nested relative paths are ordinary first-class members. Verification
   re-hashes and regenerates every byte, inspection and semantic diff are stable interfaces,
@@ -116,17 +123,41 @@ Answering anything about it requires reading two artifacts together, which is th
 ```sh
 uv venv && uv pip install -e ".[dev]"
 uv run artifactforge fixture build examples/fixtures/windows-loose-v1.json out/windows
+uv run artifactforge fixture build examples/fixtures/linux-glibc-x86_64-loose-v1.json out/linux
 uv run artifactforge fixture verify out/windows --assurance
 uv run artifactforge fixture release out/windows out/windows.tar --assurance
 uv run pytest -q                          # the whole suite, standalone
 uv run artifactforge scorecard            # every gate, and what it measured
 ```
 
+The committed [`samples/`](samples/) gallery includes one Windows, one macOS and one recursive
+Linux scene with parser output and byte-derived answer keys; none is benchmark material.
+
 See [`docs/fixture-core.md`](docs/fixture-core.md) for the schema, lifecycle, exit-code and
 integrity boundaries. `windows-loose-v1` is deliberately not branded Windows 10: its loose
 artifact set currently combines NT6-era paths with XP-family SCCA v17 prefetch semantics.
 The raw-reader subset and semantic extension rule are documented in
 [`docs/macos-oracles.md`](docs/macos-oracles.md).
+
+The Linux fixture is evidence, not an installed host. Fixture ABI v1 binds recursive paths,
+sizes and digests but not modes; release archives normalize files to 0644. XDG parser
+acceptance proves the emitted record shape, not that a desktop session launched it, and Bash
+history is not proof a command ran. Each ELF's only executable bytes are a nine-byte direct
+`exit(0)` syscall body, but its declared dynamic loader runs before that entry on a real
+execution attempt. It names `libc.so.6`, while the main object imports and calls no libc
+symbol and is deliberately minimal rather than compiler-shaped. External loader/dependency
+code is out of scope and the loader runs first.
+ArtifactForge never executes an ELF, runs
+`ldd`, launches a desktop entry, or sources history.
+
+The portable gates are complemented by a fixture-bound Ubuntu 24.04/x86-64 CI lane. It first
+runs Fixture Core's canonical, integrity and exact-reproduction verification plus Gates 1 and
+3, retaining their full reports and the CPython/parser-distribution versions. Native tools then
+observe only a held private snapshot byte-equal to that verified manifest. The canonical record
+binds exact native-tool bytes/package versions before and after observation, source and fixture
+pre/post digests, the normalized three-instruction disassembly, and a byte-identical history
+round-trip with a non-execution control. It remains observational: it performs none of the
+execution or activation steps excluded above.
 
 EvidenceForge is not a declared runtime or development dependency. Two isolated CI jobs install
 it for the pinned contract and the default-branch drift canary; the standalone test job does
@@ -185,13 +216,17 @@ breaks in one file rather than silently returning wrong identities.
 
 **Identity — proven within the gate's declared scope.** The answer-bearing materialized file
 digests, structural hashes and selected joins are re-derived from the files on disk through
-real parsers and only then compared; 40 of 40 checks hold, and appending a byte, rewriting the
+real parsers and only then compared; the 60-scene generator-assurance corpus (40 Windows/macOS
+scenes plus 20 Linux assurance scenes) holds all 1,300 of 1,300 checks, and appending a byte,
+rewriting the
 resident-file Amcache `FileId`, or corrupting a quarantine UUID turns Gate 2 red. This does not
 claim that every stale or absent decoy `FileId` names bytes shipped in the scene. Determinism is
 real: a batch regenerates byte-identical across processes, hash seeds, timezones and locales.
 
 **Artifact fidelity — partial, and measured.** Every classified structured format is opened
-by two independently implemented parsers. For SQLite and binary plists, the second
+by two independently implemented parsers. ELF uses LIEF plus pyelftools; XDG desktop entries
+use PyXDG plus a bounded raw reader; Bash history uses dissect.target plus a bounded raw
+reader. For SQLite and binary plists, the second
 implementation is a deliberately narrow, bounded raw reader maintained here—not an external
 endorsement. Gate 1 first captures the complete bounded scene through held, no-follow file
 descriptors and gives pathname-only parsers a frozen private copy of that immutable capture;
@@ -237,7 +272,9 @@ without understanding any of it.
 Fixing it means deleting questions rather than patching the generator: for
 `persisted_sha256` the declared pivot is "the one Run value naming a resident program", and
 balancing the scene so decoys are mentioned equally makes the reference solver itself fail.
-The question and the leak are the same object. Until that lands the benchmark is
+Linux assurance scenes are deliberately excluded from Gate 4, so they neither dilute nor
+repair this Windows/macOS benchmark result. The question and the leak are the same object.
+Until that lands the benchmark is
 **experimental** and no score from it should be reported. The generator's three gates pass;
 its assurance status is `pass`. That does not make the experimental benchmark valid.
 
@@ -246,7 +283,7 @@ files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.3.1, nothing published to PyPI. **Gates 1 to 3 pass;
+Early and experimental, version 0.4.0, nothing published to PyPI. **Gates 1 to 3 pass;
 generator-assurance status is `pass`. Benchmark-validity status is `fail` because Gate 4 is
 red.** `fidelity-scorecard.json` at the repository root is
 the honest record — it ships whatever it actually reads, and right now that includes a

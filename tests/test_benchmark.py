@@ -89,21 +89,60 @@ def test_the_answer_key_is_not_inside_the_served_directory(tmp_path):
     assert os.path.exists(os.path.join(paths["answers"], tasks[0].scenario_id + ".json"))
 
 
-def test_fixture_manifest_cannot_enter_a_served_benchmark_scene(tmp_path):
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "ARTIFACT_ANSWERS.json",
+        "private/GroUnd_TrUth.JsOn",
+        "nested/deeper/JOIN_MANIFEST.JSON",
+        ".metadata/FixTure.Json",
+    ),
+)
+def test_disclosure_filename_cannot_enter_a_served_benchmark_scene(
+    tmp_path, relative_path
+):
     staging = tmp_path / "staging"
-    staging.mkdir()
-    (staging / "fixture.json").write_text("public hashes and seed")
-    with pytest.raises(ValueError, match="publish benchmark answers"):
-        suite.stage(str(tmp_path / "served"), str(staging), ["fixture.json"])
+    source = staging / relative_path
+    source.parent.mkdir(parents=True)
+    source.write_text("private benchmark metadata")
+
+    with pytest.raises(ValueError, match="benchmark disclosure metadata"):
+        suite.stage(str(tmp_path / "served"), str(staging), [relative_path])
     assert not (tmp_path / "served").exists()
 
-    (staging / "fixture.json").rename(staging / "innocent.json")
+
+def test_fixture_manifest_marker_cannot_enter_a_served_benchmark_scene(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
     (staging / "innocent.json").write_text(
         '{"schema":"artifactforge-fixture-manifest-v1"}\n'
     )
-    with pytest.raises(ValueError, match="publish benchmark answers"):
+    with pytest.raises(ValueError, match="benchmark disclosure metadata"):
         suite.stage(str(tmp_path / "served"), str(staging), ["innocent.json"])
     assert not (tmp_path / "served").exists()
+
+
+def test_benign_near_disclosure_names_can_enter_a_served_benchmark_scene(tmp_path):
+    staging = tmp_path / "staging"
+    relative_paths = (
+        "ARTIFACT_ANSWER.json",
+        "nested/GROUND_TRUTHS.json",
+        "nested/deeper/JOIN-MANIFEST.json",
+        ".metadata/myfixture.json",
+        "fixture.json.bak",
+    )
+    for relative_path in relative_paths:
+        source = staging / relative_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"ordinary artifact: {relative_path}\n")
+
+    staged = suite.stage(str(tmp_path / "served"), str(staging), relative_paths)
+
+    assert staged == sorted(relative_paths)
+    for relative_path in relative_paths:
+        assert (tmp_path / "served" / relative_path).read_bytes() == (
+            staging / relative_path
+        ).read_bytes()
 
 
 def test_public_ids_reveal_nothing_and_differ_by_key(tmp_path):

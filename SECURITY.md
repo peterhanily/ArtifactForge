@@ -1,10 +1,10 @@
 # Security policy
 
 ArtifactForge generates **synthetic forensic artifacts** — binaries, registry hives, prefetch
-records and macOS databases — for training and evaluation. It ships no service and listens on
-no port. Fixture commands do parse caller-supplied local JSON and filesystem trees, so those
-boundaries are treated as untrusted. The security surface is unusual, and this file says what
-we actually care about.
+records, macOS databases, XDG entries and Bash history — for training and evaluation. It
+ships no service and listens on no port. Fixture commands do parse caller-supplied local JSON
+and filesystem trees, so those boundaries are treated as untrusted. The security surface is
+unusual, and this file says what we actually care about.
 
 ## Report privately
 
@@ -18,21 +18,27 @@ categories below.
    Every generated binary reproduces the forensic *signal* — a real import table, a real
    symbol table, and real content or structural hashes — without a payload. The PE's `.text`
    section is a single `ret` followed by zero padding; the Mach-O writer emits an eight-byte
-   `__text` containing `mov w0, #0 ; ret`. Gate 3 parses and bounds-checks both formats. For
+   `__text` containing `mov w0, #0 ; ret`; the ELF main object has one nine-byte RX body,
+   `xor edi,edi ; mov eax,60 ; syscall`. Gate 3 parses and bounds-checks all three formats. For
    PE it binds `AddressOfEntryPoint` to the sole executable `.text` section, admits only the
    modeled system DLL imports, and rejects every data directory except imports—including TLS
    and managed-code startup. For Mach-O it binds `LC_MAIN` to the sole executable instruction
    section, admits only the writer's system-library/load-command/section profile, rejects
    alternate startup mechanisms, and verifies that the CodeDirectory page hashes cover every
-   byte before the signature. Parseable mutations of each property are required to turn the
+   byte before the signature. For ELF it requires the exact file geometry, non-overlapping
+   file/virtual loads, zero-only slack, dynamic allowlist and absence of an alternate
+   main-object entry surface. Parseable mutations of each property are required to turn the
    gate red.
 
    The Mach-O is a genuinely loadable, ad-hoc-signed arm64 executable, because an unsigned one
    is not loadable at all and would therefore not be a realistic artifact. It runs and returns
-   zero. The fixed 16-bit DOS stub only prints its conventional message and exits. If you can
-   make anything this project emits execute native code beyond those fixed return/print stubs,
-   perform file, network, persistence or process operations, or carry a usable secret, that is
-   a bug and we want it before anyone else does. See
+   zero. The fixed 16-bit DOS stub only prints its conventional message and exits. A Linux
+   execution attempt enters the declared external loader/dependency code before the emitted
+   main object's direct-exit body; that external code is explicitly outside the main-object
+   instruction claim. If you can make emitted main-object code execute beyond the fixed
+   return/print/direct-exit bodies, or make any generated operation perform file, network,
+   persistence or process actions or carry a usable secret, that is a bug and we want it
+   before anyone else does. See
    [`docs/inert-by-construction.md`](docs/inert-by-construction.md).
 
 2. **A generated artifact could be mistaken for genuine evidence, or an indicator points at
@@ -57,6 +63,11 @@ timestamp is fabricated by a deterministic function of a seed. Do not submit the
 VirusTotal, a blocklist, a detection rule, a SIEM watchlist, or a threat-intelligence
 platform. A synthetic SHA256 that acquires a reputation is a small piece of pollution in
 somebody else's data, and it never goes away.
+
+Benchmark staging rejects known disclosure basenames case-insensitively at every depth:
+`ARTIFACT_ANSWERS.json`, `GROUND_TRUTH.json`, `JOIN_MANIFEST.json` and `fixture.json`. It also
+rejects Fixture Core's schema marker regardless of filename. Gallery metadata and fixture
+manifests must remain outside every solver-visible scene.
 
 Artifacts are generated for training a responder or evaluating an agent, and they belong in
 that context. If you publish results from them, say they are synthetic.

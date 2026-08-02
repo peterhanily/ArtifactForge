@@ -113,6 +113,56 @@ Covers knowledgeC, TCC and QuarantineEventsV2.
   or external validation.
 - **Marked.** A reserved `artifactforge_synthetic` key. launchd ignores keys it does not know.
 
+## elf
+
+- **A bounded direct-exit entry, not a claim that no code runs.** The sole executable segment
+  is exactly `xor edi,edi; mov eax,60; syscall`, a nine-byte x86-64 `exit(0)` body. The ELF also
+  declares `/lib64/ld-linux-x86-64.so.2`, so a real execution attempt enters the dynamic
+  loader before that entry. ArtifactForge never executes the file and never invokes `ldd`.
+- **The main object declares glibc but imports no callable symbol.** `libc.so.6` is the sole
+  `DT_NEEDED` value, while the main object has no dynamic symbol table, imported functions,
+  relocations, PLT/GOT, constructors, finalizers, TLS or alternate entry surface. External
+  loader/dependency code is outside that claim and the loader runs first. It should not be
+  described as a realistic glibc program merely because its dynamic metadata names libc.
+- **Minimal, not compiler-shaped.** Hand-assembled ELF64 little-endian x86-64 `ET_DYN`, with
+  exactly three R/RX/RW `PT_LOAD` segments, NX stack and RELRO. It intentionally lacks the
+  build-id, unwind data, symbol/version tables, alignment choices and linker details of a
+  normal compiler output. The profile is specifically glibc/x86-64, not generic Linux.
+- **Valid executable-format evidence, not an activation-ready filesystem.** Fixture ABI v1
+  binds paths, sizes and hashes but not modes; deterministic releases normalize files to
+  0644. Parser and native-tool acceptance do not imply that a released fixture is executable.
+- **Marked.** A named ELF note carries `ARTIFACTFORGE-SYNTHETIC-<16 hex>`.
+
+## desktop-entry
+
+- **Strict XDG naming record only.** One `[Desktop Entry]` group carries Version 1.5,
+  `Type=Application`, plain Name/Comment, one normalized absolute `Exec` path with no arguments
+  or field codes, and lowercase false Terminal/Hidden/DBusActivatable values. Localized keys,
+  actions, `TryExec`, quoting and additional groups are absent.
+- **Not proof of working persistence.** The file sits under the modeled user's recursive
+  `.config/autostart` export and PyXDG plus the raw reader accept its shape. ArtifactForge does
+  not install it or launch a desktop session, and Fixture ABI v1 does not bind the target
+  executable's mode. `desktop-file-validate` is native attestation, not an activation test.
+- **Deliberately narrow second reader.** The first-party parser rejects every desktop-entry
+  feature outside the emitted subset and never expands or executes `Exec`; it is an independent
+  implementation under the same project governance, not general XDG validation.
+- **Marked.** `X-ArtifactForge-Synthetic=ARTIFACTFORGE` is an extension key.
+
+## bash-history
+
+- **A record of command text, never proof of execution.** The file uses Bash extended-history
+  `#epoch` lines followed by one-line commands. Three exact resident guest paths and one quoted
+  `:` no-op marker are synthetic history entries; no claim is made that a shell ran them.
+- **Safe, deliberately tiny grammar.** Epochs are positive and strictly increasing. Command
+  strings are exact allowlisted resident paths or the marker no-op; arguments, operators,
+  pipes, redirection, substitution, multiline records, interpreters, network clients and
+  destructive verbs are rejected. ArtifactForge never sources or evaluates the history.
+- **Parser scope is loose-file history.** dissect.target and the bounded raw reader agree on
+  timestamp, order and command text. The scene has no shell-session metadata, exit statuses,
+  terminal context or proof that history writing was enabled on a real host.
+- **Marked.** The quoted `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` history record is inert data and
+  the raw profile requires its exact bounded form.
+
 ## Not emitted at all
 
 The quarantine xattr value is written as a **sidecar file**, not applied as a real extended

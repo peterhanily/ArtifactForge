@@ -7,9 +7,10 @@ Two properties, both checked on the emitted bytes rather than asserted in prose.
 **Payload-free.** A binary this project generates reproduces the forensic *signal* — a real
 import table, a real symbol table, and real content or structural hashes — without a payload.
 PE ``.text`` is ``ret`` plus zero padding and its DOS stub is fixed; Mach-O ``__text`` is
-``mov w0,#0 ; ret``. Both checks parse the emitted binary structure, locate the declared entry
-point and code section, and reject additional executable instruction sections. The Mach-O
-check also independently verifies the CodeDirectory page hashes and their coverage boundary.
+``mov w0,#0 ; ret``; ELF has one nine-byte RX segment that directly invokes ``exit(0)``.
+Each check parses the emitted binary structure, locates the declared entry point and code
+section, and rejects additional executable instruction sections. The Mach-O check also
+independently verifies the CodeDirectory page hashes and their coverage boundary.
 
 **Marked.** Every parser-classified structured format carries an in-band anchor identifying it
 as ArtifactForge output. A classified format with no marker is a failure. Plain sidecars are
@@ -37,10 +38,13 @@ from artifactforge.inventory import InventoryError, inventory_regular_files
 MARKERS = {
     "pe":       [b"ARTIFACTFORGE-SYNTHETIC-"],
     "macho":    [b"ARTIFACTFORGE-SYNTHETIC-"],
+    "elf":      [b"ARTIFACTFORGE-SYNTHETIC-"],
     "hive":     ["ArtifactForgeHive".encode("utf-16-le")],
     "prefetch": [b"ARTIFACTFORGE", "ARTIFACTFORGE".encode("utf-16-le")],
     "sqlite":   [b"ARTIFACTFORGE", "ARTIFACTFORGE".encode("utf-16-le")],
     "plist":    [b"ARTIFACTFORGE"],
+    "desktop-entry": [b"ARTIFACTFORGE"],
+    "bash-history":  [b"ARTIFACTFORGE"],
 }
 
 # RFC 2606 reserved TLDs/domains, and RFC 5737 / RFC 3849 documentation address ranges.
@@ -133,9 +137,48 @@ _ALLOWED_DYLIBS = {
     "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation",
 }
 
+# Gate-local Linux ELF64 profile.  These values are repeated deliberately rather than
+# imported from the writer: changing generation must not redefine the safety policy in the
+# same edit.  The dynamic loader named here executes before the entry point on a real host;
+# the claim proved below is therefore the bounded ArtifactForge entry body, not that no
+# external loader code would run.
+_ELF_HEADER = "<16sHHIQQQIHHHHHH"
+_ELF_PROGRAM_HEADER = "<IIQQQQQQ"
+_ELF_SECTION_HEADER = "<IIQQQQIIQQ"
+_ELF_IDENT = b"\x7fELF\x02\x01\x01\x00\x00" + b"\x00" * 7
+_ELF_ENTRY_BODY = bytes.fromhex("31ffb83c0000000f05")
+_ELF_INTERPRETER = b"/lib64/ld-linux-x86-64.so.2\x00"
+_ELF_DYNSTR = b"\x00libc.so.6\x00"
+_ELF_NOTE_NAME = b"ArtifactForge\x00"
+_ELF_MARKER = re.compile(rb"ARTIFACTFORGE-SYNTHETIC-[0-9a-f]{16}")
+_ELF_FILE_SIZE = 8784
+_ELF_SECTION_HEADERS_OFFSET = 8336
+_ELF_SECTION_NAMES_OFFSET = 8272
+_ELF_SECTION_NAMES = (
+    b"\x00.interp\x00.note.artifactforge\x00.dynstr\x00.text\x00.dynamic\x00.shstrtab\x00"
+)
+_PT_LOAD = 1
+_PT_DYNAMIC = 2
+_PT_INTERP = 3
+_PT_NOTE = 4
+_PT_PHDR = 6
+_PT_GNU_STACK = 0x6474E551
+_PT_GNU_RELRO = 0x6474E552
+_PF_X, _PF_W, _PF_R = 1, 2, 4
+_DT_NULL = 0
+_DT_NEEDED = 1
+_DT_STRTAB = 5
+_DT_STRSZ = 10
+_DT_FLAGS_1 = 0x6FFFFFFB
+_DF_1_PIE = 0x08000000
+
 
 class _MachOSafetyError(ValueError):
     """A structural or cryptographic Mach-O safety invariant did not hold."""
+
+
+class _ELFSafetyError(ValueError):
+    """A structural Linux ELF safety invariant did not hold."""
 
 
 @dataclass(frozen=True)
@@ -576,6 +619,386 @@ def _macho_code_is_inert(data: bytes) -> tuple[bool, str]:
                   + "; CodeDirectory covers every pre-signature byte")
 
 
+def _elf_error(condition: bool, message: str) -> None:
+    if not condition:
+        raise _ELFSafetyError(message)
+
+
+def _elf_unpack(fmt: str, data: bytes, offset: int, what: str) -> tuple:
+    size = struct.calcsize(fmt)
+    _elf_error(0 <= offset <= len(data) - size, f"truncated {what} at file offset {offset:#x}")
+    return struct.unpack_from(fmt, data, offset)
+
+
+def _elf_range(data: bytes, offset: int, size: int, what: str) -> bytes:
+    _elf_error(
+        offset >= 0 and size >= 0 and offset <= len(data) - size,
+        f"{what} range {offset:#x}:{offset + size:#x} exceeds the ELF file",
+    )
+    return data[offset:offset + size]
+
+
+def _elf_note_is_exact(note: bytes) -> None:
+    namesz, descsz, note_type = _elf_unpack("<III", note, 0, "ArtifactForge ELF note")
+    _elf_error(note_type == 0xAF01, f"unexpected ArtifactForge note type {note_type:#x}")
+    name_start = 12
+    name_end = name_start + namesz
+    description_start = (name_end + 3) & ~3
+    description_end = description_start + descsz
+    padded_end = (description_end + 3) & ~3
+    _elf_error(padded_end == len(note), "ArtifactForge ELF note has trailing or missing bytes")
+    _elf_error(note[name_start:name_end] == _ELF_NOTE_NAME, "ELF note owner is not ArtifactForge")
+    _elf_error(
+        not note[name_end:description_start].strip(b"\x00"),
+        "ELF note name padding is non-zero",
+    )
+    marker = note[description_start:description_end]
+    _elf_error(
+        _ELF_MARKER.fullmatch(marker) is not None,
+        "ELF note description is not the bounded synthetic marker",
+    )
+    _elf_error(
+        not note[description_end:padded_end].strip(b"\x00"),
+        "ELF note description padding is non-zero",
+    )
+
+
+def _elf_require_zero_slack(data: bytes, claimed_ranges: tuple[tuple[int, int], ...]) -> None:
+    """Reject data hidden outside every structure in the exact ArtifactForge layout."""
+    cursor = 0
+    for start, end in sorted(claimed_ranges):
+        _elf_error(
+            cursor <= start <= end <= len(data),
+            "ELF claimed file ranges overlap or extend beyond EOF",
+        )
+        _elf_error(
+            not data[cursor:start].strip(b"\x00"),
+            f"ELF carries non-zero unclaimed bytes at {cursor:#x}:{start:#x}",
+        )
+        cursor = end
+    _elf_error(
+        not data[cursor:].strip(b"\x00"),
+        f"ELF carries non-zero unclaimed bytes at {cursor:#x}:{len(data):#x}",
+    )
+
+
+def _elf_code_is_inert(data: bytes) -> tuple[bool, str]:
+    """Independently bind an ELF64 entry point to one exact nine-byte RX load.
+
+    The parser accepts only ArtifactForge's current x86-64 PIE profile: three non-overlapping
+    R/RX/RW loads, NX stack, RELRO over the dynamic table, one conventional glibc interpreter,
+    and a dynamic allowlist that names libc but imports no callable symbol.  It deliberately
+    does not call LIEF, pyelftools, the writer, the loader, or the file itself.
+    """
+    try:
+        header = _elf_unpack(_ELF_HEADER, data, 0, "ELF64 header")
+        (
+            identification,
+            file_type,
+            machine,
+            version,
+            entry,
+            program_offset,
+            section_offset,
+            flags,
+            header_size,
+            program_entry_size,
+            program_count,
+            section_entry_size,
+            section_count,
+            section_names_index,
+        ) = header
+        _elf_error(
+            len(data) == _ELF_FILE_SIZE,
+            f"ELF file size is {len(data)}, not the exact {_ELF_FILE_SIZE}-byte profile",
+        )
+        _elf_error(identification == _ELF_IDENT, "ELF identification is outside the LSB ELF64 profile")
+        _elf_error(file_type == 3 and machine == 62 and version == 1,
+                   "ELF is not an x86-64 ET_DYN current-version image")
+        _elf_error(flags == 0, f"ELF header flags are non-zero: {flags:#x}")
+        _elf_error(
+            (header_size, program_entry_size, program_count,
+             section_entry_size, section_count, section_names_index)
+            == (64, 56, 9, 64, 7, 6),
+            "ELF header/table cardinality disagrees with the bounded writer profile",
+        )
+        _elf_error(program_offset == 64, "ELF program headers do not immediately follow the header")
+        _elf_range(data, program_offset, program_count * program_entry_size,
+                   "ELF program-header table")
+        _elf_error(
+            section_offset == _ELF_SECTION_HEADERS_OFFSET
+            and section_offset + section_count * section_entry_size == len(data),
+            "ELF section-header table is not at the exact bounded offset ending at EOF",
+        )
+
+        programs = tuple(
+            _elf_unpack(
+                _ELF_PROGRAM_HEADER,
+                data,
+                program_offset + index * program_entry_size,
+                f"ELF program header {index}",
+            )
+            for index in range(program_count)
+        )
+        expected_types = (
+            _PT_PHDR,
+            _PT_INTERP,
+            _PT_LOAD,
+            _PT_LOAD,
+            _PT_LOAD,
+            _PT_DYNAMIC,
+            _PT_NOTE,
+            _PT_GNU_STACK,
+            _PT_GNU_RELRO,
+        )
+        _elf_error(
+            tuple(program[0] for program in programs) == expected_types,
+            "ELF program-header kinds/order is outside the bounded profile",
+        )
+        for index, program in enumerate(programs):
+            (_kind, permissions, offset, virtual, physical, file_size, memory_size, alignment) = program
+            _elf_error(virtual == physical, f"program header {index} has divergent VM/physical addresses")
+            _elf_error(memory_size >= file_size, f"program header {index} has filesz larger than memsz")
+            _elf_range(data, offset, file_size, f"program header {index}")
+            _elf_error(not (permissions & _PF_X and permissions & _PF_W),
+                       f"program header {index} is writable and executable")
+            if alignment > 1:
+                _elf_error(
+                    offset % alignment == virtual % alignment,
+                    f"program header {index} violates p_offset/p_vaddr congruence",
+                )
+
+        loads = tuple(program for program in programs if program[0] == _PT_LOAD)
+        load_file_ranges = sorted((item[2], item[2] + item[5]) for item in loads)
+        _elf_error(
+            all(
+                left_end <= right_start
+                for (_left_start, left_end), (right_start, _right_end)
+                in zip(load_file_ranges, load_file_ranges[1:])
+            ),
+            "ELF file-backed PT_LOAD segments overlap",
+        )
+        load_virtual_ranges = sorted((item[3], item[3] + item[6]) for item in loads)
+        _elf_error(
+            all(
+                left_end <= right_start
+                for (_left_start, left_end), (right_start, _right_end)
+                in zip(load_virtual_ranges, load_virtual_ranges[1:])
+            ),
+            "ELF virtual-address PT_LOAD segments overlap",
+        )
+        _elf_error(
+            loads
+            == (
+                (_PT_LOAD, _PF_R, 0, 0, 0, 675, 675, 0x1000),
+                (_PT_LOAD, _PF_R | _PF_X, 0x1000, 0x1000, 0x1000, 9, 9, 0x1000),
+                (_PT_LOAD, _PF_R | _PF_W, 0x2000, 0x2000, 0x2000, 80, 80, 0x1000),
+            ),
+            "ELF PT_LOAD permission/offset/size profile is not exact R, RX, RW",
+        )
+        rx = loads[1]
+        _elf_error(
+            rx[5] == rx[6] == len(_ELF_ENTRY_BODY)
+            and entry == rx[3]
+            and data[rx[2]:rx[2] + rx[5]] == _ELF_ENTRY_BODY,
+            "ELF entry does not cover exactly xor edi,edi; mov eax,60; syscall",
+        )
+
+        phdr, interp, _ro, _rx, rw, dynamic, note, stack, relro = programs
+
+        def contained(child: tuple, parent: tuple) -> bool:
+            return (
+                parent[2] <= child[2] <= parent[2] + parent[5] - child[5]
+                and parent[3] <= child[3] <= parent[3] + parent[6] - child[6]
+            )
+
+        _elf_error(
+            all(contained(child, loads[0]) for child in (phdr, interp, note)),
+            "PT_PHDR, PT_INTERP, or PT_NOTE lies outside the read-only PT_LOAD",
+        )
+        _elf_error(
+            phdr[1] == _PF_R
+            and phdr[2] == program_offset
+            and phdr[3] == program_offset
+            and phdr[5] == phdr[6] == program_count * program_entry_size
+            and phdr[7] == 8,
+            "PT_PHDR does not describe the exact read-only program-header table",
+        )
+        _elf_error(
+            interp[1] == _PF_R
+            and interp[5] == interp[6] == len(_ELF_INTERPRETER)
+            and interp[7] == 1
+            and _elf_range(data, interp[2], interp[5], "PT_INTERP") == _ELF_INTERPRETER,
+            "PT_INTERP is not the exact x86-64 glibc loader path",
+        )
+        _elf_error(
+            dynamic[1] == _PF_R | _PF_W
+            and dynamic[2:7] == rw[2:7]
+            and dynamic[7] == 8,
+            "PT_DYNAMIC does not exactly own the RW load",
+        )
+        _elf_error(
+            relro[1] == _PF_R and relro[2:7] == dynamic[2:7] and relro[7] == 1,
+            "PT_GNU_RELRO does not exactly cover the dynamic table",
+        )
+        _elf_error(
+            stack[1] == _PF_R | _PF_W
+            and stack[2:7] == (0, 0, 0, 0, 0)
+            and stack[7] == 16,
+            "PT_GNU_STACK is not the exact zero-sized RW/NX profile",
+        )
+        _elf_error(
+            note[1] == _PF_R and note[5] == note[6] and note[7] == 4,
+            "PT_NOTE is not the exact read-only ArtifactForge note profile",
+        )
+        _elf_note_is_exact(_elf_range(data, note[2], note[5], "PT_NOTE"))
+
+        sections = tuple(
+            _elf_unpack(
+                _ELF_SECTION_HEADER,
+                data,
+                section_offset + index * section_entry_size,
+                f"ELF section header {index}",
+            )
+            for index in range(section_count)
+        )
+        shstr = sections[section_names_index]
+        _elf_error(shstr[1] == 3 and shstr[2] == 0 and shstr[3] == 0,
+                   "section-name string table has the wrong type or flags")
+        names_blob = _elf_range(data, shstr[4], shstr[5], ".shstrtab")
+        _elf_error(
+            names_blob == _ELF_SECTION_NAMES,
+            "section-name string table contains unexpected or missing names",
+        )
+
+        def section_name(name_offset: int) -> str:
+            _elf_error(0 <= name_offset < len(names_blob), "section name offset is out of bounds")
+            end = names_blob.find(b"\x00", name_offset)
+            _elf_error(end >= 0, "section name is not NUL terminated")
+            try:
+                return names_blob[name_offset:end].decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise _ELFSafetyError("section name is not ASCII") from exc
+
+        names = tuple(section_name(section[0]) for section in sections)
+        _elf_error(
+            names == ("", ".interp", ".note.artifactforge", ".dynstr",
+                      ".text", ".dynamic", ".shstrtab"),
+            f"ELF section profile is unexpected: {names}",
+        )
+        expected_section_kinds_flags = (
+            (0, 0), (1, 2), (7, 2), (3, 2), (1, 6), (6, 3), (3, 0),
+        )
+        _elf_error(
+            tuple((section[1], section[2]) for section in sections)
+            == expected_section_kinds_flags,
+            "ELF section types/flags are outside the bounded profile",
+        )
+        _elf_error(not any(sections[0]), "ELF null section header is not all zero")
+        _elf_error(
+            tuple((section[6], section[7], section[8], section[9]) for section in sections[1:])
+            == (
+                (0, 0, 1, 0),
+                (0, 0, 4, 0),
+                (0, 0, 1, 0),
+                (0, 0, 16, 0),
+                (3, 0, 8, 16),
+                (0, 0, 1, 0),
+            ),
+            "ELF section link/info/alignment/entry-size profile is not exact",
+        )
+        _elf_error(
+            tuple((section[3], section[4], section[5]) for section in sections)
+            == (
+                (0, 0, 0),
+                (568, 568, 28),
+                (596, 596, 68),
+                (664, 664, 11),
+                (4096, 4096, 9),
+                (8192, 8192, 80),
+                (0, _ELF_SECTION_NAMES_OFFSET, len(_ELF_SECTION_NAMES)),
+            ),
+            "ELF section address/offset/size layout is not exact",
+        )
+        for index, section in enumerate(sections[1:], start=1):
+            _elf_range(data, section[4], section[5], f"ELF section {names[index]}")
+            if section[2] & 0x2:
+                _elf_error(section[3] == section[4],
+                           f"allocated section {names[index]} has divergent address/offset")
+        _elf_error(
+            sections[1][4] == interp[2] and sections[1][5] == interp[5],
+            ".interp does not exactly match PT_INTERP",
+        )
+        _elf_error(
+            sections[2][4] == note[2] and sections[2][5] == note[5],
+            ".note.artifactforge does not exactly match PT_NOTE",
+        )
+        _elf_error(
+            sections[4][3] == entry
+            and sections[4][4] == rx[2]
+            and sections[4][5] == rx[5],
+            ".text does not exactly match the sole RX entry segment",
+        )
+        _elf_error(
+            sections[5][3] == dynamic[3]
+            and sections[5][4] == dynamic[2]
+            and sections[5][5] == dynamic[5]
+            and sections[5][6] == 3
+            and sections[5][8] == 8
+            and sections[5][9] == 16,
+            ".dynamic does not exactly match PT_DYNAMIC and .dynstr",
+        )
+        _elf_error(
+            sections[6][4] + sections[6][5] <= section_offset,
+            ".shstrtab overlaps the section-header table",
+        )
+        dynstr = _elf_range(data, sections[3][4], sections[3][5], ".dynstr")
+        _elf_error(dynstr == _ELF_DYNSTR, "dynamic string table is not exactly libc.so.6")
+        _elf_error(
+            loads[0][2] <= sections[3][4]
+            and sections[3][4] + sections[3][5] <= loads[0][2] + loads[0][5]
+            and loads[0][3] <= sections[3][3]
+            and sections[3][3] + sections[3][5] <= loads[0][3] + loads[0][6],
+            ".dynstr lies outside the read-only PT_LOAD",
+        )
+        dynamic_bytes = _elf_range(data, dynamic[2], dynamic[5], "PT_DYNAMIC")
+        _elf_error(len(dynamic_bytes) == 5 * 16, "dynamic table does not contain exactly five tags")
+        dynamic_entries = tuple(
+            struct.unpack_from("<QQ", dynamic_bytes, index)
+            for index in range(0, len(dynamic_bytes), 16)
+        )
+        _elf_error(
+            dynamic_entries == (
+                (_DT_NEEDED, 1),
+                (_DT_STRTAB, sections[3][3]),
+                (_DT_STRSZ, len(_ELF_DYNSTR)),
+                (_DT_FLAGS_1, _DF_1_PIE),
+                (_DT_NULL, 0),
+            ),
+            f"ELF dynamic tags exceed the inert allowlist: {dynamic_entries}",
+        )
+        _elf_require_zero_slack(
+            data,
+            (
+                (0, loads[0][5]),
+                (rx[2], rx[2] + rx[5]),
+                (rw[2], rw[2] + rw[5]),
+                (sections[6][4], sections[6][4] + sections[6][5]),
+                (
+                    section_offset,
+                    section_offset + section_count * section_entry_size,
+                ),
+            ),
+        )
+    except (OverflowError, struct.error, _ELFSafetyError) as exc:
+        return False, str(exc)
+    return True, (
+        "ELF e_entry -> sole nine-byte RX .text: xor edi,edi; mov eax,60; syscall; "
+        "RW/NX stack, RELRO dynamic table, no imported callable symbol or alternate "
+        "main-object entry surface; external loader/dependency code is out of scope"
+    )
+
+
 def _indicator_hygiene(r: GateReport, where: str, data: bytes):
     for host in set(_URL.findall(data)):
         h = host.decode("ascii", "replace").lower().rstrip(".")
@@ -643,6 +1066,13 @@ def run(scene_dir: str) -> GateReport:
                 binary_safety_passed += 1
             else:
                 r.fail(f"{name}: {fmt} Mach-O is not inert — {why}")
+        elif fmt == "elf":
+            binary_safety_total += 1
+            ok, why = _elf_code_is_inert(data)
+            if ok:
+                binary_safety_passed += 1
+            else:
+                r.fail(f"{name}: {fmt} ELF is not inert — {why}")
 
         anchors = MARKERS.get(fmt)
         if anchors is None:

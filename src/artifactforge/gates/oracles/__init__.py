@@ -8,6 +8,22 @@ from artifactforge.gates.oracles.bplist_subset import (
     load_binary_plist,
     loads_binary_plist,
 )
+from artifactforge.gates.oracles.bash_history_subset import (
+    BashHistoryEntry,
+    BashHistoryLimits,
+    BashHistorySubsetError,
+    DEFAULT_BASH_HISTORY_LIMITS,
+    load_bash_history,
+    loads_bash_history,
+)
+from artifactforge.gates.oracles.desktop_entry_subset import (
+    DEFAULT_DESKTOP_ENTRY_LIMITS,
+    DesktopEntry,
+    DesktopEntryLimits,
+    DesktopEntrySubsetError,
+    load_desktop_entry,
+    loads_desktop_entry,
+)
 from artifactforge.gates.oracles.sqlite_subset import (
     Column,
     DEFAULT_SQLITE_LIMITS,
@@ -33,6 +49,18 @@ __all__ = [
     "BinaryPlistLimits",
     "load_binary_plist",
     "loads_binary_plist",
+    "BashHistoryEntry",
+    "BashHistoryLimits",
+    "BashHistorySubsetError",
+    "DEFAULT_BASH_HISTORY_LIMITS",
+    "load_bash_history",
+    "loads_bash_history",
+    "DEFAULT_DESKTOP_ENTRY_LIMITS",
+    "DesktopEntry",
+    "DesktopEntryLimits",
+    "DesktopEntrySubsetError",
+    "load_desktop_entry",
+    "loads_desktop_entry",
     "Column",
     "DEFAULT_SQLITE_LIMITS",
     "Index",

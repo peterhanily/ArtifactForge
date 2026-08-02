@@ -26,6 +26,7 @@ from artifactforge import __version__
 
 ROOT = Path(__file__).parents[1]
 SPEC = ROOT / "examples" / "fixtures" / "windows-loose-v1.json"
+LINUX_SPEC = ROOT / "examples" / "fixtures" / "linux-glibc-x86_64-loose-v1.json"
 
 
 def _build(path: Path):
@@ -64,6 +65,22 @@ def test_release_uses_only_fixed_ustar_metadata_and_regular_members(tmp_path):
     assert b"ustar\x0000" in (tmp_path / "fixture.tar").read_bytes()[:512]
     verified = verify_release_archive(tmp_path / "fixture.tar")
     assert verified.ok and verified.failures == ()
+
+
+def test_linux_release_keeps_every_elf_member_non_executable_under_fixture_abi_v1(tmp_path):
+    spec = FixtureSpec.from_json(LINUX_SPEC.read_bytes())
+    build_fixture(spec, tmp_path / "fixture")
+    create_release_archive(tmp_path / "fixture", tmp_path / "linux.tar")
+
+    with tarfile.open(tmp_path / "linux.tar", mode="r:") as bundle:
+        elf_members = [
+            member
+            for member in bundle.getmembers()
+            if member.isreg() and "/artifacts/home/v/.local/bin/" in member.name
+        ]
+
+    assert len(elf_members) == 5
+    assert all(member.mode == 0o644 for member in elf_members)
 
 
 def test_release_optional_assurance_runs_gates_one_and_three(tmp_path):

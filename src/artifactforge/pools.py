@@ -102,3 +102,17 @@ TCC_SERVICES = (
     "kTCCServiceSystemPolicyAllFiles", "kTCCServiceAccessibility", "kTCCServiceScreenCapture",
     "kTCCServiceMicrophone", "kTCCServiceCamera", "kTCCServiceAppleEvents",
 )
+
+# Plausible user-local Linux executable names.  They are intentionally extensionless and
+# vendor-neutral: an XDG autostart file naming one should look like an ordinary user helper,
+# without claiming authorship by a real organisation.  Every emitted ELF also carries the
+# in-band ArtifactForge note checked by Gate 3.
+LINUX_EXECUTABLE_NAMES = (
+    "af-sync", "session-helper", "notes-indexer", "cloud-watch", "tray-agent",
+    "update-check", "media-scan", "backup-watch", "desktop-sync", "cache-helper",
+    "profile-agent", "mount-watch", "search-index", "calendar-sync", "audio-helper",
+    "display-watch", "keyring-check", "portal-agent", "document-sync", "device-watch",
+    "workspace-index", "thumbnail-helper", "network-watch", "print-helper",
+    "storage-check", "theme-agent", "clipboard-sync", "notify-helper", "font-index",
+    "power-watch", "input-helper", "session-check",
+)

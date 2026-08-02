@@ -22,6 +22,7 @@ import tempfile
 from artifactforge import __version__
 from artifactforge import suite
 from artifactforge.bench.benchmark import generate_suite
+from artifactforge.compose.assurance import generate_linux_assurance
 from artifactforge.gates import GateReport, identity, inertness, solvability, validity
 from artifactforge.inventory import (
     InventoryError,
@@ -31,6 +32,16 @@ from artifactforge.inventory import (
 
 
 _SCENARIO_ID = re.compile(r"af1_[a-z2-7]{16}")
+
+
+def _positive_count(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("scenario count must be an integer") from exc
+    if count < 1:
+        raise argparse.ArgumentTypeError("scenario count must be at least 1")
+    return count
 
 
 def _merge(gate: int, name: str, question: str, reports) -> GateReport:
@@ -87,10 +98,24 @@ def _scorecard_measurement(args) -> list:
     return args._scorecard_measurement
 
 
+def _linux_assurance(args) -> list:
+    """Linux scenes for Gates 1-3 only; never questions, scores, or Gate 4 input."""
+    if not getattr(args, "_linux_assurance", None):
+        args._linux_assurance = generate_linux_assurance(
+            args.n, os.path.join(_workdir(args), "generator-assurance-linux")
+        )
+    return args._linux_assurance
+
+
+def _assurance(args) -> list:
+    """The deterministic W/M/L corpus over which generator assurance is measured."""
+    return [*_dev(args), *_linux_assurance(args)]
+
+
 def _scene_dirs(args) -> list:
     if getattr(args, "scene", None):
         return [args.scene]
-    return [t.directory for t in _dev(args)]
+    return [scene.directory for scene in _assurance(args)]
 
 
 def gate_validity(args) -> GateReport:
@@ -115,7 +140,7 @@ def gate_identity(args) -> GateReport:
         return r
     r = _merge(2, "identity",
                "do the declared answer-bearing pivots agree with emitted bytes?",
-               [identity.run(t.directory, t.join) for t in _dev(args)])
+               [identity.run(scene.directory, scene.join) for scene in _assurance(args)])
     r.denominator = (f"{r.metrics.get('checks_joined', 0)}/"
                      f"{r.metrics.get('checks_total', 0)} cross-artifact identity checks hold")
     return r
@@ -464,14 +489,26 @@ def main(argv=None) -> int:
     g.add_argument("name", choices=sorted(GATES))
     g.add_argument("--scene", help="an existing scene directory (validity and inertness only; "
                                    "identity needs a suite and will refuse)")
-    g.add_argument("--n", type=int, default=4, help="scenarios to generate (default 4)")
+    g.add_argument(
+        "--n",
+        type=_positive_count,
+        default=4,
+        help=("Windows/macOS scenario count (default 4); Gates 1-3 append enough Linux "
+              "scenes to balance the three-family assurance corpus"),
+    )
     g.add_argument("--gen-dir", help="where to generate them (default: a temp dir)")
     g.set_defaults(func=cmd_gate)
 
     s = sub.add_parser("scorecard", help="run every gate and emit the fidelity scorecard")
     s.add_argument("--out", help="write the scorecard to this FILE")
     s.add_argument("--check", help="compare against this baseline; exit 1 on regression")
-    s.add_argument("--n", type=int, default=4)
+    s.add_argument(
+        "--n",
+        type=_positive_count,
+        default=4,
+        help=("Windows/macOS measurement count; Gates 1-3 append balanced Linux assurance "
+              "scenes while Gate 4 remains Windows/macOS-only"),
+    )
     s.add_argument("--gen-dir")
     s.add_argument(
         "--allow-dirty",
@@ -530,7 +567,7 @@ def main(argv=None) -> int:
     bsub = b.add_subparsers(dest="bench_cmd", required=True)
     bn = bsub.add_parser("new", help="generate a suite")
     bn.add_argument("out", help="suite directory")
-    bn.add_argument("--n", type=int, default=20)
+    bn.add_argument("--n", type=_positive_count, default=20)
     bn.add_argument("--kind", choices=("dev", "holdout"), default="dev",
                     help="dev uses the published key and is not reportable; holdout mints one")
     bn.set_defaults(func=cmd_bench_new)

@@ -197,6 +197,24 @@ def test_profile_family_seed_and_unknown_fields_are_fail_closed():
         FixtureSpec.from_mapping(nested_unknown)
 
 
+def test_linux_profile_is_valid_and_bound_only_to_the_linux_family():
+    spec = FixtureSpec(
+        fixture_id="linux-autostart-001",
+        family="linux",
+        profile=ProfileSpec("linux-glibc-x86_64-loose-v1", "linux-01", "v"),
+        seed_hex="03" * 32,
+    )
+    assert FixtureSpec.from_json(spec.canonical_bytes()) == spec
+
+    with pytest.raises(FixtureValidationError, match="belongs to 'linux'"):
+        FixtureSpec(
+            fixture_id=spec.fixture_id,
+            family="windows",
+            profile=spec.profile,
+            seed_hex=spec.seed_hex,
+        )
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -380,3 +398,11 @@ def test_both_strict_json_schemas_are_packaged_resources():
     assert manifest_schema["additionalProperties"] is False
     assert manifest_schema["properties"]["payload"]["additionalProperties"] is False
     assert manifest_schema["$defs"]["artifact"]["additionalProperties"] is False
+    assert "linux" in spec_schema["properties"]["family"]["enum"]
+    assert "linux-glibc-x86_64-loose-v1" in (
+        spec_schema["properties"]["profile"]["properties"]["id"]["enum"]
+    )
+    assert "linux" in manifest_schema["$defs"]["recipe"]["properties"]["family"]["enum"]
+    assert "linux-glibc-x86_64-loose-v1" in (
+        manifest_schema["$defs"]["profile"]["properties"]["id"]["enum"]
+    )

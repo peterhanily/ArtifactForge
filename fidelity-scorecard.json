@@ -2,12 +2,12 @@
   "schema_version": "2.0",
   "generator": {
     "artifactforge_version": "0.5.0",
-    "git_commit": "8d909ad",
+    "git_commit": "8fe1ba6",
     "sqlite_version": "3.50.4",
     "source": {
       "schema": "artifactforge-source-provenance-v1",
-      "git_commit": "8d909ad55b79ba81fcece26eb90ed6b6082a1585",
-      "git_tree": "f782a805c01ded69260086c3a41f6721d1d9d269",
+      "git_commit": "8fe1ba64eb8ae963dfb719b6e82894fa9e7a3f22",
+      "git_tree": "58d9b49f9c737f6eec4a19bc9276800778103f3f",
       "worktree_clean": true,
       "dirty_snapshot_sha256": null,
       "untracked_file_count": 0,

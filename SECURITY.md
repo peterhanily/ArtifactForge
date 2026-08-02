@@ -8,7 +8,7 @@ unusual, and this file says what we actually care about.
 
 ## Report privately
 
-**security@peterhanily.com** — please do not open a public issue for either of the first two
+**security@peterhanily.com** — please do not open a public issue for any of the first three
 categories below.
 
 ## What we want to hear about
@@ -45,14 +45,30 @@ categories below.
    something real.**
 
    Every parser-classified structured format carries an in-band `ARTIFACTFORGE` anchor so a
-   file that escapes its bundle is still recognisable as generated. Plain sidecars are outside
-   that gate: in particular, the serialized `com.apple.quarantine` value has no in-band marker.
-   Domains must be RFC 2606 reserved (`.example`, `.invalid`, `.test`) and addresses RFC 5737 /
-   RFC 3849 or RFC 1918. If you find a classified format shipping without a marker, a marker
-   that a normal workflow strips, or an indicator naming something that could plausibly be a
-   real host, domain, bundle identifier or signing authority — tell us.
+   file that escapes its bundle is still recognisable as generated. The sole classified marker
+   exemption is the complete serialized `com.apple.quarantine` value, whose real four-field
+   grammar has nowhere to carry an extra marker. Gate 1 reads that bounded value through two
+   independent strict implementations, and Gate 3 grants the exemption only when its exact
+   byte profile is valid. Plain documentation and answer sidecars remain outside the marker
+   gate. Domains must be RFC 2606 reserved (`.example`, `.invalid`, `.test`) and addresses RFC
+   5737 / RFC 3849 or RFC 1918. If you find a classified format shipping without a marker or
+   explicit strict exemption, a marker that a normal workflow strips, or an indicator naming
+   something that could plausibly be a real host, domain, bundle identifier or signing
+   authority — tell us.
 
-3. Anything else: a normal public issue is fine.
+3. **A benchmark public export exposes evaluator-private state or accepts a cross-suite
+   submission.**
+
+   The exact solver export may contain only canonical `public.json` and its declared
+   `scenarios/` tree. Suite keys, answers, content caches, construction staging, fixture
+   manifests and ground-truth material are evaluator-private; staging is absent from a
+   finalized evaluator. The aggregate scenarios-tree commitment and
+   canonical public document are bound by `suite_id`, and every submitted row must carry that
+   same identity. If an exact public export includes or can reach private state, fails to bind
+   the declared bytes, or permits a submission from another suite to be graded, report it
+   privately. See [`docs/benchmark-v2.md`](docs/benchmark-v2.md).
+
+4. Anything else: a normal public issue is fine.
 
 ## What this project is not
 
@@ -71,6 +87,27 @@ manifests must remain outside every solver-visible scene.
 
 Artifacts are generated for training a responder or evaluating an agent, and they belong in
 that context. If you publish results from them, say they are synthetic.
+
+## Benchmark execution boundary
+
+Benchmark v1 is invalid as a performance measurement: completed footprint and stored-order
+shortcuts each scored 100%, a co-located parent traversal read answers at 100%, the public-key
+blind control scored 100%, candidate-aware chance was approximately 20.45% rather than 4.2%,
+and the declared join count was not re-derived from parser dependencies. Those results must
+not be quoted as benchmark performance.
+
+Benchmark v2 separates the private evaluator root from an exact public export and binds
+submissions to the export's `suite_id`. That filesystem export is a transfer boundary, not a
+sandbox. Arbitrary untrusted solvers must run in a separate OS-enforced trust domain—a
+locked-down account, container/VM without the evaluator mount, or separate machine—from which
+the evaluator root is unavailable. Running solver code in the evaluator process or under an
+account that can walk to `_answers/` recreates the verified 100% parent escape.
+
+Public development and reproducible scorecard-measurement corpora are deliberately
+non-reportable. A performance result requires a freshly keyed hold-out, the exact export,
+separate-trust-domain execution and evaluator-side grading of `suite_id`-bound submissions.
+No v2 benchmark performance score is reportable yet. The full validity contract is
+[`docs/benchmark-v2.md`](docs/benchmark-v2.md).
 
 ## Scanner claims require an attestation
 
@@ -94,6 +131,10 @@ threat-intelligence prohibition above, and even a fresh clean attestation is onl
 about exact bytes against dated signature snapshots — not proof of safety or inertness. The
 record is self-reported and unsigned, so it also does not independently authenticate the scan
 host or scanner executables.
+
+No fresh scanner attestation exists for the Benchmark v2 corpus. Do not carry a prior
+zero-detection statement forward to v2; only a new complete, passing record bound to the exact
+v2 bytes could support a dated scanner observation.
 
 ## Fixture filesystem boundary
 

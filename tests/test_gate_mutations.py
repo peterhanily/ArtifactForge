@@ -12,9 +12,11 @@ failure naming the thing that was broken. Comparing before and after, rather tha
 asserting redness, matters because some gates are legitimately red already — a test that only
 checked redness would pass without the mutation doing anything at all.
 """
+import copy
 import dataclasses
 import hashlib
 import os
+from pathlib import Path
 import struct
 
 import pytest
@@ -95,7 +97,7 @@ def test_identity_reddens_when_the_amcache_hash_join_is_destroyed(tmp_path):
 
     after = identity.run(task.directory, task.join)
     assert not after.ok
-    assert any("recorded hash belongs to a resident file" in f
+    assert any("recorded hashes cover every resident PE" in f
                for f in _new_fails(before, after)), _new_fails(before, after)
 
 
@@ -450,9 +452,8 @@ def test_solvability_reddens_when_an_answer_is_not_in_the_evidence(tmp_path):
     """MUTATION: replace one expected answer with a value no artifact contains."""
     holdout = _suite(tmp_path, "h", n=2, key=HOLDOUT_KEY)
     dev = _suite(tmp_path, "d", n=2)
-    # Gate 4 is legitimately RED: the footprint adversary scores far above its threshold and
-    # the gate is reporting that truthfully. So this compares NEW failures rather than
-    # asserting prior greenness — the mutation still has to be the thing that adds one.
+    # This deliberately small corpus is red under the a-priori power contract. Compare NEW
+    # failures so the answer mutation itself still has to be observed.
     before = solvability.run(holdout, dev)
 
     win = next(t for t in holdout if t.family == "windows")
@@ -460,21 +461,28 @@ def test_solvability_reddens_when_an_answer_is_not_in_the_evidence(tmp_path):
 
     after = solvability.run(holdout, dev)
     assert not after.ok
-    assert any("reference solver" in f for f in _new_fails(before, after))
+    assert any("does not re-derive" in f for f in _new_fails(before, after))
 
 
-def test_solvability_reddens_when_a_question_stops_requiring_a_join(tmp_path):
-    """MUTATION: mark every macOS question as answerable from one artifact."""
+def test_solvability_reddens_when_a_resolver_claims_one_dependency(tmp_path, monkeypatch):
+    """MUTATION: make the real resolver report only one of its two accessed artifacts."""
+    from artifactforge.bench import reference_solver
+
     holdout = _suite(tmp_path, "h", n=2, key=HOLDOUT_KEY)
     dev = _suite(tmp_path, "d", n=2)
     before = solvability.run(holdout, dev)
 
-    for t in holdout:
-        if t.family == "macos":
-            t.questions = [dataclasses.replace(q, joins=1) for q in t.questions]
+    rule = reference_solver.MACOS_QUARANTINE_RULE
+    original = reference_solver.ALLOWED_RULES[rule]
+
+    def one_dependency(question, files_snapshot):
+        resolution = original(question, files_snapshot)
+        return dataclasses.replace(resolution, artifacts=resolution.artifacts[:1])
+
+    monkeypatch.setitem(reference_solver.ALLOWED_RULES, rule, one_dependency)
 
     new = _new_fails(before, solvability.run(holdout, dev))
-    assert any("requires joining two artifacts" in f for f in new), new
+    assert any("fewer than two distinct artifacts" in f for f in new), new
 
 
 def test_solvability_reddens_when_the_blind_adversary_is_broken(tmp_path):
@@ -489,7 +497,10 @@ def test_solvability_reddens_when_the_blind_adversary_is_broken(tmp_path):
 
     broken_control = _suite(tmp_path, "h2", n=2, key=HOLDOUT_KEY)   # not a dev suite at all
     after = solvability.run(holdout, broken_control)
-    assert any("it is broken" in f for f in _new_fails(before, after)), after.fails
+    assert any(
+        "blind development control must reconstruct every answer" in failure
+        for failure in _new_fails(before, after)
+    ), after.fails
 
 
 def _macos(tmp_path, name="m"):
@@ -650,3 +661,45 @@ def test_identity_reddens_when_the_quarantine_uuid_join_is_broken(tmp_path):
     assert not after.ok
     assert any("quarantine UUID" in f or "matches no row" in f
                for f in _new_fails(before, after)), _new_fails(before, after)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda data: data + b"\n",
+        lambda data: data[:-36] + data[-36:].lower(),
+        lambda data: data + b";extra",
+    ),
+    ids=("newline", "lowercase-uuid", "extra-field"),
+)
+def test_identity_reddens_when_quarantine_xattr_is_noncanonical(tmp_path, mutate):
+    """MUTATION: retain recognizable fields but violate the exact xattr byte profile."""
+    task = _macos(tmp_path, "xattr-noncanonical")
+    before = identity.run(task.directory, task.join)
+    assert before.ok, before.render()
+    relative_path = task.join["benchmark_relations"][0]["selector"]["xattr_relative_path"]
+    path = Path(task.directory) / relative_path
+    path.write_bytes(mutate(path.read_bytes()))
+
+    after = identity.run(task.directory, task.join)
+    new = _new_fails(before, after)
+    assert not after.ok
+    assert any("strict xattr parser rejected" in failure for failure in new), new
+
+
+def test_identity_resolves_quarantine_selector_by_exact_relative_path(tmp_path):
+    task = _macos(tmp_path, "xattr-exact-path")
+    before = identity.run(task.directory, task.join)
+    assert before.ok, before.render()
+    join = copy.deepcopy(task.join)
+    relation = join["benchmark_relations"][0]
+    original_relative = relation["selector"]["xattr_relative_path"]
+    original = Path(task.directory) / original_relative
+    nested_relative = f"nested/evidence/{original.name}"
+    nested = Path(task.directory) / nested_relative
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(original.read_bytes())
+    relation["selector"]["xattr_relative_path"] = nested_relative
+
+    after = identity.run(task.directory, join)
+    assert after.ok, after.render()

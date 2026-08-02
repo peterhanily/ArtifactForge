@@ -1,6 +1,85 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-08-02
+
+### Added
+
+Benchmark v2 replaces subject-rooted question bundles with five scalar questions per
+Windows/macOS scene under two closed rules. Windows follows a selected Amcache `FileId` SHA-1
+into one of five resident PE byte strings and returns its SHA-256; macOS strictly parses one
+exact-path quarantine xattr UUID and follows it into one of five `QuarantineEventsV2` rows.
+Each scene is a five-answer bijection with exact 20% candidate chance. Linux remains a
+generator-assurance and Fixture Core family, not a Gate 4 benchmark population.
+
+`artifactforge bench export` publishes a no-replace solver root containing only canonical
+`public.json` and declared `scenarios/` artifacts. One aggregate scenarios-tree commitment
+keeps answer-bearing per-file digests private; `suite_id` binds the canonical protocol,
+questions, inventories and commitment and is mandatory on every submission row. The solver
+loader rejects extra/private material, unsafe trees, disclosure files, noncanonical JSON,
+inventory drift, commitment mismatches and cross-suite submissions.
+
+Gate 4 now derives five-candidate universes and actual multi-artifact dependency paths through
+the closed reference rules. Complete selection adversaries must cover every question and are
+tested in aggregate and per family/rule with exact conditional permutation inference over the
+`5!` within-scene assignments. A development-trained rank/union attack receives no hold-out
+answers. Both development and measured corpora require at least 20 scenes per class and an
+exact scene-level power contract with a predeclared alternative and target.
+
+Parser-valid counterfactuals swap Amcache `FileId`s, resident PE bytes, xattr UUIDs and
+quarantine-database UUIDs or make one relation absent. Each mutation must have its exact local
+five-question effect while rebuilt hives, PEs, databases and xattrs continue to pass their
+independent parser/profile checks. Source-aware blind reconstruction and co-located parent
+traversal are explicit positive controls.
+
+Serialized quarantine xattrs are now Gate 1 artifacts rather than unparsed sidecars. The
+artifact module's strict parser and an independently implemented bounded byte reader require a
+type-exact four-field consensus and canonical flags, timestamp, agent and UUID profile. Gate 2
+uses the same strict parser with exact relative selectors; Gate 3 grants only strict-valid
+non-executable xattr values its single marker exemption.
+
+### Security
+
+The public export is explicitly a transfer boundary, not a Python sandbox. Arbitrary untrusted
+solvers must run in a separate OS-enforced account/container/VM/machine with no evaluator path
+or mount. The finalized evaluator retains suite keys, answers and content cache; construction
+staging is transient and absent after atomic publication. It grades only matching `suite_id`
+submissions.
+
+Evaluator/public reads and submissions are bounded, no-follow and schema-exact. Generation is
+capped at 200 scenarios before destination mutation; the current maximum public export is
+2,701 files under the shared 4,096-file/256 MiB inventory contract. Evaluator truth and
+submission values share a 4,096-character answer limit. Final evaluator state is private,
+public exports are read-only, and implicit gate/scorecard work directories are removed after
+green, red or exceptional command completion.
+
+Benchmark v1 is invalidated: completed footprint and stored-order attacks recovered every
+answer on the hostile audit corpus, a co-located parent traversal recovered every answer, the
+disclosed-key blind control reconstructed its corpus without target reads, candidate-aware
+chance was approximately one in five, and `joins` was self-asserted rather than a parser-derived
+dependency trace. Its published numbers are withdrawn, not v2 baselines.
+
+Public development and scorecard-measurement corpora remain deliberately non-reportable. No
+v2 performance score is reportable until a fresh-key hold-out is exported, run in a separate
+trust domain, graded and audited end to end. No fresh scanner attestation exists for the v2
+corpus; earlier scanner prose cannot be carried forward.
+
+### Changed
+
+The benchmark derivation domain and public document schema are versioned for v2, preventing
+v1 and v2 suites from mixing. The clean-source v0.5 scorecard reports generator assurance,
+experimental benchmark validity and the all-gates compatibility verdict as `pass`. Its
+reproducible measurement corpus remains explicitly non-reportable, so this status publishes no
+agent-performance or shortcut-attack score.
+The v2 public development key and question schema also invalidate every pre-release evaluator,
+public export, submission and generated sample from the earlier development line; regenerate
+them as one unit rather than attempting to migrate or relabel their identities.
+
+Gate 4 now predeclares 39 exact randomization comparisons across eleven registered attacks,
+two trained ensembles, two family/rule classes and aggregate. Ten mandatory independently
+constructed positive controls cover the eight complete attacks and both production ensemble
+wrappers; all registered execution paths fail red. Published-number checks retain protocol
+constants and scoped scorecard status while prohibiting public-corpus attack diagnostics from
+being promoted into performance prose.
 
 ### Documentation
 
@@ -55,9 +134,11 @@ as well as Fixture Core's schema marker under any filename.
 ### Changed
 
 Generator assurance now covers a deterministic balanced Windows/macOS/Linux population for
-Gates 1–3. Gate 4 remains Windows/macOS-only and its deliberately failing reference 100%,
-footprint 72.7% and chance 4.2% measurements are unchanged. Linux fixture releases remain
-loose evidence rather than activation-ready filesystems: Fixture ABI v1 does not bind modes
+Gates 1–3. At the time, Gate 4 remained Windows/macOS-only and its benchmark-v1 reference
+100%, footprint 72.7% and stated chance 4.2% measurements were unchanged. Those historical
+v1 figures are now withdrawn and invalidated; they must not be quoted or compared with
+benchmark v2. Linux fixture releases remain loose evidence rather than activation-ready
+filesystems: Fixture ABI v1 does not bind modes
 and deterministic archives normalize artifact files to 0644. XDG records are naming evidence,
 not proof of working persistence; Bash history is not proof of execution; the ELF's dynamic
 loader would run before its direct-exit entry, while the main object imports or calls no libc
@@ -89,9 +170,10 @@ directly and no longer exempts a file merely because its leaf is named `JOIN_MAN
 ### Changed
 
 Windows and macOS artifact bytes, fixture recipes and payload-tree digests are unchanged.
-The deterministic 40-scene scorecard measurements are also unchanged: 880/880 Gate 1 reads,
-420/420 semantic checks, 400/400 Gate 2 joins, 200/200 binary checks, 440/440 markers, and the
-same deliberately failing 72.7% Gate 4 adversarial floor.
+The deterministic 40-scene scorecard measurements were also unchanged at that release:
+880/880 Gate 1 reads, 420/420 semantic checks, 400/400 Gate 2 joins, 200/200 binary checks and
+440/440 markers, along with its then-recorded 72.7% benchmark-v1 adversarial floor. That v1
+benchmark number is now withdrawn and invalidated, not a baseline for v2.
 
 ## 0.3.0 - 2026-08-01
 

@@ -7,7 +7,7 @@
     "shared_served_relpath": "home/v/.local/bin/session-check",
     "shared_sha256": "64dec881b31c21307d9ac56ca340f071f2fbcc66933434e08161804cb274b2bd"
   },
-  "join": {
+  "derived_evidence": {
     "family": "linux",
     "profile": "linux-glibc-x86_64-loose-v1",
     "os": "linux glibc-x86_64",

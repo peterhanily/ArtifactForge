@@ -8,16 +8,27 @@ a silent leak.
 
 Depends on: model, suite, content, artifacts, compose. Nothing here may import ingest.
 """
+
 from artifactforge.bench.benchmark import (
     PublicQuestion,
     PublicTask,
     Question,
     Score,
     Task,
+    frozen_public_tasks,
     generate_batch,
     generate_suite,
     grade,
 )
 
-__all__ = ["Task", "PublicTask", "Question", "PublicQuestion", "Score",
-           "generate_suite", "generate_batch", "grade"]
+__all__ = [
+    "Task",
+    "PublicTask",
+    "Question",
+    "PublicQuestion",
+    "Score",
+    "frozen_public_tasks",
+    "generate_suite",
+    "generate_batch",
+    "grade",
+]

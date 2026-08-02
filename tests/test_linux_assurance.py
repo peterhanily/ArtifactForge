@@ -70,4 +70,4 @@ def test_cli_rejects_vacuous_scenario_counts_before_generation(command, capsys):
     with pytest.raises(SystemExit) as error:
         cli_module.main([*command, "--n", "0"])
     assert error.value.code == 2
-    assert "scenario count must be at least 1" in capsys.readouterr().err
+    assert "benchmark suite size must be between 1 and 200" in capsys.readouterr().err

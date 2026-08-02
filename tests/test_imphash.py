@@ -39,3 +39,28 @@ def test_imphash_of_pure_function():
     import hashlib
     expected = hashlib.md5(b"kernel32.createfilea,kernel32.exitprocess,ws2_32.socket").hexdigest()
     assert imphash_of(imports) == expected
+
+
+def test_fixed_size_pe_profile_survives_both_parsers_and_gate3(tmp_path):
+    """Variable imports must never turn file length into a benchmark role signal."""
+    import lief
+    import pefile
+
+    from artifactforge.gates import inertness
+
+    store = ContentStore("artifactforge::fixed-pe-profile", str(tmp_path / "cache"))
+    scene = tmp_path / "scene"
+    scene.mkdir()
+    lengths = set()
+    for index in range(128):
+        content = store.materialize(f"pe:profile-{index:03d}")
+        lengths.add(len(content.bytes))
+        assert pefile.PE(data=content.bytes).get_imphash() == content.imphash
+        assert lief.parse(content.path) is not None
+        (scene / f"candidate-{index:03d}.exe").write_bytes(content.bytes)
+
+    assert lengths == {2729}
+    report = inertness.run(str(scene))
+    assert report.ok, report.render()
+    assert report.metrics["binary_safety_checks_passed"] == 128
+    assert report.metrics["binary_safety_checks_total"] == 128

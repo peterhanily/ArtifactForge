@@ -64,6 +64,22 @@ def test_every_gate_has_all_six_bindings(name):
         f"gate '{name}' is not described in docs/DESIGN.md"
 
 
+def test_gate4_ci_uses_only_the_deterministic_source_bound_scorecard():
+    workflow = _read(".github/workflows/ci.yml")
+
+    assert workflow.count("- name: Gate 4 — solvability") == 1
+    assert re.search(
+        r"- name: Gate 4 — solvability \(source-bound deterministic scorecard check\)\s+"
+        r"run: uv run artifactforge scorecard --n 40 --check fidelity-scorecard\.json",
+        workflow,
+    )
+    assert "artifactforge gate solvability" not in workflow
+    assert "known red" not in workflow.lower()
+    assert "Type-I rejection" in workflow
+    assert "- name: Demo — the whole loop end to end" in workflow
+    assert "AF=.venv/bin/artifactforge ./scripts/demo.sh" in workflow
+
+
 def test_gate_reports_are_well_formed(tmp_path):
     task = _windows(tmp_path)
     for report in (validity.run(task.directory), identity.run(task.directory, task.join),

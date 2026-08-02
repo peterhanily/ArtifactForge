@@ -38,6 +38,12 @@ _IMPORT_POOL = [
     ("ws2_32.dll", ["WSAStartup", "socket", "connect", "send", "recv"]),
 ]
 
+# Every PE in the bounded writer profile reserves the same on-disk .rdata extent.  Import
+# selection is intentionally variable (that is what makes IMPHASH useful), but file length is
+# not semantic evidence and must not reveal which candidate a benchmark relation names.  The
+# complete import pool fits in 0x400 bytes; _assemble_pe checks that invariant before writing.
+_PE_RDATA_RAW_SIZE = 0x400
+
 
 def _pick_imports(content_seed: bytes):
     r = _prng_bytes(_sub_seed(content_seed, "imports"), 64)
@@ -151,7 +157,7 @@ def _assemble_pe(content_seed: bytes, imports) -> bytes:
     opt = struct.pack("<H", 0x20B)              # Magic PE32+
     opt += struct.pack("<BB", 14, 0)            # linker version
     opt += struct.pack("<I", 0x200)             # SizeOfCode
-    opt += struct.pack("<I", 0x200)             # SizeOfInitializedData
+    opt += struct.pack("<I", _PE_RDATA_RAW_SIZE)  # SizeOfInitializedData
     opt += struct.pack("<I", 0)                 # SizeOfUninitializedData
     opt += struct.pack("<I", 0x1000)            # AddressOfEntryPoint
     opt += struct.pack("<I", 0x1000)            # BaseOfCode
@@ -183,7 +189,12 @@ def _assemble_pe(content_seed: bytes, imports) -> bytes:
         return name.ljust(8, "\x00").encode() + struct.pack(
             "<IIIIIIHHI", vsize, rva_, rawsize, rawptr, 0, 0, 0, 0, chars)
 
-    rdata_rawsize = ((len(blob) + 0x1FF) // 0x200) * 0x200
+    if len(blob) > _PE_RDATA_RAW_SIZE:
+        raise ValueError(
+            f"PE import blob is {len(blob)} bytes, outside the fixed "
+            f"{_PE_RDATA_RAW_SIZE}-byte .rdata profile"
+        )
+    rdata_rawsize = _PE_RDATA_RAW_SIZE
     text = _section(".text", 0x200, 0x1000, 0x200, 0x400, 0x60000020)
     rdata = _section(".rdata", max(0x200, len(blob)), RDATA_RVA, rdata_rawsize, RDATA_RAW, 0x40000040)
     hdr = dos + coff + opt + text + rdata
@@ -248,11 +259,13 @@ class ContentStore:
                     return path
             # Present but wrong: a torn write. Fall through and replace it.
         tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "wb") as f:
+        with open(tmp, "xb") as f:
+            os.chmod(tmp, 0o600)
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)                     # atomic within the same directory
+        os.chmod(path, 0o600)
         return path
 
     def materialize(self, content_id: str) -> Content:

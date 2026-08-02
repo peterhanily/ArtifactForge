@@ -59,35 +59,60 @@ def test_exactly_one_autostart_names_a_resident_program(tmp_path):
     assert resident == [s.join["persisted"]["path"]]
 
 
-def test_exactly_one_amcache_hash_belongs_to_a_resident_file(tmp_path):
+def test_five_amcache_hashes_form_a_bijection_over_resident_files(tmp_path):
     RegistryHive = pytest.importorskip("regipy.registry").RegistryHive
     s = _scene(tmp_path)
     files = _resident(s.directory)
     by_sha1 = {hashlib.sha1(d).hexdigest(): n for n, d in files.items()}   # noqa: S324
     iaf = RegistryHive(os.path.join(s.directory, "Amcache.hve")).get_key(
         "\\Root\\InventoryApplicationFile")
-    rows = [v.value for sub in iaf.iter_subkeys() for v in sub.get_values()
-            if v.name == "FileId"]
-    assert len(rows) >= 6, "a single Amcache row makes the hash pivot a lookup"
-    matched = [by_sha1[r[4:]] for r in rows if r[4:] in by_sha1]
-    assert matched == [s.join["amcache_match"]["name"].lower()]
+    rows = [
+        {value.name: value.value for value in subkey.get_values()}
+        for subkey in iaf.iter_subkeys()
+    ]
+    assert len(rows) == 8
+    matched = {
+        row["LowerCaseLongPath"]: by_sha1[row["FileId"][4:]]
+        for row in rows if row["FileId"][4:] in by_sha1
+    }
+    assert len(matched) == len(files) == 5
+    assert sorted(matched.values()) == sorted(files)
+
+    relations = s.join["benchmark_relations"]
+    assert len(relations) == 5
+    for relation in relations:
+        selector = relation["selector"]["lower_case_long_path"]
+        assert matched[selector] == relation["candidate"].lower()
+        data = files[relation["candidate"].lower()]
+        assert hashlib.sha1(data).hexdigest() == relation["link_value"]  # noqa: S324
+        assert hashlib.sha256(data).hexdigest() == relation["expected"]
 
 
-def test_the_persisted_binary_is_recorded_under_a_stale_hash(tmp_path):
-    """Following names and following hashes must reach different files, or neither is really
-    a pivot — this is what makes the scene's two hash questions independent."""
+def test_amcache_relation_has_no_name_or_size_shortcut(tmp_path):
+    """Historical names never name current files and every resident has one file size."""
     RegistryHive = pytest.importorskip("regipy.registry").RegistryHive
     s = _scene(tmp_path)
-    persisted = s.join["persisted"]
+    files = _resident(s.directory)
+    assert {len(data) for data in files.values()} == {2729}
     iaf = RegistryHive(os.path.join(s.directory, "Amcache.hve")).get_key(
         "\\Root\\InventoryApplicationFile")
-    rows = {}
+    rows = []
+    record_keys = []
     for sub in iaf.iter_subkeys():
-        v = {x.name: x.value for x in sub.get_values()}
-        rows[v["LowerCaseLongPath"]] = v["FileId"][4:]
-    assert persisted["path"].lower() in rows
-    assert rows[persisted["path"].lower()] != persisted["sha1"]
-    assert s.join["amcache_match"]["name"] != persisted["name"]
+        record_keys.append(sub.name)
+        rows.append({value.name: value.value for value in sub.get_values()})
+    current_names = set(files)
+    resident_sha1s = {hashlib.sha1(data).hexdigest() for data in files.values()}  # noqa: S324
+    assert all(
+        not any(sha1.startswith(record_key.removeprefix("0000")) for sha1 in resident_sha1s)
+        for record_key in record_keys
+    )
+    for relation in s.join["benchmark_relations"]:
+        selector = relation["selector"]["lower_case_long_path"]
+        row = next(row for row in rows if row["LowerCaseLongPath"] == selector)
+        assert row["Name"].lower() not in current_names
+        assert selector.rsplit("\\", 1)[-1] not in current_names
+        assert row["Size"] == 2729
 
 
 def test_prefetch_carries_execution_and_exactly_one_orphan(tmp_path):

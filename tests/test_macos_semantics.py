@@ -12,7 +12,7 @@ import pytest
 from artifactforge import suite
 from artifactforge.compose.scene import build_macos_scene
 from artifactforge.content import ContentStore
-from artifactforge.gates import validity
+from artifactforge.gates import inertness, validity
 from artifactforge.model import macos_profile
 
 pytest.importorskip("lief")
@@ -35,25 +35,32 @@ def _new_fails(before, after):
     return [failure for failure in after.fails if failure not in before.fails]
 
 
-def test_macos_gate_has_two_reads_and_two_semantic_checks_per_sqlite_and_plist(tmp_path):
+def test_macos_gate_has_two_reads_and_two_semantic_checks_per_structured_artifact(tmp_path):
     task = _scene(tmp_path)
     report = validity.run(task.directory)
     assert report.ok, report.render()
     assert not report.gaps
     assert report.metrics == {
-        "oracle_reads_passed": 22,
-        "oracle_reads_total": 22,
-        "semantic_checks_passed": 12,
-        "semantic_checks_total": 12,
+        "oracle_reads_passed": 32,
+        "oracle_reads_total": 32,
+        "semantic_checks_passed": 22,
+        "semantic_checks_total": 22,
     }
 
 
 def test_each_parser_pair_receives_the_same_immutable_snapshot_object(tmp_path, monkeypatch):
     task = _scene(tmp_path, "snapshots")
-    observed = {"sqlite": [], "plist": []}
+    observed = {"sqlite": [], "plist": [], "quarantine-xattr": []}
     originals = {
         name: validity.READERS[name]
-        for name in ("sqlite3", "sqlite-raw", "plistlib", "bplist-raw")
+        for name in (
+            "sqlite3",
+            "sqlite-raw",
+            "plistlib",
+            "bplist-raw",
+            "macos-xattr",
+            "quarantine-xattr-raw",
+        )
     }
 
     def recording(kind, name):
@@ -68,6 +75,12 @@ def test_each_parser_pair_receives_the_same_immutable_snapshot_object(tmp_path, 
         monkeypatch.setitem(validity.READERS, name, recording("sqlite", name))
     for name in ("plistlib", "bplist-raw"):
         monkeypatch.setitem(validity.READERS, name, recording("plist", name))
+    for name in ("macos-xattr", "quarantine-xattr-raw"):
+        monkeypatch.setitem(
+            validity.READERS,
+            name,
+            recording("quarantine-xattr", name),
+        )
 
     report = validity.run(task.directory)
     assert report.ok, report.render()
@@ -150,9 +163,90 @@ def test_invalid_reader_result_shape_is_not_counted_as_a_pass(tmp_path, monkeypa
     task = _scene(tmp_path, "shape")
     monkeypatch.setitem(validity.READERS, "sqlite-raw", lambda _source: "looks plausible")
     report = validity.run(task.directory)
-    assert report.metrics["oracle_reads_passed"] == 19
-    assert report.metrics["oracle_reads_total"] == 22
+    assert report.metrics["oracle_reads_passed"] == 29
+    assert report.metrics["oracle_reads_total"] == 32
     assert any("invalid observation shape" in failure for failure in report.fails)
+
+
+def test_quarantine_xattr_consensus_is_type_exact(tmp_path, monkeypatch):
+    task = _scene(tmp_path, "xattr-types")
+    before = validity.run(task.directory)
+    assert before.ok
+    original = validity.READERS["quarantine-xattr-raw"]
+
+    def altered(source):
+        view = original(source)
+        return dataclasses.replace(view, timestamp_unix=True)
+
+    monkeypatch.setitem(validity.READERS, "quarantine-xattr-raw", altered)
+    after = validity.run(task.directory)
+    new = _new_fails(before, after)
+    assert any("quarantine-xattr-consensus" in failure for failure in new), new
+    assert after.metrics["oracle_reads_passed"] == after.metrics["oracle_reads_total"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda data: data + b"\n",
+        lambda data: data[:-36] + data[-36:].lower(),
+        lambda data: b"0081" + data[4:],
+        lambda data: data[:5] + b"A" + data[6:],
+        lambda data: data + b";extra",
+    ),
+    ids=("newline", "lowercase-uuid", "wrong-flags", "uppercase-time", "extra-field"),
+)
+def test_noncanonical_quarantine_xattr_is_gate1_red(tmp_path, mutate):
+    task = _scene(tmp_path, "xattr-profile")
+    before = validity.run(task.directory)
+    assert before.ok, before.render()
+    relative_path = task.join["benchmark_relations"][0]["selector"]["xattr_relative_path"]
+    path = Path(task.directory) / relative_path
+    path.write_bytes(mutate(path.read_bytes()))
+
+    after = validity.run(task.directory)
+    new = _new_fails(before, after)
+    assert not after.ok
+    assert any(
+        "macos-xattr rejected" in failure
+        or "quarantine-xattr-raw rejected" in failure
+        for failure in new
+    ), new
+
+
+def test_only_a_strict_quarantine_xattr_earns_the_gate3_marker_exemption(tmp_path):
+    value = b"0181;65920080;Safari;01234567-89AB-4CDE-8F01-23456789ABCD"
+
+    exact = tmp_path / "exact"
+    exact.mkdir()
+    (exact / "sample.quarantine.xattr").write_bytes(value)
+    gate1 = validity.run(str(exact))
+    gate3 = inertness.run(str(exact))
+    assert gate1.ok, gate1.render()
+    assert gate3.ok, gate3.render()
+    assert gate3.metrics["formats_total"] == 0
+
+    malformed = tmp_path / "malformed"
+    malformed.mkdir()
+    (malformed / "sample.quarantine.xattr").write_bytes(value + b"\n")
+    gate1 = validity.run(str(malformed))
+    gate3 = inertness.run(str(malformed))
+    assert not gate1.ok
+    assert not gate3.ok
+    assert any("cannot use the synthetic-marker exemption" in failure for failure in gate3.fails)
+
+    other_format = tmp_path / "other-format"
+    other_format.mkdir()
+    (other_format / "sample.desktop").write_bytes(value)
+    gate3 = inertness.run(str(other_format))
+    assert not gate3.ok
+    assert any("desktop-entry carries no in-band synthetic marker" in failure for failure in gate3.fails)
+
+    unclassified = tmp_path / "unclassified"
+    unclassified.mkdir()
+    (unclassified / "sample.bin").write_bytes(value)
+    assert not validity.run(str(unclassified)).ok
+    assert not inertness.run(str(unclassified)).ok
 
 
 def test_quarantine_control_byte_is_profile_red_while_both_readers_stay_green(tmp_path):

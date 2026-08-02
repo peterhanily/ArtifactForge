@@ -15,7 +15,7 @@ Three generated scenes, committed so they can be read without running anything.
 
 | Sample | Family | What it holds |
 |---|---|---|
-| [`01-windows-dropper`](01-windows-dropper/) | Windows | Five PEs, a Run key with three autostarts, eight Amcache records and four prefetch files. Persistence names one binary; Amcache's hashes match a different one; one execution record names a program that is gone. |
+| [`01-windows-dropper`](01-windows-dropper/) | Windows | Five equal-size PEs, a Run key with three autostarts, eight Amcache records and four prefetch files. Five historical Amcache FileIds match the five resident byte streams; persistence and execution records remain a separate identity layer, including one program that is gone. |
 | [`02-macos-quarantined-app`](02-macos-quarantined-app/) | macOS | Five signed arm64 Mach-O binaries with quarantine records, a TCC database with grants and refusals, knowledgeC usage, and LaunchAgent plists. One app was allowed *and* used; everything else about it hangs off its quarantine UUID. |
 | [`03-linux-autostart-history`](03-linux-autostart-history/) | Linux | Five nested ELF64 x86-64 files, three XDG autostart records and one timestamped Bash history. One resident path is named by both text artifacts; neither record proves activation or execution. |
 

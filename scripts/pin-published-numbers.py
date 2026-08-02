@@ -1,74 +1,95 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Rewrite the figures quoted in prose so they equal the committed scorecard.
+"""Synchronize the scoped status block with the committed scorecard.
 
-`tests/test_published_numbers.py` catches the divergence; this closes it. Between them the
-README's numbers are as maintained as the code, which they were not: the scorecard was
-regenerated twice after the prose had been pinned to it, and prose does not regenerate.
+The historical version of this helper copied benchmark attack percentages into prose.  That
+made public, non-reportable diagnostics look like product results and encouraged withdrawn v1
+figures to survive protocol changes.  Protocol constants are now checked directly from the
+current measurement contract by ``tests/test_published_numbers.py``; this helper updates only
+the three machine-scoped verdicts and the version of the scorecard that owns them.
 
-Run after anything that changes what the gates measure:
+Run after publishing a clean-source scorecard:
 
     artifactforge scorecard --n 40 --out fidelity-scorecard.json
     python scripts/pin-published-numbers.py
     pytest -q tests/test_published_numbers.py
-
-It edits only the percentage inside sentences it recognises, and reports anything it could not
-find rather than silently doing nothing — a pinning tool that quietly matches nothing is worse
-than no pinning tool.
 """
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import sys
+import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = Path(__file__).resolve().parent.parent
+STATUS_START = "<!-- scorecard-status:start -->"
+STATUS_END = "<!-- scorecard-status:end -->"
+STATUS_PATTERN = re.compile(
+    re.escape(STATUS_START) + r".*?" + re.escape(STATUS_END),
+    re.DOTALL,
+)
 
-#: (file, regex with one capture group around the number, which scorecard figure it must be).
-#: Anchored on surrounding words rather than on the digits, so a stale value still matches.
-TARGETS = [
-    ("README.md", r"(?<=at )(\d+(?:\.\d+)?%)(?= against a \d+(?:\.\d+)?% floor)", "footprint"),
-    ("README.md", r"(?<=against a )(\d+(?:\.\d+)?%)(?= floor)", "chance"),
-    ("README.md", r"(?<=parser-assisted completion\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "footprint"),
-    ("README.md", r"(?<=visible candidates\) \| \*\*)(\d+(?:\.\d+)?%)(?=\*\* \|)", "chance"),
-    ("docs/ROADMAP.md", r"(?<=corpus it scores \*\*)(\d+(?:\.\d+)?%)(?=\*\* against)", "footprint"),
-    ("docs/ROADMAP.md", r"(?<=scorecard's \*\*)(\d+(?:\.\d+)?%)(?=\*\* chance floor)", "chance"),
-    ("docs/DESIGN.md", r"(?<=corpus it scores )(\d+(?:\.\d+)?%)(?= against)", "footprint"),
-    ("docs/DESIGN.md", r"(?<=scorecard's )(\d+(?:\.\d+)?%)(?= chance floor)", "chance"),
-]
+
+def _status_block(card: dict) -> str:
+    try:
+        version = card["generator"]["artifactforge_version"]
+        generator = card["status"]["generator_assurance"]["verdict"]
+        benchmark = card["status"]["benchmark_validity"]["verdict"]
+        aggregate = card["verdict"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"scorecard lacks required scoped status: {exc}") from exc
+    allowed = {"pass", "gap", "fail"}
+    if not all(value in allowed for value in (generator, benchmark, aggregate)):
+        raise ValueError("scorecard status values must be pass, gap or fail")
+    return (
+        f"{STATUS_START}\n"
+        f"**Committed scorecard scopes (`{version}`).** Generator assurance is "
+        f"`{generator}`;\n"
+        f"experimental benchmark validity is `{benchmark}`; the all-gates compatibility "
+        f"verdict is\n`{aggregate}`. Its reproducible measurement corpus is explicitly "
+        f"non-reportable.\n"
+        f"{STATUS_END}"
+    )
+
+
+def _replace_exactly_once(path: Path, replacement: str) -> bool:
+    original = path.read_text(encoding="utf-8")
+    updated, count = STATUS_PATTERN.subn(replacement, original)
+    if count != 1:
+        raise ValueError(f"{path.relative_to(ROOT)} must contain exactly one scorecard block")
+    if updated == original:
+        return False
+
+    temporary_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(updated)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+    return True
 
 
 def main() -> int:
-    with open(os.path.join(ROOT, "fidelity-scorecard.json")) as f:
-        card = json.load(f)
-    s = card["gates"]["solvability"]
-    figures = {
-        "footprint": f"{s['footprint_solver_score']:.1%}",
-        "chance": f"{s['chance_floor']:.1%}",
-    }
-
-    changed, missing = [], []
-    for rel, pattern, key in TARGETS:
-        path = os.path.join(ROOT, rel)
-        with open(path) as f:
-            text = f.read()
-        new, n = re.subn(pattern, figures[key], text)
-        if n == 0:
-            missing.append(f"{rel}: no match for the {key} figure ({pattern})")
-            continue
-        if new != text:
-            with open(path, "w") as f:
-                f.write(new)
-            changed.append(f"{rel}: {key} -> {figures[key]}")
-
-    for line in changed:
-        print("  updated", line)
-    for line in missing:
-        print("  MISSING", line, file=sys.stderr)
-    if not changed and not missing:
-        print("  every published figure already matches the scorecard")
-    return 1 if missing else 0
+    try:
+        card = json.loads((ROOT / "fidelity-scorecard.json").read_text(encoding="utf-8"))
+        changed = _replace_exactly_once(ROOT / "README.md", _status_block(card))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"cannot synchronize scorecard status: {exc}", file=sys.stderr)
+        return 1
+    print("  updated README scorecard status" if changed else "  scorecard status already matches")
+    return 0
 
 
 if __name__ == "__main__":

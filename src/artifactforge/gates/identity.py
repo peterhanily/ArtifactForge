@@ -113,33 +113,89 @@ def _windows(
     from windowsprefetch import Prefetch
 
     files = _resident(r, scene_files)
-    p, a = join["persisted"], join["amcache_match"]
+    p = join["persisted"]
+    resident_claims = join.get("residents", [])
+    _check(r, "resident truth->disk", "five declared resident PEs",
+           len(resident_claims), 5)
+    _check(r, "resident truth->disk", "exact resident PE names",
+           sorted(claim.get("name", "").lower() for claim in resident_claims),
+           sorted(files))
+    _check(r, "resident bytes", "one fixed PE file size",
+           len({len(data) for data in files.values()}), 1)
 
-    for label, claim in (("persisted", p), ("amcache_match", a)):
+    for claim in resident_claims:
+        label = claim.get("role", "resident")
         data = files.get(claim["name"].lower())
         if data is None:
             r.fail(f"disk: the {label} binary {claim['name']!r} is not in the scene, so its "
                    f"hashes are claims about a file nobody can check")
             continue
+        _check(r, f"disk->{label}", "size", len(data), claim["size"])
         _check(r, f"disk->{label}", "sha256", hashlib.sha256(data).hexdigest(), claim["sha256"])
         _check(r, f"disk->{label}", "sha1",
                hashlib.sha1(data).hexdigest(), claim["sha1"])         # noqa: S324 - identity
+        _check(r, f"disk->{label}", "md5",
+               hashlib.md5(data).hexdigest(), claim["md5"])           # noqa: S324 - identity
         _check(r, f"pefile->{label}", "imphash",
                pefile.PE(data=data).get_imphash(), claim["imphash"])
 
-    # The registry->disk pivot: exactly one recorded FileId must belong to a resident file,
-    # and it must be the one the scene says it is.
+    # The five public-grade registry->disk pivots form a bijection. Historical path and Name
+    # values deliberately do not name the current file; only FileId SHA1 agrees with bytes.
     by_sha1 = {hashlib.sha1(d).hexdigest(): n                         # noqa: S324 - identity
                for n, d in files.items()}
     amcache_file = _named(r, scene_files, "Amcache.hve", "Amcache")
     if amcache_file is not None:
         iaf = RegistryHive(os.fspath(amcache_file.path)).get_key(
             "\\Root\\InventoryApplicationFile")
-        matches = sorted(by_sha1[v.value[4:]] for sub in iaf.iter_subkeys()
-                         for v in sub.get_values()
-                         if v.name == "FileId" and v.value[4:] in by_sha1)
-        _check(r, "Amcache->disk", "exactly one recorded hash belongs to a resident file",
-               matches, [a["name"].lower()])
+        rows = []
+        for subkey in iaf.iter_subkeys():
+            values = {value.name: value.value for value in subkey.get_values()}
+            rows.append(values)
+        rows_by_path = {row.get("LowerCaseLongPath"): row for row in rows}
+        matches = sorted(
+            by_sha1[row["FileId"][4:]]
+            for row in rows
+            if isinstance(row.get("FileId"), str) and row["FileId"][4:] in by_sha1
+        )
+        _check(r, "Amcache->disk", "five recorded hashes cover every resident PE",
+               matches, sorted(files))
+
+        relations = join.get("benchmark_relations", [])
+        candidates = join.get("benchmark_candidates", [])
+        _check(r, "benchmark truth->Amcache", "five declared relations", len(relations), 5)
+        _check(r, "benchmark truth->disk", "five declared candidates", len(candidates), 5)
+        _check(r, "benchmark candidates->disk", "candidate SHA256 set",
+               sorted(candidate.get("value", "") for candidate in candidates),
+               sorted(hashlib.sha256(data).hexdigest() for data in files.values()))
+
+        related_names = []
+        for index, relation in enumerate(relations):
+            selector = relation.get("selector", {})
+            historical_path = selector.get("lower_case_long_path")
+            row = rows_by_path.get(historical_path)
+            if row is None:
+                r.fail(
+                    f"Amcache relation {index}: selector {historical_path!r} matches no row"
+                )
+                continue
+            link_value = relation.get("link_value")
+            _check(r, "Amcache row->relation", "FileId SHA1",
+                   row.get("FileId"), "0000" + str(link_value))
+            current_name = relation.get("candidate", "").lower()
+            related_names.append(current_name)
+            data = files.get(current_name)
+            if data is None:
+                r.fail(f"Amcache relation {index}: candidate {current_name!r} is not resident")
+                continue
+            _check(r, "Amcache FileId->resident bytes", "SHA1 agreement",
+                   hashlib.sha1(data).hexdigest(), link_value)          # noqa: S324
+            _check(r, "resident bytes->question answer", "SHA256",
+                   hashlib.sha256(data).hexdigest(), relation.get("expected"))
+            historical_name = str(row.get("Name", "")).lower()
+            _check(r, "Amcache historical row->disk", "name is not a current resident",
+                   historical_name in files, False)
+        _check(r, "benchmark relations->disk", "one relation per resident PE",
+               sorted(related_names), sorted(files))
 
     # The persistence->disk pivot: exactly one autostart names a program that is here.
     run_file = _named(r, scene_files, "Software.run.hive", "Run key")
@@ -171,22 +227,53 @@ def _windows(
 def _macos(
     r: GateReport, scene_files: tuple[InventoryFile, ...], join: dict
 ):
+    import lief
+
+    from artifactforge.artifacts.macos import parse_quarantine_xattr
     from artifactforge.content.macho import cdhash_of_file
 
     s = join["subject"]
 
-    # The macOS half of the keystone: the subject's binary is a real Mach-O and every
-    # hash-shaped field about it is re-derived from those bytes.
-    binary = _named(r, scene_files, s["bundle_id"], "subject binary")
-    if binary is not None:
+    # The macOS half of the keystone: all five candidate binaries are real Mach-O files and
+    # every hash-shaped claim is re-derived from their emitted bytes.
+    binary_claims = join.get("binaries", [])
+    actual_machos = {
+        file.name
+        for file in scene_files
+        if file.data is not None and file.data[:4] == b"\xcf\xfa\xed\xfe"
+    }
+    _check(r, "binary truth->disk", "five declared Mach-O binaries",
+           len(binary_claims), 5)
+    _check(r, "binary truth->disk", "exact Mach-O names",
+           sorted(claim.get("bundle_id", "") for claim in binary_claims),
+           sorted(actual_machos))
+    for claim in binary_claims:
+        bundle_id = claim.get("bundle_id", "")
+        binary = _named(r, scene_files, bundle_id, f"binary {bundle_id}")
+        if binary is None:
+            continue
         data = binary.data
         if data is None:
             raise AssertionError("identity inventory did not capture file bytes")
-        _check(r, "disk->subject", "sha256", hashlib.sha256(data).hexdigest(), s["sha256"])
-        _check(r, "disk->subject", "sha1",
-               hashlib.sha1(data).hexdigest(), s["sha1"])             # noqa: S324 - identity
-        _check(r, "codesign blob->subject", "cdhash", cdhash_of_file(data), s["cdhash"])
-        _check(r, "disk->subject", "the binary is a 64-bit Mach-O",
+        spans = f"disk->{bundle_id}"
+        _check(r, spans, "size", len(data), claim.get("size"))
+        _check(r, spans, "sha256", hashlib.sha256(data).hexdigest(), claim.get("sha256"))
+        _check(r, spans, "sha1",
+               hashlib.sha1(data).hexdigest(), claim.get("sha1"))      # noqa: S324 - identity
+        _check(r, spans, "md5",
+               hashlib.md5(data).hexdigest(), claim.get("md5"))        # noqa: S324 - identity
+        _check(r, f"codesign blob->{bundle_id}", "cdhash",
+               cdhash_of_file(data), claim.get("cdhash"))
+        parsed = lief.parse(os.fspath(binary.path))
+        undefined = sorted(
+            symbol.name for symbol in parsed.symbols
+            if symbol.is_external and not symbol.has_export_info
+            and symbol.name.startswith("_")
+        )
+        _check(r, f"LIEF->{bundle_id}", "symhash",
+               hashlib.md5(",".join(undefined).encode()).hexdigest(),  # noqa: S324
+               claim.get("symhash"))
+        _check(r, spans, "the binary is a 64-bit Mach-O",
                data[:4], b"\xcf\xfa\xed\xfe")
     tcc = _named(r, scene_files, "TCC.db", "TCC")
     knowledge = _named(r, scene_files, "knowledgeC.db", "knowledgeC")
@@ -201,32 +288,86 @@ def _macos(
         _check(r, "TCC->knowledgeC", "exactly one granted client was also used",
                sorted(granted & used), [s["bundle_id"]])
 
-    xattr = _named(
-        r, scene_files, f"{s['bundle_id']}.quarantine.xattr", "quarantine xattr"
-    )
-    if xattr is not None:
-        data = xattr.data
-        if data is None:
-            raise AssertionError("identity inventory did not capture file bytes")
-        uuid = data.decode().strip().split(";")[-1]
-        _check(r, "xattr->subject", "quarantine UUID", uuid, s["quarantine_uuid"])
-        quarantine = _named(
-            r, scene_files, "QuarantineEventsV2", "QuarantineEventsV2"
+    # Five xattr UUIDs map bijectively to five quarantine rows. URL text is opaque with
+    # respect to bundle names, and agent/time are equal across candidates, so UUID is the
+    # only answer-bearing row relation.
+    quarantine = _named(r, scene_files, "QuarantineEventsV2", "QuarantineEventsV2")
+    if quarantine is not None:
+        observed_rows = _q(
+            quarantine,
+            "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
+            "LSQuarantineAgentName, LSQuarantineTimeStamp FROM LSQuarantineEvent",
         )
-        if quarantine is not None:
-            rows = {row[0]: row for row in _q(
-                quarantine,
-                "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
-                "LSQuarantineAgentName FROM LSQuarantineEvent",
-            )}
-            if uuid in rows:
-                _check(r, "xattr->QuarantineEventsV2", "download URL",
-                       rows[uuid][1], s["download_url"])
-                _check(r, "xattr->QuarantineEventsV2", "downloading agent",
-                       rows[uuid][2], s["agent"])
-            else:
-                r.fail("QuarantineEventsV2: the subject's xattr UUID matches no row, so the "
-                       "download pivot dead-ends")
+        rows = {row[0]: row for row in observed_rows}
+        _check(r, "QuarantineEventsV2", "five unique event UUIDs",
+               len(rows), 5)
+        _check(r, "QuarantineEventsV2", "one shared downloading agent",
+               len({row[2] for row in observed_rows}), 1)
+        _check(r, "QuarantineEventsV2", "one shared event timestamp",
+               len({row[3] for row in observed_rows}), 1)
+
+        relations = join.get("benchmark_relations", [])
+        candidates = join.get("benchmark_candidates", [])
+        _check(r, "benchmark truth->quarantine", "five declared relations",
+               len(relations), 5)
+        _check(r, "benchmark truth->quarantine", "five declared candidates",
+               len(candidates), 5)
+        _check(r, "benchmark candidates->QuarantineEventsV2", "candidate URL set",
+               sorted(candidate.get("value", "") for candidate in candidates),
+               sorted(row[1] for row in observed_rows))
+
+        related_bundles = []
+        xattr_agents = set()
+        xattr_times = set()
+        for index, relation in enumerate(relations):
+            selector = relation.get("selector", {})
+            relative_path = selector.get("xattr_relative_path")
+            if not isinstance(relative_path, str):
+                r.fail(
+                    f"quarantine relation {index}: xattr selector is not an exact relative path"
+                )
+                continue
+            xattr = _relative(
+                r,
+                scene_files,
+                relative_path,
+                f"quarantine relation {index}",
+            )
+            if xattr is None or xattr.data is None:
+                continue
+            try:
+                parsed_xattr = parse_quarantine_xattr(xattr.data)
+            except (TypeError, ValueError) as exc:
+                r.fail(
+                    f"quarantine relation {index}: strict xattr parser rejected "
+                    f"{relative_path!r} — {type(exc).__name__}: {str(exc)[:100]}"
+                )
+                continue
+            xattr_agents.add(parsed_xattr.agent)
+            xattr_times.add(parsed_xattr.timestamp_unix)
+            _check(r, "xattr->relation", "quarantine UUID",
+                   parsed_xattr.event_uuid, relation.get("link_value"))
+            row = rows.get(parsed_xattr.event_uuid)
+            if row is None:
+                r.fail(
+                    "QuarantineEventsV2: relation UUID "
+                    f"{parsed_xattr.event_uuid!r} matches no row"
+                )
+                continue
+            _check(r, "xattr->QuarantineEventsV2", "download URL",
+                   row[1], relation.get("expected"))
+            _check(r, "xattr->QuarantineEventsV2", "downloading agent",
+                   row[2], parsed_xattr.agent)
+            bundle = relation.get("candidate", "")
+            related_bundles.append(bundle)
+            _check(r, "quarantine URL->bundle", "URL does not disclose bundle identifier",
+                   str(bundle).lower() in str(row[1]).lower(), False)
+        _check(r, "benchmark relations->binary candidates", "one relation per bundle",
+               sorted(related_bundles), sorted(actual_machos))
+        _check(r, "quarantine xattrs", "one shared downloading agent",
+               len(xattr_agents), 1)
+        _check(r, "quarantine xattrs", "one shared encoded timestamp",
+               len(xattr_times), 1)
 
     plist = _named(r, scene_files, f"{s['bundle_id']}.plist", "LaunchAgent")
     if plist is not None:

@@ -1,29 +1,24 @@
 # Copyright (c) 2026 Peter Hanily
 # SPDX-License-Identifier: MIT
-"""Adversary solvers — the benchmark's negative controls.
+"""Registered shortcut attacks against Benchmark v2.
 
-A benchmark only measures investigation if an agent that does no investigation scores badly.
-The reference solver proves the answers are *recoverable* from the artifacts; these prove
-they are not recoverable any *other* way. Both directions are needed, and only the first was
-ever checked here — while a solver opening zero files was scoring 100%.
+The old footprint and stored-order solvers both reached 100% once their already-selected
+subjects were followed through the omitted downstream lookups. V2 has no downstream answer
+fan-out: every question is one scalar value-agreement resolution over five candidates.
 
-Each of these is an attack, and each stays in the suite permanently. The moment one scores
-well, the benchmark has stopped measuring what it claims to.
-
-  blind     knows the entire generator source and the published dev key, and reads only the
-            public task. Opens no artifact. This is the strongest attack: anything derivable
-            from a public identifier is free, which is why the identifier is an HMAC of a
-            suite key rather than the seed itself.
-  listing   reads only the filenames in the served directory. Answers that appear in a name
-            cost nothing, which is why no question's answer is a resident filename.
-  null      answers nothing. The floor.
-  constant  a fixed guess for everything. A floor weak enough to flatter the scorer, kept
-            only so the historical baseline stays comparable.
+The complete attacks below answer *every* question after deliberately selecting candidates
+without the declared FileId/SHA-1 or quarantine-UUID relation. An omitted answer can no longer
+make a broken attack look reassuringly weak. ``blind`` and ``parent_escape`` are separate trust-
+boundary controls: the former must reconstruct public-keyed suites, while the latter must be
+able to steal a co-located evaluator key and unable to find one in a public export.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
+import tempfile
 
 from artifactforge.inventory import (
     InventoryError,
@@ -34,6 +29,18 @@ from artifactforge.inventory import (
 
 
 SUPPORTED_FAMILIES = frozenset(("windows", "macos"))
+COMPLETE_ADVERSARIES = frozenset(
+    (
+        "alternate_link",
+        "footprint",
+        "lexical",
+        "metadata",
+        "mechanical",
+        "pool",
+        "scalar",
+        "selector",
+    )
+)
 
 
 def _require_supported_family(public) -> str:
@@ -44,268 +51,527 @@ def _require_supported_family(public) -> str:
 
 
 def _by_basename(files: tuple[InventoryFile, ...]) -> dict[str, InventoryFile]:
-    """Index unambiguous basenames while preserving the historical flat-scene view."""
     indexed: dict[str, InventoryFile] = {}
     ambiguous: set[str] = set()
     for file in files:
-        name = file.name
-        if name in indexed or name in ambiguous:
-            indexed.pop(name, None)
-            ambiguous.add(name)
+        if file.name in indexed or file.name in ambiguous:
+            indexed.pop(file.name, None)
+            ambiguous.add(file.name)
         else:
-            indexed[name] = file
+            indexed[file.name] = file
     return indexed
 
 
-def _sqlite_fetchone(path: Path, sql: str, parameters: tuple = ()):
-    """Run one read-only query and close the private-snapshot parser on every path."""
+def _sqlite_fetchall(path: Path, sql: str, parameters: tuple = ()) -> list[tuple]:
     import sqlite3
 
     uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
     connection = sqlite3.connect(uri, uri=True)
     try:
-        return connection.execute(sql, parameters).fetchone()
+        return connection.execute(sql, parameters).fetchall()
     finally:
         connection.close()
 
 
-def blind_solve(public) -> dict:
-    """Reconstruct answers from the public task alone, opening no artifact.
+def _data(file: InventoryFile) -> bytes:
+    if file.data is None:
+        raise AssertionError("adversary snapshot contains no bytes")
+    return file.data
 
-    Written against the shipped generator rather than a copy, so it cannot drift out of date:
-    if generation stops being derivable from the public view, this solver stops scoring. It
-    tries the published dev key first, because a dev suite is meant to be cheatable and the
-    gate must see that it is.
+
+def _windows_candidates(files: tuple[InventoryFile, ...]) -> list[tuple[InventoryFile, str]]:
+    return [
+        (file, hashlib.sha256(_data(file)).hexdigest())
+        for file in files
+        if _data(file)[:2] == b"MZ"
+    ]
+
+
+def _macos_urls(files: tuple[InventoryFile, ...]) -> list[str]:
+    quarantine = _by_basename(files).get("QuarantineEventsV2")
+    if quarantine is None:
+        return []
+    return [
+        row[0]
+        for row in _sqlite_fetchall(
+            quarantine.path,
+            "SELECT LSQuarantineDataURLString FROM LSQuarantineEvent ORDER BY rowid",
+        )
+    ]
+
+
+def _selector_text(question) -> str:
+    return json.dumps(
+        question.selector,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _pair_ranked(public, candidates: list[str], *, question_key=None) -> dict:
+    """Pair independently observable question and candidate ranks without using the join."""
+    if len(candidates) != len(public.questions):
+        return {}
+    key = question_key or (lambda question: _selector_text(question))
+    ranked_questions = sorted(public.questions, key=key)
+    return {
+        question.id: answer
+        for question, answer in zip(ranked_questions, candidates, strict=True)
+    }
+
+
+def lexical_solve(public) -> dict:
+    """Pair lexically ranked selectors and candidates, ignoring their declared relation."""
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            if family == "windows":
+                candidates = sorted(value for _file, value in _windows_candidates(files))
+            else:
+                candidates = sorted(_macos_urls(files))
+            return _pair_ranked(public, candidates)
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def footprint_solve(public) -> dict:
+    """Choose the candidate with the largest raw cross-file mention footprint.
+
+    It never reads the declared link value. For Windows it ranks PE filenames by ASCII and
+    UTF-16 occurrence in other files. For macOS it ranks candidate URL byte strings. The v2
+    scene should make either ranking no better than choosing one candidate for all five
+    bijective questions.
     """
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            blobs = {file.relative_path: _data(file) for file in files}
+            if family == "windows":
+                candidates = _windows_candidates(files)
+
+                def score(item):
+                    file, _answer = item
+                    name = file.name
+                    patterns = (
+                        name.encode(),
+                        name.lower().encode(),
+                        name.upper().encode(),
+                        name.encode("utf-16-le"),
+                        name.upper().encode("utf-16-le"),
+                    )
+                    return sum(
+                        1
+                        for relative, data in blobs.items()
+                        if relative != file.relative_path and any(p in data for p in patterns)
+                    )
+
+                ranked = [
+                    answer
+                    for _file, answer in sorted(
+                        candidates, key=lambda item: (-score(item), item[1])
+                    )
+                ]
+
+                def question_key(question):
+                    selector = _selector_text(question)
+                    patterns = (selector.encode(), selector.encode("utf-16-le"))
+                    incidence = sum(any(pattern in data for pattern in patterns) for data in blobs.values())
+                    return -incidence, selector
+            else:
+                candidates = _macos_urls(files)
+
+                def score_url(url: str) -> tuple[int, str]:
+                    raw = url.encode()
+                    return -sum(raw in data for data in blobs.values()), url
+
+                ranked = sorted(candidates, key=score_url)
+
+                def question_key(question):
+                    relative = question.selector.get("xattr_relative_path", "")
+                    bundle = relative.rsplit("/", 1)[-1].removesuffix(".quarantine.xattr")
+                    raw = bundle.encode()
+                    incidence = sum(raw in data for data in blobs.values())
+                    return -incidence, relative
+            return _pair_ranked(public, ranked, question_key=question_key)
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def mechanical_solve(public) -> dict:
+    """Pair public question order with stored candidate order, ignoring value agreement."""
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            if family == "windows":
+                candidates = [value for _file, value in _windows_candidates(files)]
+            else:
+                candidates = _macos_urls(files)
+            if not candidates:
+                return {}
+            return {
+                question.id: candidates[index % len(candidates)]
+                for index, question in enumerate(public.questions)
+            }
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def pool_solve(public) -> dict:
+    """Rank selectors and candidates by source-known name categories, then pair them."""
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            if family == "windows":
+                from artifactforge import pools
+
+                candidates = _windows_candidates(files)
+                ranked = [
+                    answer
+                    for file, answer in sorted(
+                        candidates,
+                        key=lambda item: (
+                            item[0].name not in pools.MALWARE_NAMES,
+                            item[0].name not in pools.BENIGN_NAMES,
+                            item[0].name,
+                            item[1],
+                        ),
+                    )
+                ]
+
+                def question_key(question):
+                    selector = _selector_text(question).lower()
+                    return (
+                        not any(name.lower() in selector for name in pools.MALWARE_NAMES),
+                        not any(name.lower() in selector for name in pools.BENIGN_NAMES),
+                        selector,
+                    )
+            else:
+                from artifactforge import pools
+
+                urls = _macos_urls(files)
+                ranked = sorted(
+                    urls,
+                    key=lambda url: (
+                        not any(bundle in url for bundle in pools.BUNDLES),
+                        not any(bundle in url for bundle in pools.BENIGN_BUNDLES),
+                        url,
+                    ),
+                )
+
+                def question_key(question):
+                    selector = _selector_text(question)
+                    return (
+                        not any(bundle in selector for bundle in pools.BUNDLES),
+                        not any(bundle in selector for bundle in pools.BENIGN_BUNDLES),
+                        selector,
+                    )
+            return _pair_ranked(public, ranked, question_key=question_key)
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def scalar_solve(public) -> dict:
+    """Try Size or agent/timestamp equality instead of the declared high-entropy relation."""
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            named = _by_basename(files)
+            answers: dict[str, str] = {}
+            if family == "windows":
+                from regipy.registry import RegistryHive
+
+                amcache = named.get("Amcache.hve")
+                if amcache is None:
+                    return {}
+                key = RegistryHive(os.fspath(amcache.path)).get_key(
+                    "\\Root\\InventoryApplicationFile"
+                )
+                rows = {}
+                for subkey in key.iter_subkeys():
+                    values = {value.name: value.value for value in subkey.get_values()}
+                    rows[values.get("LowerCaseLongPath")] = values
+                candidates = _windows_candidates(files)
+                for question in public.questions:
+                    selector = question.selector.get("lower_case_long_path")
+                    size = rows.get(selector, {}).get("Size")
+                    matches = sorted(
+                        answer for file, answer in candidates if len(_data(file)) == size
+                    )
+                    if matches:
+                        answers[question.id] = matches[0]
+            else:
+                quarantine = named.get("QuarantineEventsV2")
+                if quarantine is None:
+                    return {}
+                rows = _sqlite_fetchall(
+                    quarantine.path,
+                    "SELECT LSQuarantineTimeStamp, LSQuarantineAgentName, "
+                    "LSQuarantineDataURLString FROM LSQuarantineEvent ORDER BY rowid",
+                )
+                for question in public.questions:
+                    relative = question.selector.get("xattr_relative_path")
+                    sidecar = next((file for file in files if file.relative_path == relative), None)
+                    if sidecar is None:
+                        continue
+                    fields = _data(sidecar).decode("ascii").strip().split(";")
+                    if len(fields) != 4:
+                        continue
+                    timestamp = int(fields[1], 16)
+                    agent = fields[2]
+                    matches = sorted(
+                        url
+                        for mac_time, row_agent, url in rows
+                        if row_agent == agent and int(mac_time) + 978307200 == timestamp
+                    )
+                    if matches:
+                        answers[question.id] = matches[0]
+            return answers
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def alternate_link_solve(public) -> dict:
+    """Try the Amcache subkey name as a hash prefix instead of reading ``FileId``.
+
+    Benchmark v1 accidentally encoded ``sha1[:8]`` there and this attack scored 100% on all
+    Windows questions.  V2 record keys are independent.  macOS has no equivalent alternate
+    identifier, so the control pairs independent lexical ranks there.
+    """
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            if family == "macos":
+                return _pair_ranked(public, sorted(_macos_urls(files)))
+            from regipy.registry import RegistryHive
+
+            named = _by_basename(files)
+            amcache = named.get("Amcache.hve")
+            if amcache is None:
+                return {}
+            key = RegistryHive(os.fspath(amcache.path)).get_key(
+                "\\Root\\InventoryApplicationFile"
+            )
+            rows = {}
+            for subkey in key.iter_subkeys():
+                values = {value.name: value.value for value in subkey.get_values()}
+                rows[values.get("LowerCaseLongPath")] = subkey.name.removeprefix("0000")
+            candidates = [
+                (hashlib.sha1(_data(file)).hexdigest(), answer)  # noqa: S324 - identity
+                for file, answer in _windows_candidates(files)
+            ]
+            fallback = sorted(answer for _sha1, answer in candidates)
+            answers = {}
+            for index, question in enumerate(public.questions):
+                token = rows.get(question.selector.get("lower_case_long_path"), "")
+                matches = sorted(answer for sha1, answer in candidates if token and sha1.startswith(token))
+                answers[question.id] = matches[0] if len(matches) == 1 else fallback[index]
+            return answers
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def selector_solve(public) -> dict:
+    """Exploit candidate names copied into selected row fields, paths, or URLs."""
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            if family == "windows":
+                from regipy.registry import RegistryHive
+
+                named = _by_basename(files)
+                amcache = named.get("Amcache.hve")
+                if amcache is None:
+                    return {}
+                key = RegistryHive(os.fspath(amcache.path)).get_key(
+                    "\\Root\\InventoryApplicationFile"
+                )
+                rows = {}
+                for subkey in key.iter_subkeys():
+                    values = {value.name: value.value for value in subkey.get_values()}
+                    rows[values.get("LowerCaseLongPath")] = values
+                candidates = _windows_candidates(files)
+                fallback = sorted(answer for _file, answer in candidates)
+                answers = {}
+                for index, question in enumerate(public.questions):
+                    row = rows.get(question.selector.get("lower_case_long_path"), {})
+                    text = " ".join(str(row.get(field, "")) for field in ("Name", "LowerCaseLongPath")).lower()
+                    matches = sorted(
+                        answer for file, answer in candidates if file.name.lower() in text
+                    )
+                    answers[question.id] = matches[0] if len(matches) == 1 else fallback[index]
+                return answers
+
+            urls = _macos_urls(files)
+            fallback = sorted(urls)
+            answers = {}
+            for index, question in enumerate(public.questions):
+                relative = question.selector.get("xattr_relative_path", "")
+                bundle = relative.rsplit("/", 1)[-1].removesuffix(".quarantine.xattr")
+                matches = sorted(url for url in urls if bundle and bundle in url)
+                answers[question.id] = matches[0] if len(matches) == 1 else fallback[index]
+            return answers
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def metadata_solve(public) -> dict:
+    """Scan allowed question strings for answer values or candidate-identifying names."""
+    family = _require_supported_family(public)
+    try:
+        with captured_regular_tree(public.directory) as files:
+            if family == "windows":
+                candidates = _windows_candidates(files)
+                ranked = sorted(answer for _file, answer in candidates)
+            else:
+                candidates = [(None, url) for url in _macos_urls(files)]
+                ranked = sorted(answer for _file, answer in candidates)
+            if len(ranked) != len(public.questions):
+                return {}
+            fallback = _pair_ranked(public, ranked)
+            answers = {}
+            for question in public.questions:
+                local = json.dumps(
+                    {
+                        "id": question.id,
+                        "kind": question.kind,
+                        "prompt": question.prompt,
+                        "rule": question.rule,
+                        "selector": question.selector,
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).lower()
+                matches = []
+                for file, answer in candidates:
+                    tokens = [answer.lower()]
+                    if file is not None:
+                        tokens.extend((file.name.lower(), file.name.rsplit(".", 1)[0].lower()))
+                    if any(token and token in local for token in tokens):
+                        matches.append(answer)
+                answers[question.id] = matches[0] if len(set(matches)) == 1 else fallback[question.id]
+            return answers
+    except (InventoryError, OSError, ValueError):
+        return {}
+
+
+def blind_solve(public) -> dict:
+    """Regenerate a public-keyed scene without reading the target artifact directory."""
+    family = _require_supported_family(public)
     from artifactforge import suite
 
-    family = _require_supported_family(public)
-
-    # Recover the batch index by searching the public id space under the published key. On a
-    # dev suite this succeeds; on a hold-out suite the key is unknown and it cannot.
-    key = suite.PUBLIC_DEV_KEY
-    index = next((i for i in range(4096) if suite.public_id(key, i) == public.scenario_id),
-                 None)
-    if index is None:
+    # ``suite_kind`` is attacker-controlled public metadata, not evidence that a suite key is
+    # secret.  Recover the scenario's position from the public manifest and test every known
+    # public key against the HMAC-derived id.  In particular, relabelling the reproducible
+    # scorecard corpus as ``holdout`` must not make this control report a reassuring zero.
+    try:
+        public_path = Path(public.directory).parent.parent / "public.json"
+        document = json.loads(public_path.read_text(encoding="utf-8"))
+        scenarios = document.get("scenarios")
+        if not isinstance(scenarios, list):
+            return {}
+        indices = [
+            index
+            for index, entry in enumerate(scenarios)
+            if isinstance(entry, dict) and entry.get("scenario_id") == public.scenario_id
+        ]
+        if len(indices) != 1:
+            return {}
+        index = indices[0]
+    except (OSError, ValueError, json.JSONDecodeError):
         return {}
-    skey = suite.scenario_key(key, public.scenario_id)
 
-    a: dict = {}
-    if family == "windows":
-        from artifactforge import pools
-        from artifactforge.content import ContentStore
-        cache = os.path.join(public.directory, "..", "..", "_blind-cache")
-        store = ContentStore("artifactforge::suite", os.path.abspath(cache))
-        persisted = store.materialize("pe:" + suite.content_seed(skey, "persisted"))
-        matched = store.materialize("pe:" + suite.content_seed(skey, "amcache-match"))
-        a["persisted_sha256"] = persisted.sha256
-        a["persisted_imphash"] = persisted.imphash
-        a["persisted_run_count"] = 1 + skey[0] % 9
-        a["amcache_match_sha256"] = matched.sha256
-        a["orphan_execution"] = suite.pick(
-            skey, "absent",
-            [n for n in pools.MALWARE_NAMES
-             if n != suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)])
-    elif family == "macos":
-        from artifactforge import pools
-        from artifactforge.content import ContentStore
-        from artifactforge.model import macos_profile
-        subject = suite.pick_many(skey, "bundles", pools.BUNDLES, 3)[0]
-        host = suite.pick(skey, f"dlhost:{subject}", pools.DOWNLOAD_HOSTS)
-        cache = os.path.join(public.directory, "..", "..", "_blind-cache")
-        store = ContentStore("artifactforge::suite", os.path.abspath(cache))
-        c = store.materialize(f"macho:{subject}:" + suite.content_seed(skey, f"macho:{subject}"))
-        profile = macos_profile(username=suite.pick(skey, "user", pools.USERS))
-        a["granted_and_used_bundle"] = subject
-        a["subject_download_url"] = f"https://{host}/{subject}.dmg"
-        a["subject_quarantine_agent"] = suite.pick(skey, f"agent:{subject}",
-                                                   pools.DOWNLOAD_AGENTS)
-        a["subject_binary_sha256"] = c.sha256
-        a["subject_binary_symhash"] = c.symhash
-        a["subject_persistence_path"] = (f"{profile.home_dir}/Library/Application Support/"
-                                         f"{subject}/{subject.rsplit('.', 1)[-1]}")
-    return a
+    key = next(
+        (
+            candidate
+            for candidate in (
+                suite.PUBLIC_DEV_KEY,
+                suite.scorecard_measurement_key(),
+            )
+            if suite.public_id(candidate, index) == public.scenario_id
+        ),
+        None,
+    )
+    if key is None:
+        return {}
+
+    from artifactforge.bench.benchmark import _macos_questions, _profile, _windows_questions
+    from artifactforge.compose.scene import build_macos_scene, build_windows_scene
+    from artifactforge.content import ContentStore
+
+    skey = suite.scenario_key(key, public.scenario_id)
+    with tempfile.TemporaryDirectory(prefix="artifactforge-blind-") as directory:
+        root = Path(directory)
+        store = ContentStore(suite.WINDOWS_MACOS_CONTENT_NAMESPACE, os.fspath(root / "content"))
+        arguments = {
+            "store": store,
+            "skey": skey,
+            "profile": _profile(skey, family),
+            "scene_dir": os.fspath(root / "scene"),
+            "staging_dir": os.fspath(root / "staging"),
+        }
+        if family == "windows":
+            scene = build_windows_scene(**arguments)
+            questions = _windows_questions(scene.join)
+        else:
+            scene = build_macos_scene(**arguments)
+            questions = _macos_questions(scene.join)
+        return {question.id: question.expected for question in questions}
+
+
+def parent_escape_solve(public) -> dict:
+    """Read the legacy co-located evaluator answer through ``../../_answers``.
+
+    This is a positive control, not a hypothetical attacker: it must score 100% on an
+    evaluator root and find nothing in an exact public export.
+    """
+    _require_supported_family(public)
+    try:
+        root = Path(public.directory).parents[1]
+        path = root / "_answers" / f"{public.scenario_id}.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        answers = value.get("answers")
+        return answers if isinstance(answers, dict) else {}
+    except (IndexError, OSError, ValueError, json.JSONDecodeError):
+        return {}
 
 
 def listing_solve(public) -> dict:
-    """Answer from the served directory's filenames only — never opening a file."""
+    """Read only recursive filenames; neither v2 answer is present in one."""
     _require_supported_family(public)
-    a: dict = {}
     try:
-        names = sorted(path.rsplit("/", 1)[-1]
-                       for path in list_regular_file_paths(public.directory))
+        list_regular_file_paths(public.directory)
     except InventoryError:
-        return a
-    for f in names:
-        if f.lower().endswith(".exe"):
-            a.setdefault("orphan_execution", f)
-        if f.endswith(".plist"):
-            a.setdefault("granted_and_used_bundle", f[: -len(".plist")])
-    return a
+        pass
+    return {}
 
 
 def null_solve(public) -> dict:
-    """Answers nothing — the vacuous-pass guard."""
     _require_supported_family(public)
     return {}
 
 
 def constant_solve(public) -> dict:
-    """A fixed guess for every question, whatever it asks."""
     _require_supported_family(public)
-    return {q.id: ("0" * 64 if q.kind in ("hash", "imphash") else "unknown")
-            for q in public.questions}
+    return {
+        question.id: ("0" * 64 if question.kind == "hash" else "https://unknown.invalid/")
+        for question in public.questions
+    }
 
 
-
-
-def mechanical_solve(public) -> dict:
-    """Exploit position: the answer is first in every stored sequence.
-
-    It uses ordinary parsers to read stored order but performs no semantically meaningful join.
-    It relies only on the generator having emitted the interesting record before the decoys —
-    in the Run key, in the Amcache subkey list, and in every SQLite table. That is the family
-    the owner's own wiki names: "an events file written in the order the agent was asked to
-    reconstruct".
-    """
-    import hashlib
-    family = _require_supported_family(public)
-    d = public.directory
-    a: dict = {}
-    try:
-        with captured_regular_tree(d) as files_context:
-            files = _by_basename(files_context)
-            blobs = {
-                name: file.data
-                for name, file in files.items()
-                if file.data is not None
-            }
-
-            if family == "windows":
-                run_file = files.get("Software.run.hive")
-                if run_file is None:
-                    return a
-                try:
-                    from regipy.registry import RegistryHive
-                except ImportError:
-                    return a
-                run = RegistryHive(os.fspath(run_file.path)).get_key(
-                    "\\Microsoft\\Windows\\CurrentVersion\\Run")
-                values = [v.value for v in run.get_values()]
-                if not values:
-                    return a
-                target = values[0].replace("/", "\\").rsplit("\\", 1)[-1]
-                for name, data in blobs.items():
-                    if name.lower() == target.lower():
-                        a["persisted_sha256"] = hashlib.sha256(data).hexdigest()
-                        try:
-                            import pefile
-                            a["persisted_imphash"] = pefile.PE(data=data).get_imphash()
-                        except Exception:                          # noqa: BLE001 — best effort
-                            pass
-            elif family == "macos":
-                tcc = files.get("TCC.db")
-                if tcc is None:
-                    return a
-                try:
-                    row = _sqlite_fetchone(tcc.path, "SELECT client FROM access")
-                except Exception:                                  # noqa: BLE001 — best effort
-                    return a
-                if row:
-                    a["granted_and_used_bundle"] = row[0]
-            return a
-    except InventoryError:
-        return a
-
-
-def footprint_solve(public) -> dict:
-    """Exploit the scene's shape: the answer is whatever the other artifacts talk about most.
-
-    The ranking step parses no format: for each candidate, count how many other files in the
-    directory contain its name as a substring, and take the maximum. After choosing that pivot,
-    the solver uses ordinary parsers and lookups to complete dependent answers. This is the
-    strongest attack found, and it is structural rather than incidental: the target is by
-    definition the object the registry, Amcache, prefetch and disk all mention, while a decoy
-    appears in fewer of them. Counting mentions performs the intended selection without
-    understanding any format.
-    """
-    import hashlib
-    family = _require_supported_family(public)
-    d = public.directory
-    a: dict = {}
-    try:
-        with captured_regular_tree(d) as files_context:
-            files = _by_basename(files_context)
-            blobs = {
-                name: file.data
-                for name, file in files.items()
-                if file.data is not None
-            }
-
-            def mentions(cand: str) -> int:
-                pats = [cand.encode(), cand.upper().encode(), cand.lower().encode(),
-                        cand.encode("utf-16-le"), cand.upper().encode("utf-16-le")]
-                return sum(1 for f, b in blobs.items()
-                           if f != cand and any(p in b for p in pats))
-
-            if family == "windows":
-                pes = [f for f, b in blobs.items() if b[:2] == b"MZ"]
-                if not pes:
-                    return a
-                ranked = sorted(pes, key=mentions, reverse=True)
-                a["persisted_sha256"] = hashlib.sha256(blobs[ranked[0]]).hexdigest()
-                try:
-                    import pefile
-                    a["persisted_imphash"] = pefile.PE(data=blobs[ranked[0]]).get_imphash()
-                except Exception:                                  # noqa: BLE001 — best effort
-                    pass
-                if len(ranked) > 1:
-                    a["amcache_match_sha256"] = hashlib.sha256(blobs[ranked[1]]).hexdigest()
-            elif family == "macos":
-                bundles = [f[: -len(".quarantine.xattr")] for f in blobs
-                           if f.endswith(".quarantine.xattr")]
-                if not bundles:
-                    return a
-                subject = max(bundles, key=mentions)
-                a["granted_and_used_bundle"] = subject
-                # Everything else about the subject is now a lookup in the subject's own files.
-                try:
-                    import plistlib
-                    xattr = blobs[f"{subject}.quarantine.xattr"]
-                    uuid = xattr.decode().strip().split(";")[-1]
-                    quarantine = files["QuarantineEventsV2"]
-                    row = _sqlite_fetchone(
-                        quarantine.path,
-                        "SELECT LSQuarantineDataURLString, LSQuarantineAgentName FROM "
-                        "LSQuarantineEvent WHERE LSQuarantineEventIdentifier = ?",
-                        (uuid,),
-                    )
-                    if row:
-                        a["subject_download_url"], a["subject_quarantine_agent"] = row
-                    launch_agent = blobs[f"{subject}.plist"]
-                    a["subject_persistence_path"] = plistlib.loads(
-                        launch_agent
-                    )["ProgramArguments"][0]
-                    data = blobs.get(subject)
-                    if data:
-                        a["subject_binary_sha256"] = hashlib.sha256(data).hexdigest()
-                except Exception:                                  # noqa: BLE001 — best effort
-                    pass
-            return a
-    except InventoryError:
-        return a
-
-
-#: name -> (solver, the score above which the benchmark is considered gameable).
-#:
-#: The first two are the ones that matter. `null` and `constant` score 0.0000, which is BELOW
-#: the chance floor of a solver that simply guesses among the visible candidates — keeping them
-#: as the only baselines flattered every number this benchmark ever published.
+# Complete selection attacks are checked by family/rule, must cover every question, and are
+# judged with Gate 4's exact within-scene permutation distribution rather than a magic cutoff.
 ADVERSARIES = {
-    "footprint": (footprint_solve, 0.30),
-    "mechanical": (mechanical_solve, 0.30),
-    "blind": (blind_solve, 0.10),
-    "listing": (listing_solve, 0.10),
-    "null": (null_solve, 0.0),
-    "constant": (constant_solve, 0.05),
+    "alternate_link": alternate_link_solve,
+    "footprint": footprint_solve,
+    "mechanical": mechanical_solve,
+    "metadata": metadata_solve,
+    "pool": pool_solve,
+    "scalar": scalar_solve,
+    "selector": selector_solve,
+    "lexical": lexical_solve,
+    "listing": listing_solve,
+    "null": null_solve,
+    "constant": constant_solve,
 }

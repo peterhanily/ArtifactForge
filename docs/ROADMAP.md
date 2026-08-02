@@ -2,39 +2,41 @@
 
 What is not built, and why. Ordered by what would change the most if it existed.
 
-## The benchmark-validity status is failing because Gate 4 is red
+## Benchmark v2 needs an isolated hold-out result, not another public score
 
-Gate 4 is red and the number is in the README. The `footprint` adversary ranks candidates
-without parsing their formats — for each candidate, count how many other files mention its
-name and take the maximum — then uses ordinary parsers and lookups to complete the dependent
-answers. On the public, non-reportable scorecard measurement corpus it scores **72.7%** against
-the committed scorecard's **4.2%** chance floor, where the reference solver scores 100%.
+Benchmark v1 is withdrawn. Completing its shortcut implementations exposed perfect footprint
+and stored-order recovery, the co-located task path exposed evaluator answers, a disclosed-key
+corpus was reproducible without reading its target artifacts, candidate-aware chance was about
+one in five, and the claimed join count was not a parser-derived dependency trace. Changing a
+threshold cannot repair those failures.
 
-It is structural. The answer object is by definition the one the registry, Amcache, prefetch
-and disk all talk about; a decoy appears in fewer of them. Counting mentions *is* the intended
-pivot, performed without understanding. And it cannot be patched in the generator alone: for
-`persisted_sha256` the declared pivot is "the one Run value naming a resident program", so
-balancing the scene until decoys are mentioned equally makes the reference solver fail with
-*"expected exactly one resident autostart, found 5"*. The question and the leak are one object.
+V2 replaces root-object questions with five scalar closed-rule questions per scene. Windows
+resolves an Amcache `FileId` SHA-1 against five resident PE byte strings; macOS resolves a
+strict xattr UUID against five `QuarantineEventsV2` rows. Each family forms a five-answer
+bijection with exact 20% chance. Exact public export and `suite_id` binding separate solver
+bytes from evaluator state. Gate 4 derives actual artifact dependencies, checks complete
+selection attacks in aggregate and per class with exact permutation inference, enforces at
+least 20 scenes per class and an exact power contract, and requires parser-valid local-effect
+counterfactuals.
 
-What the repair looks like, in order:
+The v0.5 portable release matrix, packaging/install checks, available native macOS attestation
+and source-bound scorecard are complete locally. Hosted CI must independently replay the exact
+tagged commit after it is pushed; no hosted result is claimed before that happens. The remaining
+benchmark work is operational and evidentiary:
 
-1. **A class gate.** Not an exemption list of the leaks found so far — those were found by
-   sweeping, and the sweep found families nobody would have enumerated (position inside a
-   stored sequence: Run-value order, Amcache subkey order, SQLite rowid). The durable form is
-   "no agent-visible quantity predicts any answer above chance, over every candidate slot".
-2. **Delete rather than patch.** `persisted_sha256`, `persisted_imphash` and
-   `persisted_run_count` go; `orphan_execution` is rewritten to ask for the SHA1 Amcache
-   recorded rather than the filename, which takes a listing-only solver from 100% to 0%;
-   `amcache_match_sha256` survives, because value agreement between two artifacts is the one
-   answer shape that resists a knowledge-free solver.
-3. **The rule that falls out**, and which belongs in `docs/DESIGN.md`: an answer must be
-   determined by **agreement between two artifacts' values** — never by an extremum, a
-   presence test, a name, or a position in a stored sequence.
+1. **Execute a real hold-out boundary.** Mint a fresh key on the evaluator, transfer only the
+   exact public export into a separate OS-enforced account/container/VM/machine with no
+   evaluator mount, return only `suite_id`-bound submissions, and grade on the evaluator.
+2. **Preserve the hostile controls.** Disclosed-key blind reconstruction and co-located parent
+   traversal must remain positive controls; public development and scorecard corpora remain
+   non-reportable even when every gate is green.
+3. **Audit before quoting.** Preserve corpus/source/export/submission provenance and review the
+   per-family/rule randomization and counterfactual results. Until that workflow is complete,
+   no v2 performance score is reportable.
 
-Until that lands the benchmark is experimental and no score from it should be reported. The
-generator's Gates 1 to 3 pass and generator assurance is `pass`; benchmark validity remains a
-separate failing status.
+No fresh scanner attestation exists for the v2 corpus. Scanner evidence is a separate dated
+claim about exact bytes and cannot be inferred from benchmark or generator gates. The full
+contract is [`benchmark-v2.md`](benchmark-v2.md).
 
 ## Closed measuring-apparatus gaps
 
@@ -43,7 +45,10 @@ narrow first-party byte readers now pair with `sqlite3` and `plistlib` over one 
 snapshot, require type-exact consensus, and then apply named macOS semantic profiles. This is
 independent implementation, not outside governance or general-format coverage: interior or
 overflow SQLite b-trees and binary-plist values outside the emitted subset remain rejected.
-The serialized quarantine xattr is still a plain sidecar, not a parser-gated format.
+The serialized quarantine xattr is now parser-classified. Its artifact parser and an
+independently implemented byte reader require type-exact agreement and the exact bounded
+four-field profile; Gate 3 grants only strict-valid non-executable values its narrow marker
+exemption.
 
 Any future expansion of either writer must expand both the raw reader and its parser-valid
 mutation controls in the same change. Apple's `plutil` remains useful native attestation, not
@@ -52,7 +57,7 @@ the portable CI oracle.
 The first Linux loose profile is now closed on the same terms: LIEF/pyelftools for ELF,
 PyXDG/raw for desktop entries, and dissect.target/raw for Bash history, with independent
 meaning and inertness mutations. It is generator assurance and Fixture Core material only;
-Gate 4 remains the unchanged Windows/macOS benchmark population.
+Gate 4 remains the Windows/macOS benchmark population.
 
 ## Digest-evidence graph deferred after consumer audit
 
@@ -97,10 +102,24 @@ not roles, match edges, provenance, authenticity or causality.
 
 ## Benchmark
 
-- **A scoring service.** Grading is a function call reading `_answers/` from disk, which is
-  enough while suites are minted locally: the boundary that matters is the key file, not a
-  network. If suites are ever distributed, the submission format (`answers.jsonl` plus a suite
-  digest) is already the contract an HTTP scorer would wrap.
+- **Broader detector calibration.** The current ten mandatory controls use one independently
+  derived development scene per family for each registered complete attack and the two
+  production ensemble wrappers. A later protocol revision should calibrate across multiple
+  independently derived scenes per family, so success cannot depend on one fixture, and add a
+  feature-conditioned development-trained attack to probe selector/name/content correlations
+  beyond fixed ranks and slot unions. Any added detector expands the predeclared comparison
+  family and must carry its own vulnerable-world control and power analysis.
+- **Portable hold-out execution receipts.** The local grader correctly refuses to mint a
+  reportable result because it cannot attest the solver trust domain. A future runner should
+  produce a signed or independently witnessed receipt binding evaluator source, fresh-key
+  identity, exact public tree commitment, solver image/configuration, isolation policy,
+  submission digest and grader output. The receipt must not disclose the key or answers and
+  must remain separate from the reproducible public scorecard.
+- **A scoring service.** Evaluator-side local grading is sufficient for the current protocol;
+  `_answers/` never enters the public export and every JSONL row carries the exact `suite_id`.
+  A future network wrapper must preserve that identity, keep keys/answers server-side, reject
+  cross-suite rows and add authentication/rate/retention policy without weakening the existing
+  filesystem boundary.
 - **More question shapes.** Everything asked today has one exact string answer. Questions with
   a set-valued answer, or asking for an ordering, would measure something the current shapes
   cannot — and would need a grader that can score partial credit without becoming generous.

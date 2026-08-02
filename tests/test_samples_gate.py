@@ -10,6 +10,7 @@ that stops being valid fails here rather than in someone's hands.
 They also check the two properties that make committing binaries defensible at all — every
 one is inert, and every one discloses itself.
 """
+
 import glob
 import hashlib
 import json
@@ -52,10 +53,10 @@ def test_every_committed_sample_is_inert_and_marked(sample):
 
 @pytest.mark.parametrize("sample", SAMPLES, ids=_ids)
 def test_the_committed_answer_key_still_matches_the_committed_bytes(sample, tmp_path):
-    """The join is re-derived from the files as committed, not from the generator."""
+    """Public evidence claims are re-derived from committed files, not private evaluator state."""
     pytest.importorskip("regipy")
     truth = _ground_truth(sample)
-    join = truth["join"]
+    join = truth["derived_evidence"]
     identity_scene = sample
     if join.get("family") == "linux":
         # Gate 2's Linux scene contract is an exact artifact-only inventory.  Keep the

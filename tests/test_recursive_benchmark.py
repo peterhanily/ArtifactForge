@@ -32,7 +32,8 @@ def _generate(tmp_path: Path, name: str, *, dev: bool = False, n: int = 2):
 
 
 def _bury_artifacts(tasks) -> None:
-    """Move every served entry below two dot-prefixed directories without changing bytes."""
+    """Move every served entry and rebuild the byte-bound public inventory."""
+    by_evaluator = {}
     for task in tasks:
         root = Path(task.directory)
         original = list(root.iterdir())
@@ -40,6 +41,55 @@ def _bury_artifacts(tasks) -> None:
         destination.mkdir(parents=True)
         for entry in original:
             entry.rename(destination / entry.name)
+        prefix = ".evidence/.nested/"
+        task.artifacts = tuple(prefix + path for path in task.artifacts)
+        moved_questions = []
+        for question in task.questions:
+            if "xattr_relative_path" not in question.selector:
+                moved_questions.append(question)
+                continue
+            selector = {
+                **question.selector,
+                "xattr_relative_path": prefix
+                + question.selector["xattr_relative_path"],
+            }
+            moved_questions.append(
+                replace(
+                    question,
+                    selector=selector,
+                    prompt=suite.benchmark_question_prompt(question.rule, selector),
+                )
+            )
+        task.questions = moved_questions
+        evaluator = root.parent.parent
+        by_evaluator.setdefault(evaluator, []).append(task)
+
+    for evaluator, evaluator_tasks in by_evaluator.items():
+        base = {
+            "suite_kind": evaluator_tasks[0].suite_kind,
+            "domain": suite.DOMAIN.decode(),
+            "scenarios": [
+                {
+                    "scenario_id": task.scenario_id,
+                    "family": task.family,
+                    "artifacts": list(task.artifacts),
+                    "questions": [
+                        {
+                            "id": question.id,
+                            "prompt": question.prompt,
+                            "kind": question.kind,
+                            "rule": question.rule,
+                            "selector": question.selector,
+                            "candidate_count": question.candidate_count,
+                        }
+                        for question in task.questions
+                    ],
+                }
+                for task in evaluator_tasks
+            ],
+        }
+        document = suite.build_public_document(base, evaluator / "scenarios")
+        (evaluator / "public.json").write_bytes(suite.canonical_public_bytes(document))
 
 
 def test_reference_and_adversaries_are_layout_invariant(tmp_path):
@@ -47,7 +97,7 @@ def test_reference_and_adversaries_are_layout_invariant(tmp_path):
     reference_before = [reference_solve(task.public()) for task in tasks]
     adversaries_before = {
         name: [solver(task.public()) for task in tasks]
-        for name, (solver, _threshold) in ADVERSARIES.items()
+        for name, solver in ADVERSARIES.items()
     }
     chance_before = solvability._chance_floor(tasks)  # noqa: SLF001 - direct control contract
 
@@ -66,7 +116,7 @@ def test_reference_and_adversaries_are_layout_invariant(tmp_path):
     )
     assert {
         name: [solver(task.public()) for task in tasks]
-        for name, (solver, _threshold) in ADVERSARIES.items()
+        for name, solver in ADVERSARIES.items()
     } == adversaries_before
     assert solvability._chance_floor(tasks) == chance_before  # noqa: SLF001
 
@@ -108,13 +158,14 @@ def test_every_solver_and_gate_rejects_an_unknown_family_before_reading(tmp_path
     unsupported_task = replace(task, family="linux", directory=str(tmp_path / "absent"))
     public = unsupported_task.public()
 
-    solvers = [reference_solve, *(solver for solver, _threshold in ADVERSARIES.values())]
+    solvers = [reference_solve, *ADVERSARIES.values()]
     for solver in solvers:
         with pytest.raises(ValueError, match="unsupported benchmark family"):
             solver(public)
     with pytest.raises(ValueError, match="unsupported benchmark families"):
         solvability._chance_floor([unsupported_task])  # noqa: SLF001
-    with pytest.raises(ValueError, match="unsupported benchmark families"):
-        solvability.run([unsupported_task])
+    report = solvability.run([unsupported_task], [task])
+    assert not report.ok
+    assert any("unsupported benchmark families" in failure for failure in report.fails)
     with pytest.raises(ValueError, match="unsupported benchmark family"):
         benchmark_module._profile(b"x" * 32, "linux")  # noqa: SLF001

@@ -149,19 +149,33 @@ def build_run_hive(values) -> bytes:
 def build_amcache_hive(entries) -> bytes:
     """An Amcache.hve fragment: Root\\InventoryApplicationFile with one subkey per entry.
 
-    `entries` is a sequence of (sha1, lower_path, name, size). Amcache records the SHA1 of a
-    file it saw, not the file itself, so a populated hive naturally contains rows for programs
-    that are no longer on disk — which is the pivot: exactly one row's SHA1 belongs to a file
-    that is still here.
+    ``entries`` contains ``(sha1, lower_path, name, size)`` or the same tuple followed by an
+    opaque hexadecimal record key.  The registry subkey name is metadata, not a second copy of
+    ``FileId``: encoding a SHA1 prefix there lets a solver bypass the value it is meant to
+    interpret.  Four-field callers receive a deterministic index key; scene builders should
+    pass independently derived keys.
     """
-    subkeys = [
-        Key("0000" + sha1[:8], values=[
+    subkeys = []
+    for index, entry in enumerate(entries):
+        if len(entry) == 4:
+            sha1, lower_path, name, size = entry
+            record_key = "0000" + f"{index:016x}"
+        elif len(entry) == 5:
+            sha1, lower_path, name, size, record_key = entry
+        else:
+            raise ValueError("Amcache entries require four fields plus an optional record key")
+        if (
+            not isinstance(record_key, str)
+            or not record_key
+            or len(record_key) > 64
+            or any(character not in "0123456789abcdef" for character in record_key)
+        ):
+            raise ValueError("Amcache record keys must be non-empty lowercase hexadecimal")
+        subkeys.append(Key(record_key, values=[
             sz("FileId", "0000" + sha1),
             sz("LowerCaseLongPath", lower_path),
             sz("Name", name),
             dword("Size", size),
-        ])
-        for sha1, lower_path, name, size in entries
-    ]
+        ]))
     return build_hive(Key("amcache", subkeys=[
         Key("Root", subkeys=[Key("InventoryApplicationFile", subkeys=subkeys)])]))

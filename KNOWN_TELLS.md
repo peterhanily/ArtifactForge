@@ -163,10 +163,25 @@ Covers knowledgeC, TCC and QuarantineEventsV2.
 - **Marked.** The quoted `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` history record is inert data and
   the raw profile requires its exact bounded form.
 
-## Not emitted at all
+## quarantine-xattr
 
-The quarantine xattr value is written as a **sidecar file**, not applied as a real extended
-attribute — nothing this project does touches a real file's metadata.
+- **Loose serialized value, not host metadata.** Each `.quarantine.xattr` file contains the
+  bytes that would be stored in `com.apple.quarantine`; ArtifactForge never applies an
+  extended attribute to a host file. The filename and scene context must not be mistaken for
+  proof that Gatekeeper or LaunchServices observed the file.
+- **Exact four-field profile.** Only `0181;<eight lowercase hex digits>;<bounded ASCII
+  agent>;<uppercase RFC 4122 v4 UUID>` is accepted. A BOM, newline, padding, noncanonical
+  timestamp or UUID, extra field or permissive whitespace is red.
+- **Two deliberately independent first-party readers.** Gate 1 pairs the artifact module's
+  strict parser with a separate byte-level implementation and requires a type-exact field
+  match before checking the profile. This is independent implementation under the same
+  project governance, not external validation or general xattr support.
+- **Not marked; narrowly exempt.** A real quarantine value has no extension field in which to
+  carry an `ARTIFACTFORGE` anchor. Gate 3 treats only a strict-valid value as non-executable
+  serialized data exempt from its marker requirement; merely using the suffix does not earn
+  the exemption.
+
+## Not emitted at all
 
 Disk images, memory dumps, EVTX, ShimCache, LNK, FSEvents and unified logs are not generated.
 The tier is loose files that a responder's tools read directly.

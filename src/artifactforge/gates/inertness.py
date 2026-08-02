@@ -14,8 +14,9 @@ independently verifies the CodeDirectory page hashes and their coverage boundary
 
 **Marked.** Every parser-classified structured format carries an in-band anchor identifying it
 as ArtifactForge output. A classified format with no marker is a failure. Plain sidecars are
-outside that format-marker check; the serialized quarantine xattr value is the notable current
-exception.
+outside that format-marker check. The exact serialized quarantine xattr value is the sole
+classified exception: an xattr value has no extension field in which to carry a marker, and
+Gate 1 validates its complete bounded byte profile with two readers.
 
 **Indicators point nowhere real.** Domains must be RFC 2606 reserved (.example, .invalid,
 .test) and addresses RFC 5737 / RFC 3849, so no synthetic artifact can label a real host as
@@ -46,6 +47,12 @@ MARKERS = {
     "desktop-entry": [b"ARTIFACTFORGE"],
     "bash-history":  [b"ARTIFACTFORGE"],
 }
+
+# This is intentionally distinct from MARKERS: it is one complete, non-executable serialized
+# value whose real platform grammar has nowhere to carry an ArtifactForge anchor. The strict
+# parser must accept the bytes before they can use the exemption; arbitrary classified formats
+# and merely xattr-suffixed garbage remain failures.
+_MARKER_EXEMPT_FORMATS = frozenset({"quarantine-xattr"})
 
 # RFC 2606 reserved TLDs/domains, and RFC 5737 / RFC 3849 documentation address ranges.
 _RESERVED_TLD = (".example", ".invalid", ".test", ".localhost")
@@ -1029,7 +1036,7 @@ def _indicator_hygiene(r: GateReport, where: str, data: bytes):
 def run(scene_dir: str) -> GateReport:
     r = GateReport(3, "inertness",
                    "are binaries payload-free and classified formats marked synthetic?")
-    marked = fmts = binary_safety_passed = binary_safety_total = 0
+    marked = fmts = classified = binary_safety_passed = binary_safety_total = 0
     inventory_failed = False
 
     try:
@@ -1049,7 +1056,23 @@ def run(scene_dir: str) -> GateReport:
         fmt = classify_bytes(data, path)
         _indicator_hygiene(r, name, data)
         if fmt is None:
-            continue                                   # xattr sidecar and other plain text
+            continue                                   # documentation and other plain text
+        classified += 1
+
+        if fmt in _MARKER_EXEMPT_FORMATS:
+            from artifactforge.artifacts.macos import parse_quarantine_xattr
+
+            try:
+                parse_quarantine_xattr(data)
+            except (TypeError, ValueError) as exc:
+                fmts += 1
+                r.fail(
+                    f"{name}: {fmt} cannot use the synthetic-marker exemption because its "
+                    f"exact serialized profile is invalid — {type(exc).__name__}: "
+                    f"{str(exc)[:100]}"
+                )
+            continue
+
         fmts += 1
 
         if fmt == "pe":
@@ -1083,13 +1106,15 @@ def run(scene_dir: str) -> GateReport:
             r.fail(f"{name}: {fmt} carries no in-band synthetic marker, so a copy that "
                            f"escapes its bundle cannot be recognised as generated")
 
-    if fmts == 0 and not inventory_failed:
+    if classified == 0 and not inventory_failed:
         r.fail(f"no artifact in {scene_dir!r} was classified, so nothing was checked for "
                f"inertness or for its synthetic marker")
     r.metrics["formats_marked"] = marked
     r.metrics["formats_total"] = fmts
     r.metrics["binary_safety_checks_passed"] = binary_safety_passed
     r.metrics["binary_safety_checks_total"] = binary_safety_total
-    r.denominator = (f"{binary_safety_passed}/{binary_safety_total} binary safety checks pass; "
-                     f"{marked}/{fmts} artifacts carry an in-band synthetic marker")
+    r.denominator = (
+        f"{binary_safety_passed}/{binary_safety_total} binary safety checks pass; "
+        f"{marked}/{fmts} marker-eligible artifacts carry an in-band synthetic marker"
+    )
     return r

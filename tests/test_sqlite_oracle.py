@@ -483,11 +483,13 @@ def test_index_bytes_must_correspond_to_their_owning_table_rows():
     raw = bytearray(QUARANTINE.read_bytes())
     index = load_sqlite(QUARANTINE).index("sqlite_autoindex_LSQuarantineEvent_1")
     first_uuid = index.entries[0].key[0]
-    assert isinstance(first_uuid, str) and first_uuid.startswith("1")
+    assert isinstance(first_uuid, str) and first_uuid
     start = _page_start(3)
     offset = raw.find(first_uuid.encode(), start, start + PAGE_SIZE)
     assert offset >= start
-    raw[offset] = ord("0")
+    # Keep the first index key lexically first while breaking its table-row ownership.  The
+    # deterministic sample UUID is not itself part of this raw-reader invariant.
+    raw[offset] = ord("/") if first_uuid.startswith("0") else ord("0")
     with pytest.raises(SQLiteSubsetError, match="own every table PRIMARY KEY row"):
         loads_sqlite(raw)
 

@@ -15,9 +15,11 @@ a passing one.
 
 SQLite databases and binary plists are each read twice: once by the standard-library parser
 used to emit them and once by a deliberately narrow, byte-level implementation under
-``gates.oracles``.  Typed consensus is a separate semantic check from the macOS artifact
-profile, so two parsers agreeing on malformed-but-readable content cannot earn full credit.
-Plain sidecars are outside the parser gate.
+``gates.oracles``. Serialized quarantine xattrs are likewise read by both the artifact
+parser and an independently implemented gate-local byte reader. Typed consensus is a
+separate semantic check from the macOS artifact profile, so two parsers agreeing on
+malformed-but-readable content cannot earn full credit. Plain prose sidecars are outside the
+parser gate.
 """
 from __future__ import annotations
 
@@ -55,14 +57,18 @@ ORACLES = {
     "elf":      {"required": ["lief", "pyelftools"], "gap": None},
     "desktop-entry": {"required": ["pyxdg", "desktop-entry-raw"], "gap": None},
     "bash-history": {"required": ["dissect.target", "bash-history-raw"], "gap": None},
+    "quarantine-xattr": {
+        "required": ["macos-xattr", "quarantine-xattr-raw"],
+        "gap": None,
+    },
 }
 
 
-#: Files that travel with a scene but are not artifacts: documentation, answer keys, and the
-#: quarantine xattr, which is a value emitted as data rather than a format with a parser. They
-#: have no oracle because there is nothing to be wrong about. Anything else the gate cannot
-#: classify IS a failure — an unidentifiable file in a scene is exactly what should be noticed.
-_SIDECAR_SUFFIXES = (".md", ".json", ".txt", ".quarantine.xattr")
+#: Files that travel with a scene but are not artifacts: documentation and answer keys. They
+#: have no oracle because there is nothing structural to validate. Anything else the gate
+#: cannot classify IS a failure — an unidentifiable file in a scene is exactly what should be
+#: noticed. Serialized quarantine xattrs are evidence, not exempt sidecars.
+_SIDECAR_SUFFIXES = (".md", ".json", ".txt")
 
 
 class SemanticError(ValueError):
@@ -162,6 +168,22 @@ class _BashHistoryView:
 
     def detail(self) -> str:
         return f"records={len(self.entries)},timestamped={sum(row[0] > 0 for row in self.entries)}"
+
+
+@dataclass(frozen=True)
+class _QuarantineXattrView:
+    """Type-exact observation of one serialized ``com.apple.quarantine`` value."""
+
+    flags: str
+    timestamp_unix: int
+    agent: str
+    event_uuid: str
+
+    def detail(self) -> str:
+        return (
+            f"flags={self.flags},timestamp={self.timestamp_unix},"
+            f"agent={self.agent},uuid={self.event_uuid}"
+        )
 
 
 @dataclass(frozen=True)
@@ -271,6 +293,8 @@ def _classify_head(head: bytes, path: str) -> str | None:
         return "desktop-entry"
     if os.path.basename(path) == ".bash_history":
         return "bash-history"
+    if path.endswith(".quarantine.xattr"):
+        return "quarantine-xattr"
     return None
 
 
@@ -919,6 +943,69 @@ def _read_bash_history_raw(source):
     )
 
 
+def _read_macos_xattr(data):
+    """Read through the artifact module's strict parser implementation."""
+    from artifactforge.artifacts.macos import parse_quarantine_xattr
+
+    value = parse_quarantine_xattr(data)
+    if (
+        type(value.flags) is not str
+        or type(value.timestamp_unix) is not int
+        or type(value.agent) is not str
+        or type(value.event_uuid) is not str
+    ):
+        raise SemanticError("macOS xattr parser returned non-exact field types")
+    return _QuarantineXattrView(
+        value.flags,
+        value.timestamp_unix,
+        value.agent,
+        value.event_uuid,
+    )
+
+
+def _read_quarantine_xattr_raw(data):
+    """Independently parse the exact four-field xattr bytes without regex reuse."""
+    if type(data) is not bytes:
+        raise SemanticError("raw quarantine xattr reader requires immutable bytes")
+    fields = data.split(b";")
+    if len(fields) != 4:
+        raise SemanticError("quarantine xattr must contain exactly four semicolon fields")
+    flags, timestamp, agent, event_uuid = fields
+    if flags != b"0181":
+        raise SemanticError("quarantine xattr flags must be exactly 0181")
+    if len(timestamp) != 8 or any(byte not in b"0123456789abcdef" for byte in timestamp):
+        raise SemanticError("quarantine xattr timestamp must be eight lowercase hex digits")
+    if not 1 <= len(agent) <= 64:
+        raise SemanticError("quarantine xattr agent must contain 1..64 ASCII bytes")
+    alnum = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    if agent[0] not in alnum or any(byte not in alnum + b" ._-" for byte in agent):
+        raise SemanticError("quarantine xattr agent is outside the exact ASCII profile")
+    if len(event_uuid) != 36 or any(
+        event_uuid[index] != ord("-") for index in (8, 13, 18, 23)
+    ):
+        raise SemanticError("quarantine xattr UUID must use canonical hyphen positions")
+    uuid_hex = b"0123456789ABCDEF"
+    if any(
+        byte not in uuid_hex
+        for index, byte in enumerate(event_uuid)
+        if index not in (8, 13, 18, 23)
+    ):
+        raise SemanticError("quarantine xattr UUID must use uppercase hexadecimal")
+    if event_uuid[14] != ord("4") or event_uuid[19] not in b"89AB":
+        raise SemanticError("quarantine xattr UUID must be canonical RFC 4122 v4")
+    try:
+        agent_text = agent.decode("ascii", errors="strict")
+        uuid_text = event_uuid.decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:  # Defensive; the byte allowlists already exclude this.
+        raise SemanticError("quarantine xattr must be strict ASCII") from exc
+    return _QuarantineXattrView(
+        "0181",
+        int(timestamp, 16),
+        agent_text,
+        uuid_text,
+    )
+
+
 READERS = {
     "pefile": _read_pefile,
     "lief": _read_lief,
@@ -936,6 +1023,8 @@ READERS = {
     "desktop-entry-raw": _read_desktop_entry_raw,
     "dissect.target": _read_dissect_bash_history,
     "bash-history-raw": _read_bash_history_raw,
+    "macos-xattr": _read_macos_xattr,
+    "quarantine-xattr-raw": _read_quarantine_xattr_raw,
 }
 
 
@@ -1262,6 +1351,59 @@ def _validate_macos_sqlite_profile(path: str, reads: dict) -> str:
     raise SemanticError(f"SQLite artifact name {name!r} has no declared macOS profile")
 
 
+def _quarantine_xattr_typed(view: object, *, where: str) -> tuple[tuple[str, object], ...]:
+    if type(view) is not _QuarantineXattrView:
+        raise SemanticError(f"{where} observation is not a quarantine-xattr view")
+    fields = (
+        ("text", view.flags),
+        ("integer", view.timestamp_unix),
+        ("text", view.agent),
+        ("text", view.event_uuid),
+    )
+    expected_types = (str, int, str, str)
+    for (kind, value), expected in zip(fields, expected_types, strict=True):
+        if type(value) is not expected:
+            raise SemanticError(
+                f"{where} {kind} field has non-exact type {type(value).__name__}"
+            )
+    return fields
+
+
+def _quarantine_xattr_pair(reads: dict) -> _QuarantineXattrView:
+    standard = reads.get("macos-xattr")
+    raw = reads.get("quarantine-xattr-raw")
+    standard_typed = _quarantine_xattr_typed(standard, where="macOS xattr parser")
+    raw_typed = _quarantine_xattr_typed(raw, where="raw xattr reader")
+    if standard_typed != raw_typed:
+        raise SemanticError(
+            "macOS xattr parser and raw reader disagree on type-exact quarantine fields"
+        )
+    assert type(raw) is _QuarantineXattrView
+    return raw
+
+
+def _validate_quarantine_xattr_consensus(_path: str, reads: dict) -> str:
+    return _quarantine_xattr_pair(reads).detail()
+
+
+def _validate_quarantine_xattr_profile(path: str, reads: dict) -> str:
+    view = _quarantine_xattr_pair(reads)
+    if not path.endswith(".quarantine.xattr"):
+        raise SemanticError("quarantine xattr must use the exact .quarantine.xattr suffix")
+    if view.flags != "0181" or not 0 <= view.timestamp_unix <= 0xFFFFFFFF:
+        raise SemanticError("quarantine xattr flags/timestamp are outside the exact profile")
+    _profile_text(view.agent, where="quarantine xattr agent", max_bytes=64)
+    if (
+        not view.agent[0].isalnum()
+        or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ._-"
+               for character in view.agent)
+    ):
+        raise SemanticError("quarantine xattr agent is outside the exact ASCII profile")
+    if _QUARANTINE_UUID.fullmatch(view.event_uuid) is None:
+        raise SemanticError("quarantine xattr UUID must be canonical uppercase RFC 4122 v4")
+    return "profile=com.apple.quarantine-v1,fields=4,uuid-v4=1"
+
+
 def _plist_pair(reads: dict) -> _PlistView:
     standard = reads.get("plistlib")
     raw = reads.get("bplist-raw")
@@ -1568,6 +1710,10 @@ SEMANTIC_VALIDATORS = {
         ("bash-history-consensus", _validate_bash_history_consensus),
         ("bash-history-profile", _validate_bash_history_profile),
     ],
+    "quarantine-xattr": [
+        ("quarantine-xattr-consensus", _validate_quarantine_xattr_consensus),
+        ("quarantine-xattr-profile", _validate_quarantine_xattr_profile),
+    ],
 }
 
 
@@ -1576,6 +1722,7 @@ _SNAPSHOT_LIMITS = {
     "plist": 1024 * 1024,
     "desktop-entry": 64 * 1024,
     "bash-history": 1024 * 1024,
+    "quarantine-xattr": 512,
 }
 _EXPECTED_RESULTS = {
     ("pe", "pefile"): _PESemantics,
@@ -1596,6 +1743,8 @@ _EXPECTED_RESULTS = {
     ("desktop-entry", "desktop-entry-raw"): _DesktopEntryView,
     ("bash-history", "dissect.target"): _BashHistoryView,
     ("bash-history", "bash-history-raw"): _BashHistoryView,
+    ("quarantine-xattr", "macos-xattr"): _QuarantineXattrView,
+    ("quarantine-xattr", "quarantine-xattr-raw"): _QuarantineXattrView,
 }
 
 

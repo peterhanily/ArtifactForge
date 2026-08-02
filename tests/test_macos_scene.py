@@ -52,20 +52,34 @@ def test_tcc_records_refusals_as_well_as_grants(tmp_path):
     assert {a for _, a in rows} == {0, 2}, "a database of only grants is not evidence"
 
 
-def test_the_quarantine_xattr_uuid_selects_one_download_row(tmp_path):
+def test_five_quarantine_uuids_form_a_bijection_to_opaque_urls(tmp_path):
     s = _scene(tmp_path)
-    subject = s.join["subject"]
-    with open(os.path.join(s.directory, f"{subject['bundle_id']}.quarantine.xattr")) as f:
-        uuid = f.read().strip().split(";")[-1]
-    assert uuid == subject["quarantine_uuid"]
     rows = _q(s.directory, "QuarantineEventsV2",
               "SELECT LSQuarantineEventIdentifier, LSQuarantineDataURLString, "
-              "LSQuarantineAgentName FROM LSQuarantineEvent")
-    assert len(rows) >= 4, "one download row makes the UUID join a formality"
-    match = [r for r in rows if r[0] == uuid]
-    assert len(match) == 1
-    assert match[0][1] == subject["download_url"]
-    assert match[0][2] == subject["agent"]
+              "LSQuarantineAgentName, LSQuarantineTimeStamp FROM LSQuarantineEvent")
+    assert len(rows) == 5
+    assert len({row[0] for row in rows}) == 5
+    assert len({row[1] for row in rows}) == 5
+    assert len({row[2] for row in rows}) == 1
+    assert len({row[3] for row in rows}) == 1
+    by_uuid = {row[0]: row for row in rows}
+
+    relations = s.join["benchmark_relations"]
+    assert len(relations) == 5
+    xattr_agents = set()
+    xattr_times = set()
+    for relation in relations:
+        relative_path = relation["selector"]["xattr_relative_path"]
+        with open(os.path.join(s.directory, relative_path), encoding="ascii") as file:
+            _flags, encoded_time, agent, uuid = file.read().strip().split(";")
+        xattr_agents.add(agent)
+        xattr_times.add(encoded_time)
+        assert uuid == relation["link_value"]
+        row = by_uuid[uuid]
+        assert row[1] == relation["expected"]
+        assert row[2] == agent
+        assert relation["candidate"].lower() not in row[1].lower()
+    assert len(xattr_agents) == len(xattr_times) == 1
 
 
 def test_launch_agent_persistence(tmp_path):

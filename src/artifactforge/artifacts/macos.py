@@ -16,6 +16,7 @@ tell. No real extended attributes are set on the host — the xattr value is emi
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import os
 from itertools import islice
@@ -37,9 +38,44 @@ _MAX_PROFILE_ROWS = 8
 _UUID = re.compile(
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}"
 )
+_QUARANTINE_VALUE = re.compile(
+    rf"(?P<flags>0181);(?P<timestamp>[0-9a-f]{{8}});"
+    rf"(?P<agent>[A-Za-z0-9][A-Za-z0-9 ._-]{{0,63}});(?P<uuid>{_UUID.pattern})"
+)
 _LAUNCH_LABEL = re.compile(
     r"[a-z][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62}){2,}"
 )
+
+
+@dataclass(frozen=True)
+class QuarantineValue:
+    flags: str
+    timestamp_unix: int
+    agent: str
+    event_uuid: str
+
+
+def parse_quarantine_xattr(data: bytes) -> QuarantineValue:
+    """Parse the exact serialized ``com.apple.quarantine`` benchmark profile.
+
+    The loose sidecar is an exact byte representation of an xattr value: no BOM, newline,
+    padding, permissive whitespace, lowercase UUID, or extra field is accepted.
+    """
+    if type(data) is not bytes:
+        raise ValueError("quarantine xattr value must be bytes")
+    try:
+        text = data.decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError("quarantine xattr value must be strict ASCII") from exc
+    match = _QUARANTINE_VALUE.fullmatch(text)
+    if match is None:
+        raise ValueError("quarantine xattr value is outside the exact four-field profile")
+    return QuarantineValue(
+        match.group("flags"),
+        int(match.group("timestamp"), 16),
+        match.group("agent"),
+        match.group("uuid"),
+    )
 
 
 def _rows(value, *, where: str, width: int) -> tuple[tuple, ...]:
@@ -342,7 +378,9 @@ def build_quarantine_events(events) -> bytes:
 
 def quarantine_xattr(uuid: str, agent: str, timestamp_unix: int, flags: str = "0181") -> str:
     """The com.apple.quarantine xattr value: flags;hex-time;agent;UUID (UUID joins the DB row)."""
-    return f"{flags};{timestamp_unix:08x};{agent};{uuid}"
+    value = f"{flags};{timestamp_unix:08x};{agent};{uuid}"
+    parse_quarantine_xattr(value.encode("ascii", errors="strict"))
+    return value
 
 
 def build_launch_agent(label: str, program_path: str, run_at_load: bool = True) -> bytes:

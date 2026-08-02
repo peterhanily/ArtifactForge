@@ -28,9 +28,11 @@ emitters; a controlled transfer-to-execution witness is required for that causal
 
 ArtifactForge's answer for materialized, answer-bearing binaries is content-first identity.
 `ContentStore` synthesizes a binary's bytes once and derives its content digests and structural
-hashes from those bytes and their parsed structures. The selected Amcache-to-disk and
-answer-key-to-disk pivots reuse that identity, and Gate 2 re-derives those declared checks from
-disk. Deliberate stale and absent Amcache decoys are outside that content-blob claim.
+hashes from those bytes and their parsed structures. Gate 2 re-derives the Windows Amcache
+`FileId`-to-resident-byte agreements and macOS quarantine UUID-to-event agreements from disk.
+Benchmark v2 then uses those same two closed value-agreement rules without publishing the
+private expected results. Deliberate stale and absent Amcache decoys are outside the resident
+content-blob claim.
 
 There is deliberately no general evidence graph. Byte-derived `Content`, public fixture
 integrity, private scene truth, evaluator answers and EvidenceForge's modeled logical-content
@@ -49,14 +51,15 @@ Dependencies point one way:
 - `inventory` — canonical recursive loose-file paths, bounded no-follow capture and exclusive
   scene publication. Depends only on the standard library.
 - `content` — file bytes and their identity. The ContentStore lives here.
-- `artifacts` — pure builders for the structured formats and plain sidecar values; classified
-  formats are validated by their declared readers.
-- `compose` — assembles formats into a scene directory plus its join manifest.
+- `artifacts` — pure builders for structured formats and serialized loose values; every
+  classified format is validated by its declared readers.
+- `compose` — assembles formats into a scene directory plus evaluator-private relation truth.
 - `fixture` — turns a public recipe into a canonical, byte-bound loose-file bundle. It drops
   the private scene join and stays separate from benchmark suites because its manifest
   publishes content digests.
-- `bench` — turns Windows/macOS scenes into gradeable tasks, and holds the adversary solvers.
-  Linux scenes are generator assurance and Fixture Core inputs only.
+- `bench` — turns Windows/macOS scenes into five-question closed-rule tasks, exact public
+  exports, evaluator-side grades, reference solvers, adversaries and counterfactuals. Linux
+  scenes are generator assurance and Fixture Core inputs only.
 - `gates`, `scorecard` — measurement.
 - `ingest` — the EvidenceForge companion adapter, outside the chain. Nothing in the chain may
   import it, and upstream's private seed formulas are never re-exported as ArtifactForge API.
@@ -93,6 +96,17 @@ The shared scene stager also rejects the case-insensitive basenames
 depth, plus the Fixture Core schema marker under any name. This is defense in depth around the
 exact allowlist: a future builder cannot accidentally serve a known answer or evaluation
 manifest merely by adding it to that allowlist.
+
+Benchmark v2 adds a second structural boundary. The finalized evaluator root retains `_key/`,
+`_answers/` and `_content/`; construction staging is transient and absent after atomic
+publication. `bench export` creates a no-replace solver root containing exactly canonical
+`public.json` and its declared `scenarios/` artifacts. One
+aggregate tree commitment avoids publishing answer-bearing per-file digests, while `suite_id`
+binds the canonical public protocol, questions, inventories and commitment and is required on
+every submission row. The export is a transfer boundary, not an in-process sandbox: arbitrary
+solver code must run in a separate OS-enforced trust domain with no path or mount to the
+evaluator root. The complete contract is in
+[`benchmark-v2.md`](benchmark-v2.md).
 
 ## §4 Scope and validation gate
 
@@ -149,6 +163,12 @@ knowledgeC, TCC or QuarantineEventsV2 meanings. Binary-plist consensus is type-e
 filename/label, program path, persistence settings and disclosure. Parser-only and
 meaning-only mutations prove both layers turn red independently.
 
+Serialized quarantine xattrs are parser-classified rather than exempt prose. Gate 1 snapshots
+their bounded bytes, pairs the artifact module's strict parser with an independently
+implemented byte reader, requires type-exact agreement and then enforces the exact flags,
+lowercase hexadecimal timestamp, bounded ASCII agent and uppercase RFC 4122 v4 UUID profile.
+BOMs, newlines, padding, extra fields and noncanonical encodings are red.
+
 For Linux, LIEF and pyelftools independently enumerate the ELF header, interpreter, sole
 `DT_NEEDED` library, segments, sections, dynamic allowlist and ArtifactForge note. PyXDG and a
 bounded raw reader agree on an exact single-group XDG 1.5 desktop-entry subset; dissect.target
@@ -175,6 +195,13 @@ the subject name, SHA-256, SHA-1, MD5 and ELF-note marker are re-derived from it
 gate binds each served desktop path to that file's parsed `Exec` value and inventories the
 single declared history path, so swapping two valid records cannot preserve the join.
 
+For each benchmark-family scene, Gate 2 also binds five independently permuted relations. On
+Windows, each selected historical Amcache row carries a `FileId` whose SHA-1 agrees with one
+of five resident PE byte strings, and the question answer is that resident's SHA-256. On
+macOS, each exact relative xattr path strictly yields one UUID that agrees with one of five
+`QuarantineEventsV2` rows and its data URL. The five answers in either family form a bijection;
+names, row order, agent and timestamp are deliberately not answer selectors.
+
 ### Gate 3 — inertness
 
 *Are generated binaries payload-free, and is every classified structured format marked
@@ -197,10 +224,12 @@ requires the exact entry body, file size and section geometry, non-overlapping R
 and virtual ranges, zero-only unclaimed slack, NX stack, RELRO and the dynamic-tag allowlist,
 and rejects alternate executable sections, initializers, finalizers, TLS, relocations,
 imported symbols and hidden payload bytes.
-Every classified structured format anywhere in the recursive tree—including beneath a dot
-directory—carries an in-band `ARTIFACTFORGE` anchor. Plain sidecars, including the quarantine
-xattr value, are not counted by that marker gate, but are still inspected for indicator
-hygiene. Domains must be RFC
+Every marker-eligible classified structured format anywhere in the recursive tree—including
+beneath a dot directory—carries an in-band `ARTIFACTFORGE` anchor. The strict serialized
+quarantine-xattr format is the sole classified exception because its real four-field grammar
+has no extension slot: Gate 3 grants the non-executable marker exemption only after the strict
+parser accepts its complete bytes. Documentation sidecars remain outside the marker gate but
+are still inspected for indicator hygiene. Domains must be RFC
 2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that might be
 real.
 
@@ -215,40 +244,68 @@ native acceptance therefore does not expand the portable gate's activation claim
 
 ### Gate 4 — solvability
 
-*Are the benchmark's answers recovered from evidence, or derivable?*
+*Are benchmark answers closed-rule value agreements rather than shortcuts?*
 
-**This gate is currently RED, and deliberately stays red.** The `footprint` adversary ranks
-candidates without format parsing — for each candidate, count how many other files mention its
-name and take the maximum — then uses ordinary parsers and lookups to complete dependent
-answers. On the public, non-reportable scorecard measurement corpus it scores 72.7% against
-the committed scorecard's 4.2% chance floor. The number is published in the README and tracked
-in the scorecard; `docs/ROADMAP.md` says what the repair
-takes. Raising the threshold to make it pass is the one response ruled out: a red gate
-reporting a true fact is the system working.
+Benchmark v1 is invalidated, not grandfathered. Completed footprint and stored-order solvers
+recovered every answer on the hostile audit corpus without performing the claimed forensic
+investigation; a co-located task path exposed evaluator answers by parent traversal; the
+public-key corpus was exactly reconstructable without reading target artifacts; candidate-aware
+chance was approximately one in five rather than the published filename lottery; and its
+`joins` value was author-supplied rather than a re-derived dependency trace. No v1 score is a
+benchmark result.
 
-Gate 4's population remains Windows and macOS only. Linux is appended to the deterministic
-Gates 1–3 generator-assurance corpus but receives no public question set, benchmark answer or
-score. Adding a new parser-valid family therefore cannot dilute the existing 72.7% failure.
+V2 permits exactly two closed rules. Windows selects one historical Amcache
+`LowerCaseLongPath`, follows its `FileId` SHA-1 into five captured resident PE byte strings and
+returns the uniquely agreeing file's SHA-256. macOS strictly parses one xattr at an exact
+relative path, follows its UUID into `QuarantineEventsV2` and returns that row's data URL.
+Every scene has five scalar questions, five distinct candidates and a question-to-candidate
+bijection, making exact candidate chance 20%. The resolver captures one recursive tree,
+enumerates candidates from it and returns the artifact paths actually used; Gate 4 never trusts
+a private join count as proof.
 
-A reference solver scoring 100% proves the artifacts *encode* the ground truth. It does not
-prove that is the only way to get it — and here it was not: because the generator is open
-source and the public scenario identifier was also its generation seed, a solver opening zero
-files reproduced every answer. So the gate measures four things: the reference solver scores
-100%; every adversary stays under its threshold; at least one question per family is answerable
-**only** by joining two artifacts; and the blind solver succeeds against the deliberately
-cheatable dev-suite control.
+Reference recovery is only the positive half. Complete selection shortcuts must answer every
+question, while deliberately low-information constant/listing/null controls remain measured
+controls rather than calibrated evidence of resistance. Eleven registered attacks and two
+development-trained ensembles—partial union with cross-slot source selection and rank union—
+are frozen without measurement answers and evaluated in aggregate and per family/rule class.
+That is 39 exact conditional comparisons over the `5!` within-scene assignments, all sharing
+a 5% familywise alpha with Bonferroni correction. The eight complete attacks and both exact
+production ensemble wrappers must first pass ten independent vulnerable-world controls; an
+attack or ensemble execution error fails red. Both measured and development corpora require at
+least 20 scenes per class; an exact scene-level power contract additionally requires 99% power
+against its predeclared 50%-signal alternative.
 
-The adversary set is the gate. `null` and `constant` score zero — *below* the chance floor of
-a solver guessing among visible candidates — and for a long time they were the only baselines,
-which flattered every number the benchmark published. `footprint` and `mechanical` are the two
-that actually threaten it, and a measured chance floor is published beside them so a score can
-be read against something.
+Counterfactuals prove that each rule depends on the field it names. Parser-valid pair swaps
+must change exactly two predicted answers; absent links or same-size resident replacements must
+make exactly one answer unavailable; every other answer must remain unchanged. Rebuilt
+Amcache, PE, quarantine database and xattr artifacts must pass their independent parser pairs
+and exact profiles before the effect counts.
+
+The source-aware blind solver and parent-escape solver are mandatory positive controls. Blind
+reconstruction must succeed on disclosed-key development/scorecard corpora and fail on a fresh
+hold-out. Parent traversal must recover co-located evaluator answers and find none in the exact
+public export. That export does not sandbox arbitrary code, so an actual solver still requires
+a separate OS-enforced trust domain.
+
+A green result is deliberately narrower than “shortcut resistant”: it means no member of this
+finite registered attack/ensemble surface was detected at the declared familywise alpha after
+all mandatory controls passed. It does not establish equivalence to candidate chance, cover an
+unregistered strategy or create a reportable public-corpus performance score.
+
+Gate 4 remains Windows/macOS-only. Linux is appended to the deterministic Gates 1–3 generator
+assurance corpus but receives no public question set, benchmark answer or score. Public
+development and scorecard corpora are non-reportable controls. No v2 performance score is
+reportable until a freshly keyed hold-out is exported, executed in a separate trust domain,
+graded against matching `suite_id` submissions and audited end to end. See
+[`benchmark-v2.md`](benchmark-v2.md).
 
 ## §5 The scorecard
 
 `fidelity-scorecard.json` is committed at the root and carries what the gates actually
-measured, including what they measured badly. It ships reading whatever it honestly reads; a
-scorecard saying `pass` on day one would be the least believable thing in the repository.
+measured, including what they measured badly. Historical benchmark-v1 fields remain evidence
+of that old protocol, not results that may be relabeled v2. It ships reading whatever it
+honestly reads; a scorecard saying `pass` on day one would be the least believable thing in
+the repository.
 Regression is enforced by one declarative table, with tolerance 0 on every count: an artifact
 that used to be readable and now is not, or a join that used to hold and now does not, is a
 regression at any magnitude.
@@ -258,3 +315,9 @@ digests of the package metadata and lock file, and the CLI refuses to write it f
 worktree. The explicit `--allow-dirty` escape hatch is for diagnosis, never release: its source
 record is marked unclean and binds the complete tracked binary diff plus every untracked path
 and byte to one digest.
+
+Development and scorecard-measurement derivations are public, deterministic controls and must
+remain machine-labeled non-reportable. A future hold-out performance record needs separate
+provenance for the secret-key evaluator, exact public export, solver trust domain and matching
+`suite_id` submissions. Scanner evidence is independent of all four gates; no fresh scanner
+attestation currently exists for the v2 corpus.

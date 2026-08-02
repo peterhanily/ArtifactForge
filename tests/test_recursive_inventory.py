@@ -433,6 +433,13 @@ def test_all_three_gates_follow_nested_hidden_windows_and_macos_artifacts(tmp_pa
         nested.mkdir(parents=True)
         for file in original:
             file.path.rename(nested / file.name)
+        if task.family == "macos":
+            for relation in task.join["benchmark_relations"]:
+                selector = relation["selector"]
+                selector["xattr_relative_path"] = (
+                    ".evidence/nested/"
+                    + selector["xattr_relative_path"].rsplit("/", 1)[-1]
+                )
 
         reports = (
             validity.run(task.directory),

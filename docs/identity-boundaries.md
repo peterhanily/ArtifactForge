@@ -16,6 +16,7 @@ meaning:
 | `fixture.json` | exact payload path, size and SHA-256 observations bound to a reproducible public recipe | published fixture integrity record |
 | `Scene.join` | construction-time truth used to test declared cross-artifact relations | evaluator/private; never served |
 | benchmark answer key | expected answers derived from private scene truth | server-side only |
+| benchmark public export | canonical rule/selectors and artifact inventories plus one aggregate tree commitment, bound by `suite_id` | solver-visible; no per-file digest answers |
 | EvidenceForge content reference RFC | explicit modeled logical identity, which may have no materialized bytes | upstream opt-in scenario contract |
 
 Digest equality can support a lookup. By itself it does not prove that two observations are the
@@ -28,10 +29,11 @@ whole-file digest algorithms.
 
 The repository has one genuine cross-artifact digest consumer: the Windows Amcache
 `FileId`-to-resident-file pivot. The composer emits the private expected relation; Gate 2
-independently parses Amcache, hashes captured resident bytes and requires exactly one match.
-The reference solver and committed sample perform the same investigation from their own byte
-captures. Hiding that lookup behind a graph would add no capability. Publishing the resolved
-edge would disclose the benchmark's surviving `amcache_match_sha256` answer.
+independently parses Amcache, hashes captured resident bytes and requires each selected
+`FileId` to agree with exactly one of five residents. The benchmark-v2 reference resolver does
+the same investigation from its own byte capture and returns the SHA-256 of the uniquely
+agreeing resident. Hiding that lookup behind a graph would add no capability. Publishing the
+resolved edges would disclose the five question-to-answer mappings.
 
 The other apparent consumers do not need a graph:
 
@@ -41,10 +43,11 @@ The other apparent consumers do not need a graph:
   capability and postconditions, not semantic join edges.
 - Linux's current relation is an exact guest-path intersection across XDG and Bash history,
   followed by hashing the mapped resident bytes. Neither text artifact emits a digest.
-- macOS content digests in private scene truth identify emitted binaries; the cross-artifact
-  joins use bundle identifiers and quarantine UUIDs.
-- Gate 4 evaluates whether benchmark questions leak. Giving it resolved relations would erase
-  the boundary it is meant to test.
+- macOS content digests in private scene truth identify emitted binaries; benchmark-v2's
+  public relation instead follows a strict xattr UUID into `QuarantineEventsV2` without
+  publishing the resulting URL mapping.
+- Gate 4 re-derives closed-rule candidates, dependency paths and parser-valid counterfactual
+  effects. Giving it resolved relations would erase the boundary it is meant to test.
 - The controlled EvidenceForge witness proves a modeled exact-path transfer-to-execution
   nonjoin without common materialized bytes. Its role-specific content reference belongs in
   EvidenceForge's scenario model; an ArtifactForge byte graph cannot repair or prove it.
@@ -55,7 +58,13 @@ Fixture Core deliberately discards a composed scene's private join before creati
 manifest. `fixture.json` remains answer-free and fixes `benchmark_eligible` to `false` because
 its public seed and byte digests already disqualify it as a hold-out. Benchmark staging rejects
 fixture and answer metadata at every depth. Public benchmark tasks carry prompts and question
-types, while answers and joins stay in the evaluator tree outside the served scene.
+types, closed rule names, selectors, candidate counts and exact artifact inventories, while
+answers and private construction truth stay in the evaluator tree. `bench export` creates a
+new root containing only canonical `public.json` and `scenarios/`; one aggregate tree
+commitment avoids publishing answer-bearing per-file hashes, and `suite_id` binds that document
+to every submission. The export is a transfer boundary, not an in-process sandbox, so arbitrary
+solver code still requires a separate OS-enforced trust domain without evaluator access. See
+[`benchmark-v2.md`](benchmark-v2.md).
 
 A future feature must preserve those separations. In particular, no public fixture record may
 serialize `subject`, `role`, `pivot`, `match`, `same_file`, `caused_by`, question, answer or

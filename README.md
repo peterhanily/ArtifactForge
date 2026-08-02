@@ -22,8 +22,9 @@ on a host once they dig in — consistent with the incident model of
 > **Everything here is synthetic.** No artifact in this repository came from a real host. No
 > hash, UUID, bundle identifier, URL, path or timestamp in it identifies anything real, and
 > none should be added to a blocklist, a detection rule or a threat-intelligence platform.
-> Generated binaries are payload-free by construction. Classified structured artifacts
-> disclose themselves in-band; plain sidecars are the documented exception. See
+> Generated binaries are payload-free by construction. Marker-eligible classified artifacts
+> disclose themselves in-band; the strict serialized quarantine-xattr profile is the sole
+> classified marker exemption. See
 > [`SECURITY.md`](SECURITY.md) and
 > [`docs/inert-by-construction.md`](docs/inert-by-construction.md).
 
@@ -33,39 +34,24 @@ actually runs — pefile, LIEF, regipy, libregf, libscca, macholib — and requi
 cross-artifact pivots to hold in their output. Parser readability and those pivots are pass/fail
 properties; broader realism remains partial and is documented below.
 
-```
-$ artifactforge bench new suite --n 4 --kind holdout
-wrote 4 scenarios to suite (holdout suite)
-  key: suite/_key/key.hex
-       Lose it and this suite can never be regenerated or audited. Never commit it.
+```sh
+# Evaluator trust domain: keep this complete root and its key/answers private.
+artifactforge bench new evaluator --n 40 --kind holdout
+artifactforge bench export evaluator public
 
-$ ls suite/scenarios/af1_o272arbuftpknuil
-Amcache.hve                       CODE.EXE-39F3B2A8.pf   javaw.exe
-audacity.exe                      code.exe               JAVAW.EXE-1DA9F6E6.pf
-CHROME_HELPER.EXE-2DB20320.pf     cmd.exe                smartscrn.exe
-SMARTSCRN.EXE-0818EF6A.pf         Software.run.hive
+# Separate OS-enforced solver trust domain: transfer only public/ here.
+artifactforge bench solve public --out answers.jsonl
 
-$ artifactforge bench solve suite --out answers.jsonl
-wrote 4 submissions to answers.jsonl
-
-$ artifactforge bench grade suite --submission answers.jsonl
-  count      2/2
-  enum       2/2
-  hash       6/6
-  imphash    4/4
-  name       4/4
-  path       2/2
-  url        2/2
-  SCORE: 22/22 = 100.0%
-
-$ artifactforge gate identity
-Gate 2 — identity: do the declared answer-bearing pivots agree with emitted bytes?
-  VERDICT: PASS (0 fail, 0 declared gaps) — 130/130 cross-artifact identity checks hold
+# Evaluator trust domain: transfer only the submission back.
+artifactforge bench grade evaluator --submission answers.jsonl
 ```
 
-The scene above holds five binaries. Persistence launches one of them; Amcache's recorded
-hashes match a *different* one; one prefetch record names a program that is no longer there.
-Answering anything about it requires reading two artifacts together, which is the point.
+The public export contains only canonical `public.json` and `scenarios/`; the solver never
+receives the evaluator path. Every submission is bound to the export's `suite_id`. The export
+is a transfer boundary, not a Python sandbox: arbitrary solver code still requires a separate
+account, container/VM without the evaluator mount, or separate machine. This workflow remains
+experimental and no v2 performance score is reportable yet. See
+[`docs/benchmark-v2.md`](docs/benchmark-v2.md).
 
 ## What's in it
 
@@ -78,10 +64,11 @@ Answering anything about it requires reading two artifacts together, which is th
 - **macOS artifacts** — a hand-assembled arm64 Mach-O with a real symhash and a real ad-hoc
   code signature whose cdhash `codesign -d` reports; knowledgeC, TCC and QuarantineEventsV2
   databases; the `com.apple.quarantine` xattr value as a sidecar file; LaunchAgent plists.
-  SQLite and binary-plist bytes are independently decoded by bounded first-party raw readers,
-  compared type-for-type with `sqlite3`/`plistlib`, then checked against exact macOS profiles.
-  EvidenceForge cannot produce any of this — its `os_category` is windows or linux, with no
-  macOS at all.
+  SQLite, binary-plist and serialized quarantine-xattr bytes are independently decoded by
+  bounded first-party readers, compared type-for-type with their paired implementation, then
+  checked against exact macOS profiles.
+  EvidenceForge v1.13.1 cannot produce any of this — its documented `os_category` is windows
+  or linux, with no macOS at all.
 - **Linux loose artifacts** — deterministic ELF64 little-endian x86-64 `ET_DYN` files with a
   real interpreter, dynamic table, three R/RX/RW load segments, NX stack, RELRO and an in-band
   note; XDG 1.5 autostart desktop entries; and timestamped Bash history. LIEF and pyelftools
@@ -90,10 +77,10 @@ Answering anything about it requires reading two artifacts together, which is th
   `linux-glibc-x86_64-loose-v1`.
 - **One identity behind the answer-bearing file pivots.** `ContentStore` synthesizes each
   materialized binary's bytes once and derives its content digests and structural hashes from
-  them. The selected Amcache-to-disk, answer-key-to-disk and Linux guest-path-to-served-byte
-  joins reuse that identity. Deliberate stale and absent Amcache decoys do not claim to be
-  resident file bytes. The distinct byte, fixture, evaluator and modeled-log boundaries—and
-  the decision not to publish a catch-all graph—are in
+  them. The five Amcache `FileId`-to-resident agreements, private binary truth and Linux
+  guest-path-to-served-byte checks reuse that identity. Deliberate stale and absent Amcache
+  decoys do not claim to be resident file bytes. The distinct byte, fixture, evaluator and
+  modeled-log boundaries—and the decision not to publish a catch-all graph—are in
   [`docs/identity-boundaries.md`](docs/identity-boundaries.md).
 - **Fixture Core v1.** A strict public recipe builds `fixture.json` plus an exact `artifacts/`
   payload; hidden and nested relative paths are ordinary first-class members. Verification
@@ -108,17 +95,21 @@ Answering anything about it requires reading two artifacts together, which is th
   privately and atomically published with no replacement; path-only parsers receive a bounded,
   frozen private copy made from one immutable byte capture rather than reopening the caller's
   tree.
-- **A benchmark for investigation, not recall — experimental, with benchmark-validity status
-  red because Gate 4 fails.** Deterministic scenes with decoys, questions that each span two
-  artifacts, and answers derived from a suite key the solver never sees. The keyed-suite half
-  works; the scene composition leaks, at 72.7% against a 4.2% floor. See *How honest is it,
-  really?* below. Do not report a score from it yet.
+- **Benchmark v2 — experimental and non-reportable.** Every Windows or macOS scene has five
+  scalar questions forming a bijection over five candidates. The two closed rules resolve an
+  Amcache `FileId` SHA-1 against resident PE bytes, or a strict quarantine-xattr UUID against
+  `QuarantineEventsV2`; exact candidate chance is 20%. Public export, `suite_id` binding,
+  parser-valid counterfactuals and exact scene-level permutation tests replace v1's invalid
+  root-object questions. The finite registered Gate 4 validity surface passes in the committed
+  v0.5 scorecard; a separately isolated hold-out run is still required before any performance
+  score can be reported.
 - **A companion adapter** that reads an EvidenceForge run's output and recovers which logical
   binary each of its Sysmon hashes denotes — verifying every recovery against the digest
   upstream emitted, and refusing rather than guessing. It never imports EvidenceForge.
 - **Four gates and a scorecard.** Core generator and benchmark claims map to gates that are
-  mutation-tested red; pinned external measurements and dated scanner observations carry
-  separate provenance. See [`docs/DESIGN.md`](docs/DESIGN.md) §4.
+  mutation-tested red; pinned external measurements and scanner observations require separate
+  provenance. No fresh scanner attestation exists for the v2 corpus. See
+  [`docs/DESIGN.md`](docs/DESIGN.md) §4.
 
 ## Try it
 
@@ -218,12 +209,12 @@ breaks in one file rather than silently returning wrong identities.
 
 **Identity — proven within the gate's declared scope.** The answer-bearing materialized file
 digests, structural hashes and selected joins are re-derived from the files on disk through
-real parsers and only then compared; the 60-scene generator-assurance corpus (40 Windows/macOS
-scenes plus 20 Linux assurance scenes) holds all 1,300 of 1,300 checks, and appending a byte,
-rewriting the
-resident-file Amcache `FileId`, or corrupting a quarantine UUID turns Gate 2 red. This does not
-claim that every stale or absent decoy `FileId` names bytes shipped in the scene. Determinism is
-real: a batch regenerates byte-identical across processes, hash seeds, timezones and locales.
+real parsers and only then compared. Mutations append bytes, rewrite resident-file Amcache
+`FileId` values, corrupt quarantine UUIDs and alter exact recursive paths, and require Gate 2
+to turn red. This does not claim that every stale or absent decoy `FileId` names bytes shipped
+in the scene. Determinism is real: a batch regenerates byte-identical across processes, hash
+seeds, timezones and locales. Release counts belong to the source-bound scorecard, not prose
+written before that scorecard is regenerated.
 
 **Artifact fidelity — partial, and measured.** Every classified structured format is opened
 by two independently implemented parsers. ELF uses LIEF plus pyelftools; XDG desktop entries
@@ -234,63 +225,55 @@ endorsement. Gate 1 first captures the complete bounded scene through held, no-f
 descriptors and gives pathname-only parsers a frozen private copy of that immutable capture;
 each parser pair thus observes the same bytes. Gate 1 separately
 requires type-exact consensus and the exact knowledgeC, TCC, QuarantineEventsV2 or LaunchAgent
-profile. The quarantine xattr value remains a plain sidecar rather than a separately parsed
-format. Generator assurance is `pass`; the aggregate headline reads `fail` because Gate 4
-is red. Beyond that, every format has real limitations and
+profile. Serialized quarantine xattrs are now parser-classified: the artifact parser and an
+independent byte reader must agree on their exact four-field representation. Beyond that,
+every format has real limitations and
 [`KNOWN_TELLS.md`](KNOWN_TELLS.md) lists them: minimal registry hives with ASCII-only key names,
 uncompressed prefetch where Windows 10 compresses, and a Mach-O using an older linker idiom
 than any current clang emits.
 
-**Benchmark validity — currently failing, and the number is published.** Gate 4 is **red**.
-The reference solver scores 100%. The `footprint` adversary first ranks candidates without
-understanding any file format — count how many other files mention each name and take the
-maximum — then uses ordinary parsers and lookups to complete the answers hanging from that
-choice. The committed regression measurement uses a deterministic, public-keyed
-`scorecard-measurement` corpus:
+**Benchmark validity — redesigned, experimental and not yet reportable.** The v1 measurement
+is withdrawn. Completing its footprint and stored-order attacks produced perfect shortcut
+recovery, its co-located solver path exposed `_answers/`, its public-key corpus was exactly
+reconstructable without reading target artifacts, its candidate-aware chance was about one in
+five, and its dependency count was self-asserted. Those are protocol failures, not thresholds
+to tune.
 
-| | |
-|---|---|
-| reference solver (real parsers, real joins) | **100%** |
-| `footprint` adversary (format-free ranking, parser-assisted completion) | **72.7%** |
-| chance floor (guesses among visible candidates) | **4.2%** |
+V2 asks five scalar questions per scene under two closed rules. Each question resolves one of
+five candidates by actual value agreement across at least two captured artifacts; the five
+answers form a bijection and exact chance is 20%. Gate 4 independently derives candidate
+universes and artifact dependency traces, requires complete shortcut attacks, evaluates
+aggregate and family/rule results with exact within-scene permutation inference, and enforces
+a predeclared minimum of 20 scenes per class and exact power contract. Parser-valid
+counterfactuals must swap exactly the predicted answers or make exactly one relation
+unavailable while every other answer remains unchanged.
 
-Those three numbers are the ones in `fidelity-scorecard.json`, measured at `--n 40`.
-Reproduce them exactly with `artifactforge scorecard --n 40`. The scorecard records the
-full source commit and tree plus digests of `pyproject.toml` and `uv.lock`; release output is
-refused from a dirty worktree. `--allow-dirty` exists only for non-release investigation and
-binds the resulting card to the complete tracked diff and every untracked byte. It also records
-the corpus derivation and marks it `reportable: false`: its published key makes it useful for
-repeatable regression, never as a secret hold-out score. Real benchmark evaluation still uses
-a fresh key that never leaves the evaluator. Quoting a different corpus's figure here is how
-a document starts lying slowly.
-
-An earlier version of this file claimed *"every adversary scores 0%"*. That was true of the
-four adversaries then registered and false about the benchmark, because all four were weaker
-than five minutes of work. The attack above is not incidental — it is structural. The answer
-object is by definition the thing the registry, Amcache, prefetch and disk all talk about,
-while a decoy appears in fewer of them, so counting mentions *is* the intended pivot performed
-without understanding any of it.
-
-Fixing it means deleting questions rather than patching the generator: for
-`persisted_sha256` the declared pivot is "the one Run value naming a resident program", and
-balancing the scene so decoys are mentioned equally makes the reference solver itself fail.
-Linux assurance scenes are deliberately excluded from Gate 4, so they neither dilute nor
-repair this Windows/macOS benchmark result. The question and the leak are the same object.
-Until that lands the benchmark is
-**experimental** and no score from it should be reported. The generator's three gates pass;
-its assurance status is `pass`. That does not make the experimental benchmark valid.
+The development and scorecard-measurement corpora have disclosed derivations and are positive
+controls, never agent-performance datasets. A reportable run additionally requires a fresh
+hold-out key, exact export, `suite_id`-bound submissions and a separate OS-enforced solver
+trust domain. That end-to-end isolated hold-out measurement has not been completed, so no v2
+performance score is reportable. Linux remains generator assurance and Fixture Core material;
+it is not included in Gate 4 and cannot dilute either benchmark family. See
+[`docs/benchmark-v2.md`](docs/benchmark-v2.md).
 
 **What it is not.** Not disk images, not memory, not EVTX, not a live host. The tier is loose
 files a responder's tools read directly, and it is not threat intelligence.
 
 ## Status
 
-Early and experimental, version 0.4.0, nothing published to PyPI. **Gates 1 to 3 pass;
-generator-assurance status is `pass`. Benchmark-validity status is `fail` because Gate 4 is
-red.** `fidelity-scorecard.json` at the repository root is
-the honest record — it ships whatever it actually reads, and right now that includes a
-failure. MIT licensed, deliberately, so any part of it could be merged upstream without
-friction if that ever became useful.
+<!-- scorecard-status:start -->
+**Committed scorecard scopes (`0.5.0`).** Generator assurance is `pass`;
+experimental benchmark validity is `pass`; the all-gates compatibility verdict is
+`pass`. Its reproducible measurement corpus is explicitly non-reportable.
+<!-- scorecard-status:end -->
+
+Early and experimental at v0.5.0, with nothing published to PyPI. The clean-source scorecard
+passes generator assurance, the finite registered Benchmark v2 validity surface and the
+all-gates compatibility verdict. That is not a performance result: the reproducible corpus is
+a positive-control/diagnostic corpus, and no separately isolated fresh-key hold-out has been
+run. Benchmark-v1 figures remain withdrawn rather than carried forward. No fresh scanner
+attestation exists for the v2 corpus. MIT licensed, deliberately, so any part of it could be
+merged upstream without friction if that ever became useful.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and the gate discipline,
 [`docs/fixture-core.md`](docs/fixture-core.md) for the public fixture contract,

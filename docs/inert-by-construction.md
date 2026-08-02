@@ -64,7 +64,7 @@ it returns zero. That is a real step up in dual-use posture from an unloadable s
 mitigation is the whole of this document — the two-instruction body, the marker, the
 disclosure, and the tests below.
 
-## Marked, in-band, in every classified structured format
+## Marked in-band, with one bounded serialized-value exception
 
 A bundle can be renamed and a README can be lost. The only disclosure that survives a file
 being copied somewhere else is one inside the bytes, so every classified structured format
@@ -81,11 +81,16 @@ carries an `ARTIFACTFORGE` anchor that `strings` finds:
 | Binary plist | a reserved `artifactforge_synthetic` key |
 | XDG desktop entry | `X-ArtifactForge-Synthetic=ARTIFACTFORGE` |
 | Bash history | exact first record `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` |
+| Serialized quarantine xattr | no extension field exists; strict-valid non-executable values are explicitly exempt |
 
-The serialized `com.apple.quarantine` value is a plain sidecar, not a parser-classified format,
-and it does not carry that anchor. Its filename, reserved indicators and the scene-level
-disclosure provide context, but they are not an in-band marker; this is a deliberate limit of
-the current gate rather than credit silently counted as coverage.
+The serialized `com.apple.quarantine` value is a parser-classified loose representation, not
+an extended attribute applied to host metadata, and it does not carry an anchor. Its complete
+real four-field grammar has no extension field for one. Gate 1 snapshots it and requires two
+independently implemented first-party readers to agree type-for-type before checking the exact
+flags, lowercase hexadecimal timestamp, bounded ASCII agent and uppercase RFC 4122 v4 UUID
+profile. Gate 3 exempts only bytes accepted by that strict parser as non-executable serialized
+data. A newline, padding, extra field, noncanonical value or arbitrary file that merely uses
+the suffix is red rather than silently exempt.
 
 The disclosure text is deliberately plain ASCII. A binary plist silently re-encodes any string
 containing a non-ASCII character as UTF-16, which would hide the anchor from `strings` — a
@@ -116,8 +121,9 @@ their present scope rather than treating a weaker check as proof of a stronger p
 | The Mach-O CodeDirectory covers every byte before its bounded signature region | `gates/inertness.py::_verify_macho_signature` |
 | The ELF main-object entry reaches only the exact nine-byte direct-exit RX load | `gates/inertness.py::_elf_code_is_inert` |
 | ELF file/virtual loads do not overlap and every unclaimed byte is zero | same |
-| Every classified structured format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
-| A format with no declared marker fails | same — an unknown format is a failure, not a skip |
+| Every marker-eligible classified structured format carries its marker | `gates/inertness.py::run`, `MARKERS` table |
+| A marker-eligible format with no declared marker fails | same — an unknown format is a failure, not a skip |
+| Only a strict-valid serialized quarantine xattr is exempt from the marker requirement | `gates/inertness.py::run`, `_MARKER_EXEMPT_FORMATS` |
 | No URL outside RFC 2606 | `gates/inertness.py::_indicator_hygiene` |
 | No address outside RFC 5737 / RFC 1918 | same |
 | No bundle identifier under a real vendor's prefix | same, `_REAL_VENDOR_PREFIXES` |

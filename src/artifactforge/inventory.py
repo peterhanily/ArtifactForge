@@ -573,8 +573,15 @@ def _open_child_directory(parent_fd: int, name: str, expected: os.stat_result) -
     return descriptor
 
 
-def _freeze_snapshot_directory(directory_fd: int) -> None:
-    """Make a private snapshot read-only without following any replaceable entry."""
+def freeze_directory_tree(
+    directory_fd: int,
+    *,
+    file_mode: int = 0o400,
+    directory_mode: int = 0o500,
+) -> None:
+    """Make a held tree read-only without following any replaceable entry."""
+    if file_mode & 0o222 or directory_mode & 0o222:
+        raise InventoryError("frozen tree modes must not grant write permission")
     try:
         names = sorted(os.listdir(directory_fd))
         for name in names:
@@ -582,7 +589,11 @@ def _freeze_snapshot_directory(directory_fd: int) -> None:
             if stat.S_ISDIR(before.st_mode):
                 child_fd = _open_child_directory(directory_fd, name, before)
                 try:
-                    _freeze_snapshot_directory(child_fd)
+                    freeze_directory_tree(
+                        child_fd,
+                        file_mode=file_mode,
+                        directory_mode=directory_mode,
+                    )
                     after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     opened = os.fstat(child_fd)
                     if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino):
@@ -605,10 +616,10 @@ def _freeze_snapshot_directory(directory_fd: int) -> None:
                     before.st_ino,
                 ):
                     raise InventoryError(f"snapshot file changed while freezing: {name!r}")
-                os.fchmod(file_fd, 0o400)
+                os.fchmod(file_fd, file_mode)
             finally:
                 os.close(file_fd)
-        os.fchmod(directory_fd, 0o500)
+        os.fchmod(directory_fd, directory_mode)
     except InventoryError:
         raise
     except (NotImplementedError, OSError) as exc:
@@ -695,7 +706,7 @@ def captured_regular_tree(
                 write_regular_file_at(root_fd, file.relative_path, file.data)
                 target = temporary.joinpath(*file.relative_path.split("/"))
                 captured.append(InventoryFile(file.relative_path, target, file.data))
-            _freeze_snapshot_directory(root_fd)
+            freeze_directory_tree(root_fd)
         except (InventoryError, OSError) as exc:
             raise InventoryError(f"cannot materialize private scene snapshot: {exc}") from exc
         yield tuple(captured)
@@ -782,11 +793,15 @@ def open_real_directory_at(parent_fd: int, name: str) -> int:
     return descriptor
 
 
-def write_regular_file_at(root_fd: int, relative: str, data: bytes) -> None:
+def write_regular_file_at(
+    root_fd: int, relative: str, data: bytes, *, mode: int = 0o666
+) -> None:
     """Exclusively create a file through descriptor-anchored, non-link parents."""
     relative = validate_relative_path(relative)
     if not isinstance(data, bytes):
         raise TypeError("artifact payload must be bytes")
+    if not isinstance(mode, int) or mode < 0 or mode > 0o777:
+        raise ValueError("artifact file mode must be a POSIX permission mask")
     components = relative.split("/")
     directory_flags = (
         os.O_RDONLY
@@ -825,7 +840,7 @@ def write_regular_file_at(root_fd: int, relative: str, data: bytes) -> None:
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_BINARY", 0)
         )
-        file_fd = os.open(components[-1], flags, 0o666, dir_fd=descriptors[-1])
+        file_fd = os.open(components[-1], flags, mode, dir_fd=descriptors[-1])
         try:
             if not stat.S_ISREG(os.fstat(file_fd).st_mode):
                 raise InventoryError(f"artifact target is not a regular file: {relative!r}")

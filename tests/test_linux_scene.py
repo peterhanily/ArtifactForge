@@ -148,7 +148,11 @@ def test_linux_identity_requires_the_exact_complete_declared_inventory(
 def test_linux_identity_reddens_when_an_xdg_exec_target_changes(tmp_path):
     scene = _build(tmp_path)
     subject_path = scene.join["subject"]["guest_path"]
-    replacement = scene.join["bash_history"]["direct_exec_guest_paths"][1]
+    replacement = next(
+        path
+        for path in scene.join["bash_history"]["direct_exec_guest_paths"]
+        if path != subject_path
+    )
     desktop = next(
         Path(scene.directory) / record["served_relpath"]
         for record in scene.join["autostart"]

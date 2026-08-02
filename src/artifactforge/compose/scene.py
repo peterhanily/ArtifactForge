@@ -8,15 +8,13 @@ benchmark built on it cannot tell whether the cross-artifact hash pivot works, b
 is nothing to pivot between. That is not hypothetical: the previous scenes scored 100% after
 their Amcache-to-disk hash join had been deliberately destroyed.
 
-So each scene carries decoys, and the signals deliberately do not all point at the same file:
-
-  * five binaries on disk, of which one is what persistence launches and a *different* one is
-    the one Amcache's recorded hashes actually match,
-  * three Run-key values, only one naming a program that is present,
-  * eight Amcache rows, only one whose recorded SHA1 belongs to a resident file — including a
-    row for the persisted binary carrying a deliberately stale value; the historical bytes
-    behind that modeled value are not retained,
-  * four prefetch records, one of which names an executable that is no longer there.
+So each Windows scene carries five equal-size resident binaries and two deliberately separate
+layers. Run/prefetch still model one resident autostart and one orphan execution for Gates 1–3.
+Gate 4 instead receives five historical Amcache rows: every FileId is the real SHA1 of a
+different resident's bytes, while historical Name/path fields identify none of the current
+filenames. Five questions therefore cover all five candidate slots once; three additional
+Amcache rows carry absent hashes as ordinary noise. Resident generation, FileId mapping,
+registry-row order and question order use independent keyed permutations.
 
 Nothing is written into the served directory directly. Artifacts are built into a staging
 area and copied in by allowlist, so what a solver can see equals what we intended it to see —
@@ -44,6 +42,25 @@ from artifactforge import suite
 from artifactforge.content import ContentStore
 from artifactforge.inventory import open_real_directory, write_regular_file_at
 from artifactforge.model import PINNED_UNIX, HostProfile, deterministic_uuid
+
+
+WINDOWS_AMCACHE_RULE = "amcache-fileid-byte-agreement-v1"
+MACOS_QUARANTINE_RULE = "quarantine-uuid-event-agreement-v1"
+
+
+def _keyed_order(skey: bytes, label: str, values, *, identity) -> list:
+    """A deterministic order with a domain independent from every other scene order.
+
+    Record position is observable evidence.  Reusing construction order for residents,
+    database rows and public questions made the first role the answer in every scene, so each
+    sequence gets its own keyed ranking even when it contains the same logical objects.
+    """
+    return sorted(
+        values,
+        key=lambda value: suite.scene_value(
+            skey, f"scene-order:{label}:{identity(value)}"
+        ),
+    )
 
 
 @dataclass
@@ -134,17 +151,42 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
                              [n for n in pools.MALWARE_NAMES if n != persisted_name])
 
     persisted_path = f"{temp}\\{persisted_name}"
-    amcache_path = f"{_install_dir(amcache_name)}\\{amcache_name}"
 
-    # --- the binaries. Two carry answers; the rest are the haystack. ------------------
+    # --- five equal-size resident binaries --------------------------------------------
+    # Generation order, the Amcache relation permutation and every stored row order are
+    # independent.  A role-first solver used to recover every answer because all three were
+    # the same list with different encodings.
+    resident_specs = [
+        ("persisted", persisted_name),
+        ("amcache-match", amcache_name),
+        *[(f"noise{i}", name) for i, name in enumerate(noise_names)],
+    ]
+    resident_specs = _keyed_order(
+        skey, "windows-resident-generation", resident_specs, identity=lambda item: item[0]
+    )
     resident = {}
-    for role, name in [("persisted", persisted_name), ("amcache-match", amcache_name),
-                       *[(f"noise{i}", n) for i, n in enumerate(noise_names)]]:
+    resident_claims = {}
+    for role, name in resident_specs:
         c = store.materialize("pe:" + suite.content_seed(skey, role))
         resident[name] = c
+        path = persisted_path if role == "persisted" else _full_path(name)
+        resident_claims[name] = {
+            "role": role,
+            "name": name,
+            "path": path,
+            "size": len(c.bytes),
+            "sha256": c.sha256,
+            "sha1": c.sha1,
+            "md5": c.md5,
+            "imphash": c.imphash,
+            "marker": c.marker,
+        }
         _write(staging_dir, name, c.bytes)
 
-    persisted, matched = resident[persisted_name], resident[amcache_name]
+    sizes = {len(content.bytes) for content in resident.values()}
+    if len(sizes) != 1:
+        raise ValueError(f"Windows benchmark residents left the fixed-size PE profile: {sizes}")
+    persisted = resident[persisted_name]
 
     # --- persistence: three autostarts, only one naming a program that is here --------
     names = suite.pick_many(skey, "run-values", pools.RUN_VALUE_NAMES, 3)
@@ -156,23 +198,97 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     ]
     _write(staging_dir, "Software.run.hive", build_run_hive(run_values))
 
-    # --- Amcache: eight rows, exactly one hash belonging to a file that is still here --
-    rows = [(matched.sha1, amcache_path.lower(), amcache_name, len(matched.bytes))]
-    # The persisted binary IS recorded, but under a deliberately stale value. This models the
-    # pivot shape without retaining historical bytes, so do not describe it as a verified
-    # digest of an earlier version. Following hashes still leads somewhere different from
-    # following paths, which is the point.
-    rows.append((_absent_sha1(skey, "stale-persisted"), persisted_path.lower(),
-                 persisted_name, len(persisted.bytes) + 4096))
-    for i, n in enumerate(suite.pick_many(skey, "amcache-decoys", absent_targets, 6)):
-        rows.append((_absent_sha1(skey, f"amcache{i}"), _full_path(n).lower(), n, 4096 * (i + 3)))
-    _write(staging_dir, "Amcache.hve", build_amcache_hive(rows))
+    # --- Amcache: five independent byte-identity relations plus stale noise ------------
+    # Each prompted historical row describes bytes later found under a different resident
+    # filename.  Name, path, size, order and role therefore cannot map a prompt to the current
+    # file: the row's FileId SHA1 agreeing with bytes on disk is the relation.
+    resident_names = set(resident)
+    historical_pool = [
+        name for name in pools.BENIGN_NAMES if name.lower() not in {
+            resident_name.lower() for resident_name in resident_names
+        }
+    ]
+    historical_names = suite.pick_many(
+        skey, "amcache-historical-names", historical_pool, len(resident)
+    )
+    mapped_residents = _keyed_order(
+        skey,
+        "windows-amcache-mapping",
+        list(resident_claims.values()),
+        identity=lambda claim: claim["name"],
+    )
+    benchmark_relations = []
+    current_rows = []
+
+    def opaque_amcache_record_key(label: str) -> str:
+        """Derive a row identifier that cannot act as an alternate resident-hash link."""
+        resident_sha1s = tuple(claim["sha1"] for claim in resident_claims.values())
+        for nonce in range(256):
+            token = suite.content_seed(skey, f"amcache-record:{label}:{nonce}")[:16]
+            if not any(sha1.startswith(token) for sha1 in resident_sha1s):
+                return "0000" + token
+        raise ValueError("could not derive an Amcache record key independent of resident SHA1")
+
+    for index, (historical_name, claim) in enumerate(
+        zip(historical_names, mapped_residents, strict=True)
+    ):
+        token = suite.content_seed(skey, f"amcache-history:{index}")[:12]
+        lower_path = (
+            f"c:\\programdata\\package cache\\{token}\\{historical_name.lower()}"
+        )
+        selector = {"lower_case_long_path": lower_path}
+        current_rows.append({
+            "sha1": claim["sha1"],
+            "lower_path": lower_path,
+            "name": historical_name,
+            "size": claim["size"],
+            "record_key": opaque_amcache_record_key(lower_path),
+        })
+        benchmark_relations.append({
+            "rule": WINDOWS_AMCACHE_RULE,
+            "selector": selector,
+            "expected": claim["sha256"],
+            "candidate": claim["name"],
+            "link_value": claim["sha1"],
+        })
+
+    used_names = resident_names | set(historical_names)
+    decoy_pool = [name for name in pools.BENIGN_NAMES if name not in used_names]
+    stale_rows = []
+    for index, name in enumerate(suite.pick_many(skey, "amcache-decoys", decoy_pool, 3)):
+        stale_rows.append({
+            "sha1": _absent_sha1(skey, f"amcache-decoy:{index}"),
+            "lower_path": _full_path(name).lower(),
+            "name": name,
+            "size": len(persisted.bytes),
+            "record_key": opaque_amcache_record_key(f"stale:{index}:{name}"),
+        })
+    amcache_rows = _keyed_order(
+        skey,
+        "windows-amcache-row",
+        [*current_rows, *stale_rows],
+        identity=lambda row: row["lower_path"],
+    )
+    _write(
+        staging_dir,
+        "Amcache.hve",
+        build_amcache_hive([
+            (
+                row["sha1"],
+                row["lower_path"],
+                row["name"],
+                row["size"],
+                row["record_key"],
+            )
+            for row in amcache_rows
+        ]),
+    )
 
     # --- prefetch: four executions, one of a program that has since gone --------------
     run_count = 1 + skey[0] % 9
     executions = [
         (persisted_name, persisted_path, run_count),
-        (amcache_name, amcache_path, 1 + skey[1] % 5),
+        (amcache_name, _full_path(amcache_name), 1 + skey[1] % 5),
         (noise_names[0], _full_path(noise_names[0]), 1 + skey[2] % 5),
         (absent_name, f"{temp}\\{absent_name}", 1 + skey[3] % 5),
     ]
@@ -186,6 +302,25 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     allowlist = sorted([*resident, "Software.run.hive", "Amcache.hve", *pf_names])
     artifacts = suite.stage(scene_dir, staging_dir, allowlist)
 
+    benchmark_relations = _keyed_order(
+        skey,
+        "windows-question",
+        benchmark_relations,
+        identity=lambda relation: relation["selector"]["lower_case_long_path"],
+    )
+    benchmark_candidates = _keyed_order(
+        skey,
+        "windows-candidate",
+        [
+            {
+                "identity": claim["name"],
+                "value": claim["sha256"],
+                "link_value": claim["sha1"],
+            }
+            for claim in resident_claims.values()
+        ],
+        identity=lambda candidate: candidate["identity"],
+    )
     join = {
         "family": "windows",
         "os": f"{profile.os_family} {profile.version}",
@@ -195,15 +330,20 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
                       "sha256": persisted.sha256, "sha1": persisted.sha1,
                       "md5": persisted.md5, "imphash": persisted.imphash,
                       "marker": persisted.marker, "run_count": run_count},
-        "amcache_match": {"name": amcache_name, "path": amcache_path,
-                          "sha256": matched.sha256, "sha1": matched.sha1,
-                          "file_id": "0000" + matched.sha1, "imphash": matched.imphash},
+        "residents": _keyed_order(
+            skey,
+            "windows-private-resident-truth",
+            list(resident_claims.values()),
+            identity=lambda claim: claim["name"],
+        ),
+        "benchmark_candidates": benchmark_candidates,
+        "benchmark_relations": benchmark_relations,
         "orphan_execution": absent_name,
         "decoys": {"binaries": len(resident), "run_values": len(run_values),
-                   "amcache_rows": len(rows), "prefetch": len(pf_names)},
+                   "amcache_rows": len(amcache_rows), "prefetch": len(pf_names)},
         "pivots": {
             "persisted": "the one Run value naming a resident program -> that file on disk",
-            "amcache_match": "the one FileId whose SHA1 belongs to a resident file -> that file",
+            "amcache": "five historical rows' FileId SHA1 values -> five resident files",
             "run_count": "Run value -> resident program -> its prefetch record",
             "orphan_execution": "the prefetch record naming a program absent from disk",
         },
@@ -229,23 +369,42 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
     # signing identifier is part of the content id because it lives inside the CodeDirectory
     # and therefore changes the file's SHA256.
     binaries = {}
-    for b in [subject, also_granted, persisted_only, *benign]:
+    all_bundles = [subject, also_granted, persisted_only, *benign]
+    binary_order = _keyed_order(
+        skey, "macos-binary-generation", all_bundles, identity=lambda bundle: bundle
+    )
+    for b in binary_order:
         c = store.materialize(f"macho:{b}:" + suite.content_seed(skey, f"macho:{b}"))
         binaries[b] = c
         _write(staging_dir, b, c.bytes)
 
-    # --- quarantine: five downloads, each with its own UUID and origin ----------------
-    all_bundles = [subject, also_granted, persisted_only, *benign]
+    # --- quarantine: five UUID relations with no name/order/agent shortcut ------------
+    # Every sidecar carries a distinct UUID and every public-grade relation follows that
+    # value into QuarantineEventsV2.  Bundle names do not occur in URLs, while agent and time
+    # are deliberately equal across rows, leaving UUID equality as the only row selector.
     uuids, events = {}, []
+    shared_agent = suite.pick(skey, "quarantine-agent", pools.DOWNLOAD_AGENTS)
+    shared_host = suite.pick(skey, "quarantine-host", pools.DOWNLOAD_HOSTS)
+    benchmark_relations = []
     for b in all_bundles:
         u = deterministic_uuid(suite.content_seed(skey, f"quarantine:{b}"))
-        agent = suite.pick(skey, f"agent:{b}", pools.DOWNLOAD_AGENTS)
-        host = suite.pick(skey, f"dlhost:{b}", pools.DOWNLOAD_HOSTS)
-        url = f"https://{host}/{b}.dmg"
-        uuids[b] = (u, agent, url)
-        events.append((u, agent, url, f"https://{host}/downloads", t))
+        opaque_download = suite.content_seed(skey, f"quarantine-url:{b}")[:24]
+        url = f"https://{shared_host}/downloads/{opaque_download}.dmg"
+        uuids[b] = (u, shared_agent, url)
+        events.append((u, shared_agent, url, f"https://{shared_host}/downloads", t))
+        xattr_relative_path = f"{b}.quarantine.xattr"
         _write(staging_dir, f"{b}.quarantine.xattr",
-               quarantine_xattr(u, agent, PINNED_UNIX).encode())
+               quarantine_xattr(u, shared_agent, PINNED_UNIX).encode())
+        benchmark_relations.append({
+            "rule": MACOS_QUARANTINE_RULE,
+            "selector": {"xattr_relative_path": xattr_relative_path},
+            "expected": url,
+            "candidate": b,
+            "link_value": u,
+        })
+    events = _keyed_order(
+        skey, "macos-quarantine-row", events, identity=lambda event: event[0]
+    )
     _write(staging_dir, "QuarantineEventsV2", build_quarantine_events(events))
 
     # --- TCC: four clients, two allowed. Only one of those appears in knowledgeC -------
@@ -275,8 +434,41 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
                         *[f"{b}.quarantine.xattr" for b in all_bundles]])
     artifacts = suite.stage(scene_dir, staging_dir, allowlist)
 
+    benchmark_relations = _keyed_order(
+        skey,
+        "macos-question",
+        benchmark_relations,
+        identity=lambda relation: relation["selector"]["xattr_relative_path"],
+    )
+    benchmark_candidates = _keyed_order(
+        skey,
+        "macos-candidate",
+        [
+            {"identity": bundle, "value": values[2], "link_value": values[0]}
+            for bundle, values in uuids.items()
+        ],
+        identity=lambda candidate: candidate["identity"],
+    )
     u, agent, url = uuids[subject]
     c = binaries[subject]
+    binary_truth = _keyed_order(
+        skey,
+        "macos-private-binary-truth",
+        [
+            {
+                "bundle_id": bundle,
+                "size": len(content.bytes),
+                "sha256": content.sha256,
+                "sha1": content.sha1,
+                "md5": content.md5,
+                "symhash": content.symhash,
+                "cdhash": content.cdhash,
+                "marker": content.marker,
+            }
+            for bundle, content in binaries.items()
+        ],
+        identity=lambda claim: claim["bundle_id"],
+    )
     join = {
         "family": "macos",
         "os": f"{profile.os_family} {profile.version}",
@@ -287,6 +479,9 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
                     "tcc_service": tcc_rows[0][1],
                     "sha256": c.sha256, "sha1": c.sha1, "md5": c.md5,
                     "symhash": c.symhash, "cdhash": c.cdhash, "marker": c.marker},
+        "binaries": binary_truth,
+        "benchmark_candidates": benchmark_candidates,
+        "benchmark_relations": benchmark_relations,
         "decoys": {"bundles": len(all_bundles), "tcc_rows": len(tcc_rows),
                    "quarantine_rows": len(events), "launch_agents": len(agents),
                    "binaries": len(binaries),

@@ -63,6 +63,24 @@ ORACLES = {
     },
 }
 
+# Reader label -> import names that prove the optional oracle itself is absent. An ImportError
+# from any other name is a broken/incompatible oracle and must be reported as a parser failure,
+# not mislabeled as "not installed". ``dissect`` is a shared namespace package, so a bare
+# environment can miss its root while an environment with another dissect package can miss the
+# exact target subpackage.
+_ORACLE_ABSENT_IMPORTS = {
+    "pefile": frozenset({"pefile"}),
+    "lief": frozenset({"lief"}),
+    "macholib": frozenset({"macholib"}),
+    "regipy": frozenset({"regipy"}),
+    "libregf": frozenset({"pyregf"}),
+    "windowsprefetch": frozenset({"windowsprefetch"}),
+    "pyscca": frozenset({"pyscca"}),
+    "pyelftools": frozenset({"elftools"}),
+    "pyxdg": frozenset({"xdg"}),
+    "dissect.target": frozenset({"dissect", "dissect.target"}),
+}
+
 
 #: Files that travel with a scene but are not artifacts: documentation and answer keys. They
 #: have no oracle because there is nothing structural to validate. Anything else the gate
@@ -1813,13 +1831,18 @@ def _run_files(r: GateReport, files) -> tuple[int, int, int, int, set[str]]:
                 else:
                     source = snapshot if fmt in _SNAPSHOT_LIMITS else path
                 detail = READERS[oracle](source)
-            except ImportError:
-                r.fail(f"{fmt}: oracle '{oracle}' is not installed — a missing "
-                               f"oracle is a failure, not a skip")
-                continue
             except Exception as exc:                     # noqa: BLE001 — any parser refusal
-                r.fail(f"{fmt}: {oracle} rejected it — "
-                               f"{type(exc).__name__}: {str(exc)[:110]}")
+                absent_imports = _ORACLE_ABSENT_IMPORTS.get(oracle, frozenset())
+                if isinstance(exc, ModuleNotFoundError) and exc.name in absent_imports:
+                    r.fail(
+                        f"{fmt}: oracle '{oracle}' is not installed — a missing oracle is a "
+                        "failure, not a skip"
+                    )
+                else:
+                    r.fail(
+                        f"{fmt}: {oracle} rejected it — "
+                        f"{type(exc).__name__}: {str(exc)[:110]}"
+                    )
                 continue
             expected = _EXPECTED_RESULTS.get((fmt, oracle))
             if expected is None or type(detail) is not expected:

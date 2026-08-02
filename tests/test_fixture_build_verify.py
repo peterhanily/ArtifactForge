@@ -431,7 +431,7 @@ def test_assurance_runs_only_gates_one_and_three_and_missing_oracle_is_red(monke
     build_fixture(_spec(), root)
 
     def missing(_path):
-        raise ImportError("deliberately absent")
+        raise ModuleNotFoundError("No module named 'pefile'", name="pefile")
 
     monkeypatch.setitem(operations.validity.READERS, "pefile", missing)
     result = verify_fixture(root, assurance=True)
@@ -443,6 +443,30 @@ def test_assurance_runs_only_gates_one_and_three_and_missing_oracle_is_red(monke
     assert any("not installed" in failure for failure in result.assurance_reports[0].fails)
     assert not result.assurance_reports[0].ok
     assert result.assurance_reports[1].ok
+
+
+@pytest.mark.parametrize("failure_kind", ("transitive-module", "generic-import"))
+def test_assurance_does_not_mislabel_broken_parser_as_absent(
+    monkeypatch, tmp_path, failure_kind
+):
+    root = tmp_path / "fixture"
+    build_fixture(_spec(), root)
+
+    def broken(_path):
+        if failure_kind == "transitive-module":
+            raise ModuleNotFoundError(
+                "No module named 'pefile_support'", name="pefile_support"
+            )
+        raise ImportError("pefile ABI is incompatible")
+
+    monkeypatch.setitem(operations.validity.READERS, "pefile", broken)
+    result = verify_fixture(root, assurance=True)
+
+    gate1 = result.assurance_reports[0]
+    matching = [failure for failure in gate1.fails if "pefile" in failure]
+    assert matching
+    assert all("oracle 'pefile' is not installed" not in failure for failure in matching)
+    assert any("pefile rejected it" in failure for failure in matching)
 
 
 def test_assurance_missing_pe_safety_oracle_is_red_not_an_exception(monkeypatch, tmp_path):
@@ -466,6 +490,30 @@ def test_assurance_missing_pe_safety_oracle_is_red_not_an_exception(monkeypatch,
         and "failure, not a skip" in failure
         for failure in gate3.fails
     )
+
+
+@pytest.mark.parametrize("failure_kind", ("transitive-module", "generic-import"))
+def test_assurance_does_not_mislabel_broken_pe_safety_oracle_as_absent(
+    monkeypatch, tmp_path, failure_kind
+):
+    root = tmp_path / "fixture"
+    build_fixture(_spec(), root)
+
+    def broken(_data):
+        if failure_kind == "transitive-module":
+            raise ModuleNotFoundError(
+                "No module named 'pefile_support'", name="pefile_support"
+            )
+        raise ImportError("pefile ABI is incompatible")
+
+    monkeypatch.setattr(operations.inertness, "_pe_code_is_inert", broken)
+    result = verify_fixture(root, assurance=True)
+
+    gate3 = result.assurance_reports[1]
+    matching = [failure for failure in gate3.fails if "PE binary-safety oracle" in failure]
+    assert matching
+    assert all("is not installed" not in failure for failure in matching)
+    assert all("failed" in failure for failure in matching)
 
 
 def test_linux_fixture_assurance_runs_only_gates_one_and_three_and_passes(tmp_path):

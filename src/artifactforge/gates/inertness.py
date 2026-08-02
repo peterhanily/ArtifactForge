@@ -1079,13 +1079,17 @@ def run(scene_dir: str) -> GateReport:
             binary_safety_total += 1
             try:
                 ok, why = _pe_code_is_inert(data)
-            except ImportError as exc:
-                missing = getattr(exc, "name", None) or "pefile"
-                r.fail(
-                    f"{name}: PE binary-safety oracle 'pefile' is not installed "
-                    f"(required module {missing!r} is unavailable) — a missing oracle is a "
-                    "failure, not a skip"
-                )
+            except Exception as exc:  # noqa: BLE001 — an oracle crash is a red gate
+                if isinstance(exc, ModuleNotFoundError) and exc.name == "pefile":
+                    r.fail(
+                        f"{name}: PE binary-safety oracle 'pefile' is not installed — a "
+                        "missing oracle is a failure, not a skip"
+                    )
+                else:
+                    r.fail(
+                        f"{name}: PE binary-safety oracle 'pefile' failed — "
+                        f"{type(exc).__name__}: {str(exc)[:110]}"
+                    )
             else:
                 if ok:
                     binary_safety_passed += 1

@@ -781,7 +781,7 @@ def main(argv=None) -> int:
     fv.add_argument(
         "--assurance",
         action="store_true",
-        help="also require installed dev parser oracles for Gates 1 and 3",
+        help="require installed dev parser oracles for Gates 1 and 3; missing is red (exit 1)",
     )
     fv.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
     fv.set_defaults(func=fixture_commands.cmd_fixture_verify)
@@ -803,7 +803,7 @@ def main(argv=None) -> int:
     fr.add_argument(
         "--assurance",
         action="store_true",
-        help="also require installed dev parser oracles for Gates 1 and 3",
+        help="require installed dev parser oracles for Gates 1 and 3; missing is red (exit 1)",
     )
     fr.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
     fr.set_defaults(func=fixture_commands.cmd_fixture_release)

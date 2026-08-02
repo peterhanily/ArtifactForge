@@ -65,6 +65,43 @@ def test_human_output_leads_with_the_outcome(tmp_path, capsys):
     assert capsys.readouterr().out.startswith("fixture verify: PASS")
 
 
+def test_missing_assurance_oracle_is_clean_red_for_verify_and_release(
+    monkeypatch, tmp_path, capsys
+):
+    fixture, _built = _build(tmp_path, capsys)
+
+    def missing(_data):
+        raise ModuleNotFoundError("No module named 'pefile'", name="pefile")
+
+    monkeypatch.setattr(operations.inertness, "_pe_code_is_inert", missing)
+
+    assert fixture_cli.cmd_verify(
+        _args(fixture=fixture, assurance=True, json=False)
+    ) == 1
+    human = capsys.readouterr()
+    assert not human.err and "Traceback" not in human.out
+    assert "fixture verify: FAIL" in human.out
+    assert "missing oracle is a failure, not a skip" in human.out
+
+    assert fixture_cli.cmd_verify(
+        _args(fixture=fixture, assurance=True, json=True)
+    ) == 1
+    machine = capsys.readouterr()
+    assert not machine.err and "Traceback" not in machine.out
+    record = json.loads(machine.out)
+    assert record["ok"] is False
+    assert record["verification"]["assurance_summary"]["verdict"] == "fail"
+
+    archive_path = tmp_path / "should-not-exist.tar"
+    assert fixture_cli.cmd_release(
+        _args(fixture=fixture, output=archive_path, assurance=True, json=True)
+    ) == 1
+    released = capsys.readouterr()
+    assert not released.err and "Traceback" not in released.out
+    assert json.loads(released.out)["ok"] is False
+    assert not archive_path.exists()
+
+
 def test_linux_example_builds_inspects_and_verifies_through_the_cli(tmp_path, capsys):
     fixture = tmp_path / "fixture"
     assert fixture_cli.cmd_build(

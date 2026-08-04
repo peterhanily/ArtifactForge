@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from artifactforge.artifacts.shell_link import parse_shell_link
+from artifactforge.artifacts.shell_link import ShellLinkValue, parse_shell_link
 from artifactforge.artifacts.prefetch import build_prefetch_v30
 from artifactforge.content import build_pe_stub
 from artifactforge.fixture import FixtureSpecV2, ProfileSpecV2, build_fixture
@@ -54,6 +54,9 @@ _require_related_github_runs = _GLOBALS["_require_related_github_runs"]
 _require_microsoft_signature = _GLOBALS["_require_microsoft_signature"]
 _require_command_with_args_version = _GLOBALS["_require_command_with_args_version"]
 _validate_source_identity = _GLOBALS["_validate_source_identity"]
+_validate_shell_link_native_result = _GLOBALS["_validate_shell_link_native_result"]
+_shell_link_attestation = _GLOBALS["_shell_link_attestation"]
+_RetainedArtifactObservationError = _GLOBALS["_RetainedArtifactObservationError"]
 _run = _GLOBALS["_run"]
 _scene_capture = _GLOBALS["_scene_capture"]
 _same_path_directory_state_matches = _GLOBALS["_same_path_directory_state_matches"]
@@ -1287,6 +1290,171 @@ def test_task_and_shell_link_native_scripts_have_no_activation_surface():
         assert forbidden.casefold() not in _SHELL_LINK_SCRIPT.casefold()
 
 
+_SHELL_LINK_TARGET = r"C:\Users\v\AppData\Local\Temp\winlogon_h.exe"
+
+
+def _shell_link_native_result(
+    *,
+    icon_location: object = ",0",
+    target_path: object = _SHELL_LINK_TARGET,
+) -> dict:
+    return {
+        "ApiSequence": "WScript.Shell.CreateShortcut-read-only",
+        "Arguments": "",
+        "Description": "Maintenance [ARTIFACTFORGE SYNTHETIC]",
+        "Hotkey": "",
+        "IconLocation": icon_location,
+        "InputByteLength": 307,
+        "InputSha256": "a" * 64,
+        "TargetPath": target_path,
+        "WindowStyle": 1,
+        "WorkingDirectory": "",
+    }
+
+
+@pytest.mark.parametrize("icon_location", ["", ",0"])
+def test_shell_link_native_validator_accepts_exact_wsh_default_icon_forms(icon_location):
+    assert (
+        _validate_shell_link_native_result(
+            _shell_link_native_result(icon_location=icon_location),
+            expected_sha256="a" * 64,
+            expected_size=307,
+            profile=SimpleNamespace(
+                name_string="Maintenance [ARTIFACTFORGE SYNTHETIC]",
+                target_path=_SHELL_LINK_TARGET,
+            ),
+        )
+        == "exact"
+    )
+
+
+@pytest.mark.parametrize(
+    "icon_location",
+    [", 0", " ,0", ", 1", r"C:\x.exe,0", ",\t0", ",\n0", None, 0, ["", 0]],
+)
+def test_shell_link_native_validator_rejects_other_icon_forms(icon_location):
+    with pytest.raises(RuntimeError, match=r"Shell Link record: IconLocation$"):
+        _validate_shell_link_native_result(
+            _shell_link_native_result(icon_location=icon_location),
+            expected_sha256="a" * 64,
+            expected_size=307,
+            profile=SimpleNamespace(
+                name_string="Maintenance [ARTIFACTFORGE SYNTHETIC]",
+                target_path=_SHELL_LINK_TARGET,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("target_path", "expected_state"),
+    [
+        (_SHELL_LINK_TARGET, "exact"),
+        ("", "unavailable-no-link-target-id-list"),
+    ],
+)
+def test_shell_link_native_validator_classifies_closed_target_path_forms(
+    target_path, expected_state
+):
+    assert (
+        _validate_shell_link_native_result(
+            _shell_link_native_result(target_path=target_path),
+            expected_sha256="a" * 64,
+            expected_size=307,
+            profile=SimpleNamespace(
+                name_string="Maintenance [ARTIFACTFORGE SYNTHETIC]",
+                target_path=_SHELL_LINK_TARGET,
+            ),
+        )
+        == expected_state
+    )
+
+
+@pytest.mark.parametrize(
+    "target_path",
+    [r"C:\Windows\invented.exe", _SHELL_LINK_TARGET.casefold(), None, 0, [_SHELL_LINK_TARGET]],
+)
+def test_shell_link_native_validator_rejects_other_target_path_forms(target_path):
+    with pytest.raises(RuntimeError, match=r"Shell Link record: TargetPath$"):
+        _validate_shell_link_native_result(
+            _shell_link_native_result(target_path=target_path),
+            expected_sha256="a" * 64,
+            expected_size=307,
+            profile=SimpleNamespace(
+                name_string="Maintenance [ARTIFACTFORGE SYNTHETIC]",
+                target_path=_SHELL_LINK_TARGET,
+            ),
+        )
+
+
+def test_shell_link_native_validator_rejects_non_integer_input_length():
+    result = _shell_link_native_result()
+    result["InputByteLength"] = 307.0
+    with pytest.raises(RuntimeError, match="exact manifest-bound input bytes"):
+        _validate_shell_link_native_result(
+            result,
+            expected_sha256="a" * 64,
+            expected_size=307,
+            profile=SimpleNamespace(
+                name_string="Maintenance [ARTIFACTFORGE SYNTHETIC]",
+                target_path=_SHELL_LINK_TARGET,
+            ),
+        )
+
+
+def test_shell_link_attestation_retains_raw_native_result_on_contract_failure(tmp_path):
+    data = b"bounded synthetic Shell Link bytes"
+    path = tmp_path / "ArtifactForgeMaintenance.lnk"
+    path.write_bytes(data)
+    result = _shell_link_native_result(
+        target_path=r"C:\Windows\invented.exe",
+    )
+    result["InputByteLength"] = len(data)
+    result["InputSha256"] = hashlib.sha256(data).hexdigest().upper()
+
+    def runner(_command, **kwargs):
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(result, separators=(",", ":")),
+        }
+
+    artifact = {
+        "data": data,
+        "path": "Users/v/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/"
+        "ArtifactForgeMaintenance.lnk",
+        "profile": ShellLinkValue(
+            access_filetime=0,
+            creation_filetime=0,
+            display_name="Maintenance",
+            name_string="Maintenance [ARTIFACTFORGE SYNTHETIC]",
+            target_path=_SHELL_LINK_TARGET,
+            target_size=1024,
+            volume_label="ARTIFACT",
+            volume_serial=0xA17F0A6E,
+            write_filetime=0,
+        ),
+        "target": {
+            "path": "Users/v/AppData/Local/Temp/winlogon_h.exe",
+            "sha256": "b" * 64,
+            "size": 1024,
+        },
+    }
+    with pytest.raises(
+        _RetainedArtifactObservationError,
+        match=r"Shell Link record: TargetPath$",
+    ) as raised:
+        _shell_link_attestation(artifact, path, "pwsh", runner)
+
+    retained = raised.value.record
+    assert retained["verdict"] == "fail"
+    assert retained["native_parse"]["result"] == result
+    assert set(retained["native_parse"]) == {"observation", "result"}
+    assert retained["native_parse"]["observation"]["result_sha256"] == _canonical_digest(result)
+    assert retained["sha256"] == hashlib.sha256(data).hexdigest()
+    assert retained["size"] == len(data)
+
+
 def test_windows_powershell_discovery_ignores_path_and_uses_fixed_installation(
     tmp_path, monkeypatch
 ):
@@ -2008,10 +2176,10 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
                     "Arguments": "",
                     "Description": link.name_string,
                     "Hotkey": "",
-                    "IconLocation": "",
+                    "IconLocation": ",0",
                     "InputByteLength": len(link_bytes),
                     "InputSha256": hashlib.sha256(link_bytes).hexdigest().upper(),
-                    "TargetPath": link.target_path,
+                    "TargetPath": "",
                     "WindowStyle": 1,
                     "WorkingDirectory": "",
                 }
@@ -2079,6 +2247,8 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     assert len(report["artifacts"]["shell_link"]) == 1
     task = report["artifacts"]["scheduled_task_xml"][0]
     link = report["artifacts"]["shell_link"][0]
+    assert link["native_parse"]["result"]["TargetPath"] == ""
+    assert link["native_parse"]["target_path_state"] == "unavailable-no-link-target-id-list"
     assert task["target"]["path"] in {item["path"] for item in report["artifacts"]["pe"]}
     assert link["target"]["path"] in {item["path"] for item in report["artifacts"]["pe"]}
     assert report["fixture"]["post_observation"]["unchanged"] is True
@@ -2096,6 +2266,37 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     assert observed_commands
     assert all(command[0] in tools.values() for command in observed_commands)
     assert json.loads(_canonical_json_bytes(report)) == report
+
+    def invalid_shell_runner(command, **kwargs):
+        record = runner(command, **kwargs)
+        if "-CommandWithArgs" in command and "WScript.Shell" in command[-3]:
+            native_result = json.loads(record["stdout"])
+            native_result["TargetPath"] = r"C:\Windows\invented.exe"
+            return {
+                **record,
+                "stdout": json.dumps(native_result, separators=(",", ":")),
+            }
+        return record
+
+    failed = attest(
+        windows_fixture,
+        prerequisite,
+        repository_root=tmp_path,
+        command_runner=invalid_shell_runner,
+        prefetch_decompressor=_fake_prefetch_decompressor,
+    )
+    assert failed["verdict"] == "fail"
+    assert failed["failures"] == [
+        "native observation failed: WScript.Shell returned an invalid read-only "
+        "Shell Link record: TargetPath"
+    ]
+    failed_link = failed["artifacts"]["shell_link"]
+    assert len(failed_link) == 1
+    assert failed_link[0]["verdict"] == "fail"
+    assert failed_link[0]["native_parse"]["result"]["TargetPath"] == (r"C:\Windows\invented.exe")
+    assert set(failed_link[0]["native_parse"]) == {"observation", "result"}
+    assert json.loads(_canonical_json_bytes(failed)) == failed
+    _validate_native_report(failed)
 
     def rebind_portable_prerequisite(candidate):
         portable = candidate["portable_prerequisite"]
@@ -2564,6 +2765,11 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         r"C:\Windows\invented.exe"
     )
     with pytest.raises(RuntimeError, match="WScript.Shell returned"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["artifacts"]["shell_link"][0]["native_parse"]["target_path_state"] = "exact"
+    with pytest.raises(RuntimeError, match="target-path state"):
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))

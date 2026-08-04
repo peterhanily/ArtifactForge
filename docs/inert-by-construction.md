@@ -61,10 +61,17 @@ The Windows-native canary assigns the XML only to an unregistered in-memory defi
 The Shell Link is a local-file reference with no ID list, network target, arguments, working
 directory, relative path, icon, environment data or ExtraData. ArtifactForge never resolves or
 follows the target. Its Windows-native canary opens the private-copy link only with
-`WScript.Shell.CreateShortcut` and never calls `Save`, `Resolve` or `Run`. Those canaries are
-inspection designs, not activation tests, and their first hosted Windows observation remains
-pending. Portable parsing and byte-bound joins therefore support only configuration/reference
-claims, not task registration, shortcut activation or target execution.
+`WScript.Shell.CreateShortcut` and never calls `Save`, `Resolve` or `Run`. In the hosted
+schema-v6 run, WSH accepted the LinkInfo-backed link, which has no `LinkTargetIDList`, but
+returned an empty `TargetPath`. Inspection of Microsoft-hosted `wshom.ocx` and
+`Windows.Storage.dll` builds for that servicing line, with their matching public symbols,
+showed the implementation path consistent with this result: the Shell Link object has no
+namespace PIDL for that getter to use. Schema v7 classifies the native result as `exact` or
+`unavailable-no-link-target-id-list`. The strict first-party reader, liblnk, LnkParse3 and the
+manifest-to-resident-PE join remain the target-path authorities. Hosted schema-v7 confirmation
+is still pending. These canaries are inspection designs, not activation tests, and support
+only configuration/reference claims, not task registration, shortcut activation or target
+execution.
 
 Prefetch records are compressed metadata, not executable content. Current scenes use a
 bounded MAM algorithm-4 v30 variant with one metric and volume. The first-party expected-size
@@ -72,8 +79,9 @@ reader owns exact compressed framing and inner layout; `pyscca` acceptance plus 
 `pyscca`/Dissect agreement covers the external semantic view. Dissect's EOF-driven output is
 not an exact-size oracle. The Windows `RtlDecompressBufferEx` canary only decompresses a
 private copy and compares MAM's declared output with the portable reader; it neither launches
-the named program nor claims consumption of post-size bits, and its first hosted result remains
-pending.
+the named program nor claims consumption of post-size bits. A hosted schema-v6 run completed
+this canary before a later Shell Link contract failure; a complete passing schema-v7 report
+remains pending.
 
 ## Why the Mach-O is ad-hoc signed
 

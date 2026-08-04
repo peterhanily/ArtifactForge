@@ -183,9 +183,10 @@ the local phase.
 
 ### Phase 5: compatibility, native CI and supply chain
 
-**Status: complete in current source.** Implementation and local runtime closure are complete;
-protected hosted release-attestation and Windows-native evidence remain pending external work.
-This is not a signed release or a package-publication claim.
+**Status: complete in current source.** Implementation and local runtime closure are complete.
+A hosted schema-v6 Windows run produced partial evidence but failed its Shell Link contract.
+Hosted schema-v7 confirmation and protected release attestation remain pending. This is not a
+signed release or a package-publication claim.
 
 - The full parser-oracle matrix remains Python 3.11/3.12/3.13. A distinct CPython 3.14 lane
   binds the actual interpreter, builds/installs the zero-dependency wheel without dependencies,
@@ -195,8 +196,10 @@ This is not a signed release or a package-publication claim.
   evidence.
 - The Windows-native lane prepares an exact portable prerequisite on Ubuntu, transports only
   that bound fixture/report pair, authenticates the Microsoft inspection-tool prerequisites,
-  observes private copies and checks post-state without executing emitted PEs. Its first hosted
-  Windows run remains required evidence.
+  observes private copies and checks post-state without executing emitted PEs. The hosted
+  schema-v6 run confirmed the repaired Authenticode control, including WinVerifyTrust, SHA-256
+  and post-state checks. It then stopped at the Shell Link contract. A complete hosted result
+  remains pending schema-v7 confirmation.
 - CI exercises responder-facing consumers and exact target-runtime controls rather than
   inferring support from lower-level parser imports.
 - Every third-party action is pinned to an immutable commit, hosted runner labels are fixed,
@@ -231,8 +234,9 @@ This is not a signed release or a package-publication claim.
 
 ### Phase 6: Windows coverage
 
-**Status: portable Phases 6A through 6C are complete in current source; hosted Windows native
-evidence remains pending.** The Windows scene now includes an owned-SQLite
+**Status: portable Phases 6A through 6C are complete in current source; hosted schema-v6
+Windows evidence is partial and schema-v7 confirmation remains pending.** The Windows scene
+now includes an owned-SQLite
 `chromium-completed-download-query-surface-v1` History artifact
 with three completed rows. Chromium's completed-download `hash` BLOB remains honestly empty;
 each row's
@@ -265,10 +269,18 @@ only and the link is reference only: there is no activation or execution claim.
 
 Native canaries are implemented with `TaskService.Connect`/`NewTask(0)`/`XmlText` on an
 unregistered in-memory definition and `WScript.Shell.CreateShortcut` without `Save`, `Resolve`
-or `Run`. The first hosted Windows observation remains pending, so those canaries do not yet
-support a hosted native-conformance claim. The current benchmark scene inventories are 14
-Windows files and 16 macOS files; at 200 alternating scenarios the public export is at most
-3,001 files including `public.json`. Historical scorecard counts remain historical.
+or `Run`. In the hosted schema-v6 run, WSH accepted the LinkInfo-backed Shell Link, which has no
+`LinkTargetIDList`, but returned an empty `TargetPath`. Inspection of Microsoft-hosted
+`wshom.ocx` and `Windows.Storage.dll` builds for that servicing line, with their matching
+public symbols, showed the implementation path consistent with this result: the Shell Link
+object has no namespace PIDL for the WSH getter to use. Schema v7 classifies the
+native target projection as `exact` or `unavailable-no-link-target-id-list`. It does not weaken
+target identity: the strict first-party reader, liblnk, LnkParse3 and the
+manifest-to-resident-PE join remain authoritative. Hosted schema-v7 confirmation is still
+pending, so the canaries do not yet support a complete hosted native-conformance claim. The
+current benchmark scene inventories are 14 Windows files and 16 macOS files; at 200
+alternating scenarios the public export is at most 3,001 files including `public.json`.
+Historical scorecard counts remain historical.
 
 Scanner evidence remains separate from Phase 6 completion. The latest Phase 6C checkpoint is
 red overall, and the older Phase 6B checkpoint applies only to its bound historical corpus.

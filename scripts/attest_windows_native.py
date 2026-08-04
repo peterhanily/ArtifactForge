@@ -20,8 +20,11 @@ are decompressed through ntdll's
 RtlGetCompressionWorkSpaceSize/RtlDecompressBufferEx interface and compared with an independent
 exact-output decode. The one disabled task XML is accepted only by an in-memory TaskDefinition
 made with TaskService.Connect/NewTask/XmlText; it is never registered. The one Shell Link is
-opened from the private copy through WScript.Shell without Save, Resolve, or Run. The exact
-independently authenticated PowerShell 7 binary is the mandatory Authenticode positive control.
+opened from the private copy through WScript.Shell without Save, Resolve, or Run. Its closed
+profile deliberately omits an opaque LinkTargetIDList, so WSH can report an empty target path;
+the report classifies that native projection explicitly while the strict portable readers own
+the encoded target path and PE join. The exact independently authenticated PowerShell 7 binary
+is the mandatory Authenticode positive control.
 Each manifest-bound
 Zone.Identifier is projected only as an NTFS alternate stream on the private copy, read back
 with Get-Content -LiteralPath -Stream, removed, and checked against the manifest bytes. Source,
@@ -84,8 +87,8 @@ from artifactforge.inventory import (
 
 PORTABLE_SCHEMA_ID = "artifactforge-native-windows-portable-prerequisite-v1"
 PORTABLE_SCHEMA_VERSION = 1
-SCHEMA_ID = "artifactforge-native-windows-attestation-v6"
-SCHEMA_VERSION = 6
+SCHEMA_ID = "artifactforge-native-windows-attestation-v7"
+SCHEMA_VERSION = 7
 CANONICALIZATION = "UTF-8 JSON, sorted keys, compact separators, no NaN, one trailing LF"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PORTABLE_DISTRIBUTIONS = (
@@ -142,6 +145,8 @@ _TASK_API_SEQUENCE = "TaskService.Connect;NewTask(0);TaskDefinition.XmlText"
 _TASK_OBSERVATION_LABEL = "TaskService-Connect-NewTask-XmlText-parse-only"
 _SHELL_LINK_API_SEQUENCE = "WScript.Shell.CreateShortcut-read-only"
 _SHELL_LINK_OBSERVATION_LABEL = "WScript-Shell-CreateShortcut-read-only"
+_SHELL_LINK_TARGET_EXACT = "exact"
+_SHELL_LINK_TARGET_UNAVAILABLE = "unavailable-no-link-target-id-list"
 _MAM_XPRESS_HUFFMAN_MAGIC = b"MAM\x04"
 _MAM_HEADER_BYTES = 8
 _XPRESS_HUFFMAN_TABLE_BYTES = 256
@@ -156,7 +161,9 @@ _PREFETCH_CONTROL_TABLE_OFFSET = 15
 _ACTIVATION_SCOPE = (
     "The scheduled task is parsed only in an unregistered in-memory TaskDefinition using "
     "TaskService.Connect, NewTask(0), and XmlText. The Shell Link is read only with "
-    "WScript.Shell.CreateShortcut; neither artifact is saved, resolved, registered, or run."
+    "WScript.Shell.CreateShortcut; neither artifact is saved, resolved, registered, or run. "
+    "The link has no LinkTargetIDList, so an empty WSH TargetPath is classified as unavailable; "
+    "strict portable byte readers own the encoded target path and manifest-resident PE join."
 )
 _PREFETCH_SCOPE = (
     "The MAM wrapper and exact expected output are checked independently. The native API "
@@ -166,6 +173,14 @@ _PREFETCH_SCOPE = (
 
 CommandRunner = Callable[..., dict]
 PrefetchDecompressor = Callable[[bytes, int], dict]
+
+
+class _RetainedArtifactObservationError(RuntimeError):
+    """Carry bounded native evidence into a failing attestation report."""
+
+    def __init__(self, message: str, record: dict) -> None:
+        super().__init__(message)
+        self.record = record
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -3370,7 +3385,8 @@ def _validate_native_input_binding(
 ) -> None:
     if (
         type(result) is not dict
-        or result.get("InputByteLength") != expected_size
+        or type(result.get("InputByteLength")) is not int
+        or result["InputByteLength"] != expected_size
         or type(result.get("InputSha256")) is not str
         or result["InputSha256"].casefold() != expected_sha256
     ):
@@ -3419,7 +3435,7 @@ def _validate_shell_link_native_result(
     expected_sha256: str,
     expected_size: int,
     profile,
-) -> None:
+) -> str:
     expected_fields = {
         "ApiSequence",
         "Arguments",
@@ -3438,19 +3454,42 @@ def _validate_shell_link_native_result(
         expected_size=expected_size,
         where="Shell Link native parse",
     )
-    if (
-        set(result) != expected_fields
-        or result["ApiSequence"] != _SHELL_LINK_API_SEQUENCE
-        or result["TargetPath"] != profile.target_path
-        or result["Description"] != profile.name_string
-        or result["Arguments"] != ""
-        or result["WorkingDirectory"] != ""
-        or result["Hotkey"] != ""
-        or result["IconLocation"] not in {"", ",0"}
-        or type(result["WindowStyle"]) is not int
-        or result["WindowStyle"] != 1
-    ):
-        raise RuntimeError("WScript.Shell returned an invalid read-only Shell Link record")
+    if set(result) != expected_fields:
+        raise RuntimeError(
+            "WScript.Shell returned an invalid read-only Shell Link record: field set"
+        )
+
+    mismatches = []
+    if result["ApiSequence"] != _SHELL_LINK_API_SEQUENCE:
+        mismatches.append("ApiSequence")
+    target_path = result["TargetPath"]
+    if type(target_path) is not str or target_path not in {"", profile.target_path}:
+        mismatches.append("TargetPath")
+    if result["Description"] != profile.name_string:
+        mismatches.append("Description")
+    if result["Arguments"] != "":
+        mismatches.append("Arguments")
+    if result["WorkingDirectory"] != "":
+        mismatches.append("WorkingDirectory")
+    if result["Hotkey"] != "":
+        mismatches.append("Hotkey")
+    # WSH exposes the omitted icon path plus the header's zero icon index as a
+    # composite string. An empty string is retained for older compatible hosts.
+    if type(result["IconLocation"]) is not str or result["IconLocation"] not in {
+        "",
+        ",0",
+    }:
+        mismatches.append("IconLocation")
+    if type(result["WindowStyle"]) is not int or result["WindowStyle"] != 1:
+        mismatches.append("WindowStyle")
+    if mismatches:
+        raise RuntimeError(
+            "WScript.Shell returned an invalid read-only Shell Link record: "
+            + ", ".join(mismatches)
+        )
+    if target_path == profile.target_path:
+        return _SHELL_LINK_TARGET_EXACT
+    return _SHELL_LINK_TARGET_UNAVAILABLE
 
 
 def _portable_artifact_assurance(data: bytes, profile) -> dict:
@@ -3516,21 +3555,28 @@ def _shell_link_attestation(
         command_runner,
         target=path,
     )
-    _validate_shell_link_native_result(
-        result,
-        expected_sha256=expected_sha256,
-        expected_size=len(data),
-        profile=profile,
-    )
-    return {
-        "native_parse": {"observation": observation, "result": result},
+    native_parse = {"observation": observation, "result": result}
+    record = {
+        "native_parse": native_parse,
         "path": relative,
         "portable_assurance": _portable_artifact_assurance(data, profile),
         "sha256": expected_sha256,
         "size": len(data),
         "target": target,
-        "verdict": "pass",
     }
+    try:
+        target_path_state = _validate_shell_link_native_result(
+            result,
+            expected_sha256=expected_sha256,
+            expected_size=len(data),
+            profile=profile,
+        )
+    except RuntimeError as exc:
+        record["verdict"] = "fail"
+        raise _RetainedArtifactObservationError(str(exc), record) from exc
+    native_parse["target_path_state"] = target_path_state
+    record["verdict"] = "pass"
+    return record
 
 
 def _ads_exists(path: Path, powershell: str, command_runner: CommandRunner) -> tuple[bool, dict]:
@@ -3804,14 +3850,17 @@ def attest(
                 )
                 shell_artifact = profile_artifacts["shell_link"]
                 shell_relative = shell_artifact["path"]
-                report["artifacts"]["shell_link"].append(
-                    _shell_link_attestation(
+                try:
+                    shell_record = _shell_link_attestation(
                         shell_artifact,
                         private_root / Path(*shell_relative.split("/")),
                         tools["powershell"],
                         command_runner,
                     )
-                )
+                except _RetainedArtifactObservationError as exc:
+                    report["artifacts"]["shell_link"].append(exc.record)
+                    raise
+                report["artifacts"]["shell_link"].append(shell_record)
                 for relative, logical_bytes in zones.items():
                     path = private_root / Path(*relative.split("/"))
                     report["artifacts"]["zone_identifier"].append(
@@ -4609,14 +4658,20 @@ def _validate_shell_link_artifact(
     ):
         raise RuntimeError(f"passing native attestation has invalid {where} PE join")
     native = item["native_parse"]
-    if type(native) is not dict or set(native) != {"observation", "result"}:
+    if type(native) is not dict or set(native) != {
+        "observation",
+        "result",
+        "target_path_state",
+    }:
         raise RuntimeError(f"passing native attestation has invalid {where} native parse")
-    _validate_shell_link_native_result(
+    target_path_state = _validate_shell_link_native_result(
         native["result"],
         expected_sha256=expected["sha256"],
         expected_size=expected["size"],
         profile=profile,
     )
+    if native["target_path_state"] != target_path_state:
+        raise RuntimeError(f"passing native attestation has invalid {where} target-path state")
     _validate_powershell_observation(
         native["observation"],
         where,

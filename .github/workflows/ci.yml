@@ -1054,8 +1054,8 @@ jobs:
               sort_keys=True,
           ) + "\n").encode()
           assert raw == canonical
-          assert report["schema"] == "artifactforge-native-windows-attestation-v6"
-          assert report["schema_version"] == 6
+          assert report["schema"] == "artifactforge-native-windows-attestation-v7"
+          assert report["schema_version"] == 7
           assert report["verdict"] == "pass", report["failures"]
           assert report["claim_scope"]["emitted_pe_execution"] is False
           assert report["producer"]["source"]["worktree_clean"] is True
@@ -1154,7 +1154,29 @@ jobs:
           assert link["native_parse"]["result"]["ApiSequence"] == \
               "WScript.Shell.CreateShortcut-read-only"
           assert link["native_parse"]["result"]["Arguments"] == ""
+          assert link["native_parse"]["result"]["IconLocation"] in {"", ",0"}
           assert link["native_parse"]["result"]["WorkingDirectory"] == ""
+          link_profile = link["portable_assurance"]["profile"]
+          assert link_profile["target_path"] == r"C:\Program Files\vlc.exe"
+          native_target = link["native_parse"]["result"]["TargetPath"]
+          native_target_state = link["native_parse"]["target_path_state"]
+          assert (native_target, native_target_state) in {
+              (link_profile["target_path"], "exact"),
+              ("", "unavailable-no-link-target-id-list"),
+          }
+          assert link["target"]["path"] == "C/Program Files/vlc.exe"
+          assert link_profile["target_path"] == (
+              f"{link['target']['path'][0]}:\\" +
+              link["target"]["path"][2:].replace("/", "\\")
+          )
+          pe_by_path = {
+              pe["path"]: pe for pe in report["artifacts"]["pe"]
+          }
+          resident = pe_by_path[link["target"]["path"]]
+          assert link["target"] == {
+              field: resident[field] for field in ("path", "sha256", "size")
+          }
+          assert link_profile["target_size"] == resident["size"]
           assert task["target"]["path"] != link["target"]["path"]
           zone_paths = {
               zone["path"] for zone in report["artifacts"]["zone_identifier"]

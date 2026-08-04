@@ -140,6 +140,19 @@ evidence and incomplete post-state records. The publication gate also revalidate
 portable prerequisite from its canonical bytes and enforces exact scalar types, record shapes,
 derived manifest identities, cross-record postconditions and the 64-bit host contract.
 
+The next hosted schema-v6 run confirmed that repair. The exact PowerShell 7 control passed its
+Authenticode, WinVerifyTrust, SHA-256 and post-state checks. The run then stopped at the Shell
+Link contract. `WScript.Shell` accepted the LinkInfo-backed link, which has no
+`LinkTargetIDList`, but returned an empty `TargetPath`. Inspection of Microsoft-hosted
+`wshom.ocx` and `Windows.Storage.dll` builds for that servicing line, together with their
+matching public symbols, showed the implementation path consistent with this result: the Shell
+Link object has no namespace PIDL from which that WSH getter can project a path. Schema v7
+records the native result as either `exact` or
+`unavailable-no-link-target-id-list`. This does not make the WSH getter a target-path
+authority. The strict first-party reader, liblnk, LnkParse3 and the manifest-to-resident-PE
+join remain authoritative for target identity. Hosted schema-v7 confirmation remains pending
+until the follow-up is pushed and run.
+
 The Windows-native PE observer now binds and invokes the parser that actually reads the
 files. Microsoft's Raymond Chen identifies `dumpbin.exe` as a wrapper around
 `link.exe /DUMP`. The bounded process harness correctly reaps descendants when a parent exits,
@@ -247,12 +260,14 @@ descriptor/no-replace/durability contract is POSIX-scoped; the release workflow 
 Source cleanliness is independently reconstructed from HEAD, index and raw tracked bytes/modes
 under a stripped Git environment with replacement objects disabled, rather than trusting
 caller-routed Git configuration or one porcelain status line.
-The Windows-native observer does not execute emitted PEs and still requires its first hosted
-Windows result before supporting a hosted native claim. Its Task canary uses only an
-unregistered in-memory definition through `TaskService.Connect`, `NewTask(0)` and
-`TaskDefinition.XmlText`; its Shell Link canary uses `WScript.Shell.CreateShortcut` without
-`Save`, `Resolve` or `Run`. Neither canary registers, activates or executes the artifact it
-observes.
+The Windows-native observer does not execute emitted PEs. A hosted schema-v6 run confirmed the
+repaired Authenticode control, then failed its Shell Link contract when WSH could not project a
+target path from a link with no `LinkTargetIDList`. Schema v7 represents that result
+explicitly, but still needs hosted confirmation before ArtifactForge supports a complete
+hosted native claim. The Task canary uses only an unregistered in-memory definition through
+`TaskService.Connect`, `NewTask(0)` and `TaskDefinition.XmlText`; the Shell Link canary uses
+`WScript.Shell.CreateShortcut` without `Save`, `Resolve` or `Run`. Neither canary registers,
+activates or executes the artifact it observes.
 
 Scanner checkpoints are now separated by corpus revision. The 2026-08-03 Phase 6B record is
 historical and does not cover v30/MAM Prefetch. The latest 2026-08-04 Phase 6C record remains

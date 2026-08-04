@@ -104,7 +104,8 @@ a Shell Link, or activates a LaunchAgent. See
 - Current Fixture ABI v2 databases use ArtifactForge's owned SQLite leaf writer. Frozen
   Fixture ABI v1 vectors remain parse-only and retain their older producer boundary.
 - Native Windows canaries exist for Prefetch decompression, task loading, and Shell Link
-  loading. Their first hosted observation is still pending.
+  loading. Hosted schema-v6 runs produced diagnostic failure evidence; the first complete,
+  passing hosted observation is still pending schema-v7 confirmation.
 
 The complete format-by-format limitations are in [`KNOWN_TELLS.md`](KNOWN_TELLS.md).
 
@@ -212,9 +213,9 @@ is inapplicable to loose Mach-O, and the community YARA run exceeded its declare
 after ten rule-file load failures. This is not a clean-corpus or zero-detection claim. Exact
 scanner provenance and hashes are recorded in [`SECURITY.md`](SECURITY.md).
 
-Portable implementation for Windows coverage phases 6A through 6C is complete. The first
-hosted Windows-native observation and the first protected hosted release-attestation run are
-still pending. Nothing in the repository claims they have happened.
+Portable implementation for Windows coverage phases 6A through 6C is complete. Hosted
+schema-v6 Windows-native runs produced partial failure evidence, but no complete passing report.
+Schema-v7 confirmation and the first protected hosted release-attestation run are still pending.
 
 ## Documentation
 

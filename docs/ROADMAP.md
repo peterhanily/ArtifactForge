@@ -73,8 +73,8 @@ Portable phases 6A through 6C are complete:
 The current v30 Prefetch writer deliberately covers one metric, one volume, one trace entry,
 two strings, and a single compression chunk. Open extensions include version 31, alternate v30
 layouts, multiple volumes, directory strings, MFT references, and broader XPRESS-Huffman
-encodings. The Windows `RtlDecompressBufferEx` canary is implemented, but its first hosted
-observation is still pending.
+encodings. A hosted schema-v6 run completed the Windows `RtlDecompressBufferEx` canary before
+a later Shell Link contract failure. A complete passing schema-v7 report remains pending.
 
 TaskCache and Jump Lists remain deferred. TaskCache requires defended writers and independent
 readers for its Actions, Triggers, DynamicInfo, Hash, and security-descriptor blobs. Automatic

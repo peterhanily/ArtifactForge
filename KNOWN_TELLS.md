@@ -143,10 +143,11 @@ and limitations documented in
   profile passes. dissect.target's ScheduledTasks loader is a third, responder-facing consumer
   observation; it is not folded into the two-reader consensus or treated as proof that Windows
   registered or scheduled the task.
-- **Native canary is parse-only and still pending hosted evidence.** The Windows observer sets
+- **Native canary is parse-only; hosted evidence is partial.** The Windows observer sets
   only an unregistered in-memory `TaskDefinition.XmlText` created with
-  `TaskService.Connect`/`NewTask(0)`. It never calls a registration method. The first hosted
-  Windows observation for the current source has not yet run.
+  `TaskService.Connect`/`NewTask(0)`. It never calls a registration method. A hosted schema-v6
+  run on the preceding revision accepted the task before a later Shell Link contract failure.
+  A complete passing schema-v7 report for current source remains pending.
 - **Marked.** The UTF-16 description and owned URI contain `ARTIFACTFORGE`; the description
   states that the task is synthetic, inert, disabled and trigger-free.
 
@@ -176,10 +177,11 @@ and limitations documented in
   accessor; it excludes that field from consensus and leaves suffix extents to the strict
   first-party reader. The two reliable external views still agree on the full typed
   intersection.
-- **Native canary is read-only and still pending hosted evidence.** The Windows observer opens
+- **Native canary is read-only; hosted evidence is partial.** The Windows observer opens
   the private-copy path only with `WScript.Shell.CreateShortcut`; it never calls `Save`,
-  `Resolve` or `Run`. The first hosted Windows observation for the current source has not yet
-  run.
+  `Resolve` or `Run`. A hosted schema-v6 run on the preceding revision reached this call, but
+  WSH returned an empty target path for the link with no `LinkTargetIDList`. The schema-v7
+  contract records that state explicitly; a complete passing report remains pending.
 - **Marked.** The Unicode display name ends with `[ARTIFACTFORGE SYNTHETIC]`.
 
 ## zone-identifier

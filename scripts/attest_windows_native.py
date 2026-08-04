@@ -638,6 +638,97 @@ def _is_linklike(path: Path, state: os.stat_result) -> bool:
 
 
 _STABLE_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+_CROSS_API_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+
+
+def _stat_fields_match(
+    first: os.stat_result,
+    second: os.stat_result,
+    fields: tuple[str, ...],
+) -> bool:
+    return all(getattr(first, field) == getattr(second, field) for field in fields)
+
+
+def _windows_creation_time_ns(state: os.stat_result) -> int | None:
+    # CPython 3.12 added the explicit birth-time field. On 3.11, Windows path
+    # and handle stats both expose creation time through st_ctime_ns.
+    if sys.version_info[:2] >= (3, 12):
+        field = "st_birthtime_ns"
+    else:
+        if hasattr(state, "st_birthtime_ns"):
+            return None
+        field = "st_ctime_ns"
+    value = getattr(state, field, None)
+    return value if type(value) is int and value > 0 else None
+
+
+def _cross_api_file_state_matches(first: os.stat_result, second: os.stat_result) -> bool:
+    """Compare only fields with the same path-stat and handle-stat meaning."""
+    # Since 3.12, CPython maps Windows path st_ctime to birth time but handle
+    # st_ctime to change time. The semantic accessor also covers 3.11 safely.
+    fields = _CROSS_API_FILE_FIELDS
+    if sys.platform == "win32":
+        identities = (
+            getattr(state, field, None)
+            for state in (first, second)
+            for field in ("st_dev", "st_ino")
+        )
+        if any(type(value) is not int or value <= 0 for value in identities):
+            return False
+        first_creation = _windows_creation_time_ns(first)
+        second_creation = _windows_creation_time_ns(second)
+        if (
+            first_creation is None
+            or second_creation is None
+            or first_creation != second_creation
+        ):
+            return False
+    else:
+        fields = (*fields, "st_ctime_ns")
+    return _stat_fields_match(first, second, fields)
+
+
+def _inventory_path_state_matches(
+    inventory: os.stat_result,
+    current: os.stat_result,
+) -> bool:
+    """Bind a directory-entry snapshot to a fresh path observation."""
+    if stat.S_IFMT(inventory.st_mode) != stat.S_IFMT(current.st_mode):
+        return False
+    if sys.platform != "win32":
+        return _stat_fields_match(inventory, current, _STABLE_FILE_FIELDS)
+    # Windows DirEntry snapshots normally report zero device and inode values. If a
+    # runtime supplies real values, bind them instead of silently discarding them.
+    inventory_identity = tuple(
+        getattr(inventory, field, None) for field in ("st_dev", "st_ino")
+    )
+    current_identity = tuple(getattr(current, field, None) for field in ("st_dev", "st_ino"))
+    if any(type(value) is not int for value in (*inventory_identity, *current_identity)):
+        return False
+    if any(value <= 0 for value in current_identity):
+        return False
+    if inventory_identity != (0, 0) and (
+        any(value <= 0 for value in inventory_identity)
+        or inventory_identity != current_identity
+    ):
+        return False
+    required_fields = ("st_file_attributes", "st_reparse_tag")
+    if any(
+        type(getattr(state, field, None)) is not int
+        for state in (inventory, current)
+        for field in required_fields
+    ):
+        return False
+    inventory_creation = _windows_creation_time_ns(inventory)
+    current_creation = _windows_creation_time_ns(current)
+    if (
+        inventory_creation is None
+        or current_creation is None
+        or inventory_creation != current_creation
+    ):
+        return False
+    fields = ("st_size", "st_mtime_ns", *required_fields)
+    return _stat_fields_match(inventory, current, fields)
 
 
 def _filesystem_identity(state: os.stat_result) -> dict:
@@ -657,22 +748,32 @@ def _read_regular(
         raise RuntimeError(f"cannot inspect {where}: {exc}") from exc
     if _is_linklike(path, before) or not stat.S_ISREG(before.st_mode):
         raise RuntimeError(f"{where} must be a regular file, not a link or special file")
-    if expected_state is not None and any(
-        getattr(expected_state, field) != getattr(before, field) for field in _STABLE_FILE_FIELDS
+    if expected_state is not None and not _stat_fields_match(
+        expected_state,
+        before,
+        _STABLE_FILE_FIELDS,
     ):
         raise RuntimeError(f"{where} changed between inventory and open")
     if before.st_size > maximum:
         raise RuntimeError(f"{where} exceeds the {maximum}-byte limit")
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode):
+            raise RuntimeError(f"{where} did not open as a regular file")
         data = stream.read(maximum + 1)
         after_read = os.fstat(stream.fileno())
     after = path.lstat()
-    if any(
-        getattr(before, field) != getattr(opened, field)
-        or getattr(opened, field) != getattr(after_read, field)
-        or getattr(after_read, field) != getattr(after, field)
-        for field in _STABLE_FILE_FIELDS
+    if (
+        not stat.S_ISREG(after_read.st_mode)
+        or _is_linklike(path, after)
+        or not stat.S_ISREG(after.st_mode)
+    ):
+        raise RuntimeError(f"{where} changed to a link or special file while it was being read")
+    if (
+        not _cross_api_file_state_matches(before, opened)
+        or not _stat_fields_match(opened, after_read, _STABLE_FILE_FIELDS)
+        or not _cross_api_file_state_matches(after_read, after)
+        or not _stat_fields_match(before, after, _STABLE_FILE_FIELDS)
     ):
         raise RuntimeError(f"{where} changed while it was being read")
     if len(data) != before.st_size:
@@ -710,8 +811,13 @@ def _scene_capture(scene: Path) -> tuple[dict, dict[str, bytes]]:
             child_parts = (*parts, entry.name)
             relative = validate_relative_path("/".join(child_parts))
             path = Path(entry.path)
-            state = entry.stat(follow_symlinks=False)
-            if _is_linklike(path, state):
+            inventory_state = entry.stat(follow_symlinks=False)
+            state = path.lstat()
+            if not _inventory_path_state_matches(inventory_state, state):
+                raise RuntimeError(
+                    f"fixture artifact changed after directory inventory: {relative!r}"
+                )
+            if _is_linklike(path, inventory_state) or _is_linklike(path, state):
                 raise RuntimeError(f"fixture artifacts contain a link: {relative!r}")
             if stat.S_ISDIR(state.st_mode):
                 directories.append(relative)

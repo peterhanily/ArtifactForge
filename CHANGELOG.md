@@ -148,6 +148,17 @@ The generation overview now places each numbered step badge above its title. The
 labels remain separate when GitHub scales the SVG, with no raster layer, filter, shadow, or
 blur effect.
 
+The Windows-native bounded reader now compares file times only between observation APIs that
+give them the same meaning. On CPython 3.12 and newer, Windows path stats expose creation time
+as `st_ctime` while handle stats expose change time there. Comparing those values after an
+alternate stream update produced a false race failure. Path and handle observations still bind
+file ID, size, modification time and creation time. Same-API ctime comparisons remain in place
+without treating ctime as cross-API comparable. Python 3.11 supplies creation time through
+`st_ctime`; Python 3.12 and newer use the explicit birth-time field. Missing or zero creation
+times, unavailable file identity, and unavailable reparse metadata are rejected. Directory
+capture also binds reliable cached-entry fields to a fresh, nonzero path identity instead of
+trusting the zero device and inode values returned by `DirEntry.stat()` on Windows.
+
 ### Security
 
 Benchmark v2 is frozen as permanently non-reportable, including suites carrying its historical

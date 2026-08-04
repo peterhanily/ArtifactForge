@@ -10,10 +10,12 @@ import hashlib
 import json
 import runpy
 import shutil
+import stat
 import struct
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,9 +30,11 @@ _GLOBALS = runpy.run_path(str(_SCRIPT))
 _authenticode = _GLOBALS["_authenticode"]
 _canonical_digest = _GLOBALS["_canonical_digest"]
 _canonical_json_bytes = _GLOBALS["_canonical_json_bytes"]
+_cross_api_file_state_matches = _GLOBALS["_cross_api_file_state_matches"]
 _file_identity = _GLOBALS["_file_identity"]
 _find_powershell = _GLOBALS["_find_powershell"]
 _fixture_state = _GLOBALS["_fixture_state"]
+_inventory_path_state_matches = _GLOBALS["_inventory_path_state_matches"]
 _load_prerequisite = _GLOBALS["_load_prerequisite"]
 _logical_zone_map = _GLOBALS["_logical_zone_map"]
 _native_file_hash = _GLOBALS["_native_file_hash"]
@@ -48,6 +52,7 @@ _require_microsoft_signature = _GLOBALS["_require_microsoft_signature"]
 _require_command_with_args_version = _GLOBALS["_require_command_with_args_version"]
 _run = _GLOBALS["_run"]
 _scene_capture = _GLOBALS["_scene_capture"]
+_stat_fields_match = _GLOBALS["_stat_fields_match"]
 _timestamp = _GLOBALS["_timestamp"]
 _signed_positive_control = _GLOBALS["_signed_positive_control"]
 _verified_fixture_evidence = _GLOBALS["_verified_fixture_evidence"]
@@ -61,6 +66,7 @@ prepare = _GLOBALS["prepare"]
 
 _MAM_XPRESS_HUFFMAN_MAGIC = _GLOBALS["_MAM_XPRESS_HUFFMAN_MAGIC"]
 _MAX_PREFETCH_V30_INNER_BYTES = _GLOBALS["_MAX_PREFETCH_V30_INNER_BYTES"]
+_STABLE_FILE_FIELDS = _GLOBALS["_STABLE_FILE_FIELDS"]
 _decode_mam_xpress_huffman = _GLOBALS["decode_mam_xpress_huffman"]
 
 
@@ -115,6 +121,24 @@ def _fake_prefetch_decompressor(payload: bytes, output_capacity: int) -> dict:
         "output": output,
         "workspace_query_ntstatus": 0,
     }
+
+
+def _mock_windows_reader_on_posix(monkeypatch) -> None:
+    """Keep the end-to-end observer mock on POSIX stat semantics."""
+    module = attest.__globals__
+    monkeypatch.setitem(
+        module,
+        "_cross_api_file_state_matches",
+        lambda first, second: _stat_fields_match(first, second, _STABLE_FILE_FIELDS),
+    )
+    monkeypatch.setitem(
+        module,
+        "_inventory_path_state_matches",
+        lambda first, second: (
+            stat.S_IFMT(first.st_mode) == stat.S_IFMT(second.st_mode)
+            and _stat_fields_match(first, second, _STABLE_FILE_FIELDS)
+        ),
+    )
 
 
 def _four_v30_prefetches() -> dict[str, bytes]:
@@ -257,6 +281,152 @@ def test_regular_read_rejects_same_byte_inode_replacement(tmp_path):
     replacement.replace(target)
     with pytest.raises(RuntimeError, match="between inventory and open"):
         _read_regular(target, where="test target", expected_state=expected)
+
+
+def test_windows_cross_api_state_uses_birth_time_not_ctime(monkeypatch):
+    common = {
+        "st_birthtime_ns": 100,
+        "st_ctime_ns": 100,
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_mtime_ns": 300,
+        "st_size": 4,
+    }
+    path_state = SimpleNamespace(**common)
+    handle_state = SimpleNamespace(**{**common, "st_ctime_ns": 200})
+    module_sys = _cross_api_file_state_matches.__globals__["sys"]
+    monkeypatch.setattr(module_sys, "platform", "win32")
+    monkeypatch.setattr(module_sys, "version_info", (3, 12, 0, "final", 0))
+
+    assert _cross_api_file_state_matches(path_state, handle_state)
+    assert not _stat_fields_match(path_state, handle_state, _STABLE_FILE_FIELDS)
+    changed_handle = SimpleNamespace(**{**vars(handle_state), "st_ctime_ns": 201})
+    assert not _stat_fields_match(handle_state, changed_handle, _STABLE_FILE_FIELDS)
+    for field in ("st_birthtime_ns", "st_dev", "st_ino", "st_mtime_ns", "st_size"):
+        mutated = SimpleNamespace(**{**vars(handle_state), field: getattr(handle_state, field) + 1})
+        assert not _cross_api_file_state_matches(path_state, mutated), field
+    for field in ("st_dev", "st_ino"):
+        zeroed = SimpleNamespace(**{**vars(handle_state), field: 0})
+        assert not _cross_api_file_state_matches(path_state, zeroed), field
+    for state in (path_state, handle_state):
+        zeroed = SimpleNamespace(**{**vars(state), "st_birthtime_ns": 0})
+        other = handle_state if state is path_state else path_state
+        assert not _cross_api_file_state_matches(zeroed, other)
+        missing_values = vars(state).copy()
+        del missing_values["st_birthtime_ns"]
+        missing = SimpleNamespace(**missing_values)
+        assert not _cross_api_file_state_matches(missing, other)
+
+
+def test_windows_cross_api_state_uses_ctime_as_creation_time_on_python_311(monkeypatch):
+    common = {
+        "st_ctime_ns": 100,
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_mtime_ns": 300,
+        "st_size": 4,
+    }
+    path_state = SimpleNamespace(**common)
+    handle_state = SimpleNamespace(**common)
+    module_sys = _cross_api_file_state_matches.__globals__["sys"]
+    monkeypatch.setattr(module_sys, "platform", "win32")
+    monkeypatch.setattr(module_sys, "version_info", (3, 11, 9, "final", 0))
+
+    assert _cross_api_file_state_matches(path_state, handle_state)
+    changed = SimpleNamespace(**{**common, "st_ctime_ns": 101})
+    assert not _cross_api_file_state_matches(path_state, changed)
+    zeroed = SimpleNamespace(**{**common, "st_ctime_ns": 0})
+    assert not _cross_api_file_state_matches(path_state, zeroed)
+    unexpected_birth = SimpleNamespace(**{**common, "st_birthtime_ns": 100})
+    assert not _cross_api_file_state_matches(path_state, unexpected_birth)
+
+
+def test_windows_directory_inventory_binds_reliable_fields(monkeypatch):
+    inventory = SimpleNamespace(
+        st_birthtime_ns=100,
+        st_ctime_ns=100,
+        st_dev=0,
+        st_file_attributes=32,
+        st_ino=0,
+        st_mode=stat.S_IFREG | 0o444,
+        st_mtime_ns=200,
+        st_reparse_tag=0,
+        st_size=300,
+    )
+    current = SimpleNamespace(
+        **{
+            **vars(inventory),
+            "st_dev": 1,
+            "st_ino": 2,
+            "st_mode": stat.S_IFREG | 0o600,
+        }
+    )
+    module_sys = _inventory_path_state_matches.__globals__["sys"]
+    monkeypatch.setattr(module_sys, "platform", "win32")
+    monkeypatch.setattr(module_sys, "version_info", (3, 12, 0, "final", 0))
+
+    assert _inventory_path_state_matches(inventory, current)
+    for field in (
+        "st_birthtime_ns",
+        "st_file_attributes",
+        "st_mtime_ns",
+        "st_reparse_tag",
+        "st_size",
+    ):
+        mutated = SimpleNamespace(**{**vars(current), field: getattr(current, field) + 1})
+        assert not _inventory_path_state_matches(inventory, mutated), field
+    changed_type = SimpleNamespace(**{**vars(current), "st_mode": stat.S_IFDIR | 0o700})
+    assert not _inventory_path_state_matches(inventory, changed_type)
+    for field in ("st_dev", "st_ino"):
+        zeroed = SimpleNamespace(**{**vars(current), field: 0})
+        assert not _inventory_path_state_matches(inventory, zeroed), field
+    matching_identity = SimpleNamespace(
+        **{**vars(inventory), "st_dev": current.st_dev, "st_ino": current.st_ino}
+    )
+    assert _inventory_path_state_matches(matching_identity, current)
+    mismatched_identity = SimpleNamespace(**{**vars(matching_identity), "st_ino": 3})
+    assert not _inventory_path_state_matches(mismatched_identity, current)
+    partial_identity = SimpleNamespace(**{**vars(inventory), "st_dev": current.st_dev})
+    assert not _inventory_path_state_matches(partial_identity, current)
+    for field in ("st_birthtime_ns", "st_file_attributes", "st_reparse_tag"):
+        for state in (inventory, current):
+            missing_values = vars(state).copy()
+            del missing_values[field]
+            missing = SimpleNamespace(**missing_values)
+            first, second = (missing, current) if state is inventory else (inventory, missing)
+            assert not _inventory_path_state_matches(first, second), field
+    zero_birth = SimpleNamespace(**{**vars(current), "st_birthtime_ns": 0})
+    assert not _inventory_path_state_matches(inventory, zero_birth)
+
+
+def test_windows_directory_inventory_uses_ctime_as_creation_time_on_python_311(monkeypatch):
+    inventory = SimpleNamespace(
+        st_ctime_ns=100,
+        st_dev=0,
+        st_file_attributes=32,
+        st_ino=0,
+        st_mode=stat.S_IFREG | 0o444,
+        st_mtime_ns=200,
+        st_reparse_tag=0,
+        st_size=300,
+    )
+    current = SimpleNamespace(
+        **{
+            **vars(inventory),
+            "st_dev": 1,
+            "st_ino": 2,
+            "st_mode": stat.S_IFREG | 0o600,
+        }
+    )
+    module_sys = _inventory_path_state_matches.__globals__["sys"]
+    monkeypatch.setattr(module_sys, "platform", "win32")
+    monkeypatch.setattr(module_sys, "version_info", (3, 11, 9, "final", 0))
+
+    assert _inventory_path_state_matches(inventory, current)
+    changed = SimpleNamespace(**{**vars(current), "st_ctime_ns": 101})
+    assert not _inventory_path_state_matches(inventory, changed)
+    unexpected_birth = SimpleNamespace(**{**vars(current), "st_birthtime_ns": 100})
+    assert not _inventory_path_state_matches(inventory, unexpected_birth)
 
 
 def test_complete_portable_verification_binds_windows_v2(windows_fixture):
@@ -982,6 +1152,7 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     prerequisite = tmp_path / "portable.json"
     prerequisite.write_bytes(_canonical_json_bytes(portable))
     monkeypatch.setattr(attest.__globals__["sys"], "platform", "win32")
+    _mock_windows_reader_on_posix(monkeypatch)
 
     tools = {}
     tool_evidence = {}
@@ -1391,6 +1562,7 @@ def test_fixture_mutation_is_rejected_before_any_native_tool(
     data[-1] ^= 1
     artifact.write_bytes(data)
     monkeypatch.setattr(attest.__globals__["sys"], "platform", "win32")
+    _mock_windows_reader_on_posix(monkeypatch)
     called = False
 
     def native(_runner):

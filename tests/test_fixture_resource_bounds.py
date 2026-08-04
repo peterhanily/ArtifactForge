@@ -6,10 +6,12 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 from pathlib import Path
+import stat
+from types import SimpleNamespace
 
 import pytest
 
-from artifactforge import __version__
+from artifactforge import __version__, inventory
 from artifactforge.cli.fixture import _load_spec
 from artifactforge.fixture import archive, model, operations, resources
 from artifactforge.fixture.canonical import (
@@ -298,19 +300,60 @@ def test_stable_path_read_detects_a_file_changed_during_bounded_loop(
 
 def test_stable_reader_does_not_probe_past_the_opened_size(monkeypatch, tmp_path):
     path = tmp_path / "exact-boundary"
-    path.write_bytes(b"1234")
+    payload = b"1234"
+    path.write_bytes(payload)
     real_read = resources.os.read
     requests: list[int] = []
+    comparisons: list[tuple[str, str]] = []
+    real_match = resources.path_handle_file_observations_match
+    mode = stat.S_IFREG | 0o600
+    path_state = SimpleNamespace(
+        observation_domain="path",
+        st_birthtime_ns=100,
+        st_ctime_ns=100,
+        st_dev=11,
+        st_ino=22,
+        st_mode=mode,
+        st_mtime_ns=300,
+        st_size=len(payload),
+    )
+    handle_state = SimpleNamespace(
+        observation_domain="handle",
+        st_birthtime_ns=100,
+        st_ctime_ns=200,
+        st_dev=11,
+        st_ino=22,
+        st_mode=mode,
+        st_mtime_ns=300,
+        st_size=len(payload),
+    )
 
     def bounded_read(descriptor, size):
         requests.append(size)
         return real_read(descriptor, size)
 
+    def observed_match(path_state, handle_state):
+        comparisons.append(
+            (path_state.observation_domain, handle_state.observation_domain)
+        )
+        return real_match(path_state, handle_state)
+
+    monkeypatch.setattr(Path, "lstat", lambda _path: path_state)
+    monkeypatch.setattr(resources.os, "fstat", lambda _descriptor: handle_state)
+    monkeypatch.setattr(
+        inventory,
+        "sys",
+        SimpleNamespace(platform="win32", version_info=(3, 12, 13, "final", 0)),
+    )
     monkeypatch.setattr(resources.os, "read", bounded_read)
+    monkeypatch.setattr(resources, "path_handle_file_observations_match", observed_match)
     assert resources.read_stable_regular_path(
         path, max_bytes=4, label="exact boundary"
-    ) == b"1234"
+    ) == payload
     assert requests == [4]
+    assert path_state.st_birthtime_ns == handle_state.st_birthtime_ns
+    assert path_state.st_ctime_ns != handle_state.st_ctime_ns
+    assert comparisons == [("path", "handle"), ("path", "handle")]
 
 
 def test_archive_snapshot_caps_actual_cumulative_bytes_before_retaining_file(

@@ -29,6 +29,8 @@ import time
 import tomllib
 from typing import Sequence
 
+from artifactforge.inventory import path_handle_file_observations_match
+
 
 PROJECT_FILE = Path(__file__).resolve().parents[1] / "pyproject.toml"
 MAX_PROJECT_BYTES = 256 * 1024
@@ -80,6 +82,16 @@ def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]
     )
 
 
+def _path_handle_observations_match(
+    path_state: os.stat_result,
+    handle_state: os.stat_result,
+) -> bool:
+    return (
+        path_state.st_mode == handle_state.st_mode
+        and path_handle_file_observations_match(path_state, handle_state)
+    )
+
+
 def _read_regular(
     path: Path,
     *,
@@ -110,7 +122,10 @@ def _read_regular(
         raise PublishRehearsalError(f"cannot open {label} {path}: {exc}") from exc
     try:
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or _stat_identity(opened) != _stat_identity(before):
+        if not stat.S_ISREG(opened.st_mode) or not _path_handle_observations_match(
+            before,
+            opened,
+        ):
             raise PublishRehearsalError(f"{label} changed while it was opened: {path}")
         chunks: list[bytes] = []
         observed = 0
@@ -132,8 +147,10 @@ def _read_regular(
         after = path.lstat()
     except OSError as exc:
         raise PublishRehearsalError(f"cannot re-inspect {label} {path}: {exc}") from exc
-    if _stat_identity(final) != _stat_identity(opened) or _stat_identity(after) != _stat_identity(
-        opened
+    if (
+        _stat_identity(final) != _stat_identity(opened)
+        or not _path_handle_observations_match(after, opened)
+        or _stat_identity(before) != _stat_identity(after)
     ):
         raise PublishRehearsalError(f"{label} changed while it was read: {path}")
     payload = b"".join(chunks)

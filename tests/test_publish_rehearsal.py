@@ -8,12 +8,16 @@ import importlib.util
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
+
+from artifactforge import inventory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +66,68 @@ def _version_result(command, *, version: str = "0.11.17") -> subprocess.Complete
         stdout=f"uv {version} (reviewed fixture)\n".encode(),
         stderr=b"",
     )
+
+
+def test_bounded_reader_uses_cross_observation_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "distribution.whl"
+    expected = b"distribution bytes"
+    path.write_bytes(expected)
+    comparisons: list[tuple[str, str]] = []
+    real_match = rehearsal.path_handle_file_observations_match
+    mode = stat.S_IFREG | 0o600
+    path_state = SimpleNamespace(
+        observation_domain="path",
+        st_birthtime_ns=100,
+        st_ctime_ns=100,
+        st_dev=11,
+        st_ino=22,
+        st_mode=mode,
+        st_mtime_ns=300,
+        st_size=len(expected),
+    )
+    handle_state = SimpleNamespace(
+        observation_domain="handle",
+        st_birthtime_ns=100,
+        st_ctime_ns=200,
+        st_dev=11,
+        st_ino=22,
+        st_mode=mode,
+        st_mtime_ns=300,
+        st_size=len(expected),
+    )
+
+    def observed_match(path_state, handle_state):
+        comparisons.append(
+            (path_state.observation_domain, handle_state.observation_domain)
+        )
+        return real_match(path_state, handle_state)
+
+    monkeypatch.setattr(Path, "lstat", lambda _path: path_state)
+    monkeypatch.setattr(rehearsal.os, "fstat", lambda _descriptor: handle_state)
+    monkeypatch.setattr(
+        inventory,
+        "sys",
+        SimpleNamespace(platform="win32", version_info=(3, 12, 13, "final", 0)),
+    )
+    monkeypatch.setattr(rehearsal, "path_handle_file_observations_match", observed_match)
+    payload, observation = rehearsal._read_regular(
+        path,
+        maximum=len(expected),
+        label="test distribution",
+    )
+
+    assert payload == expected
+    assert path_state.st_birthtime_ns == handle_state.st_birthtime_ns
+    assert path_state.st_ctime_ns != handle_state.st_ctime_ns
+    assert comparisons == [("path", "handle"), ("path", "handle")]
+    assert observation.device == 11
+    assert observation.inode == 22
+    assert observation.size == len(payload)
+    assert observation.modified_ns == 300
+    assert observation.changed_ns == 200
 
 
 def test_rehearsal_uses_one_fixed_command_and_a_strict_environment(

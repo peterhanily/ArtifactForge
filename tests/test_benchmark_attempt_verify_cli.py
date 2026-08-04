@@ -6,11 +6,23 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 
 import pytest
 
-from artifactforge import cli, suite
+from artifactforge import cli, inventory, suite
 from artifactforge.bench import attempt, submission
+
+
+class _StatView:
+    def __init__(self, base: os.stat_result, **overrides: int) -> None:
+        self._base = base
+        self._overrides = overrides
+
+    def __getattr__(self, name: str):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._base, name)
 
 
 def _sha256(data: bytes) -> str:
@@ -254,3 +266,54 @@ def test_cli_rejects_oversized_reveal_before_verification(tmp_path, monkeypatch)
                 os.fspath(reveal_path),
             ]
         )
+
+
+def test_detached_reader_accepts_windows_path_handle_ctime_split(tmp_path, monkeypatch):
+    payload = b"detached report bytes"
+    report_path = tmp_path / "retired-report.json"
+    report_path.write_bytes(payload)
+    real_lstat = Path.lstat
+    real_fstat = os.fstat
+
+    def windows_path_lstat(path):
+        state = real_lstat(path)
+        return _StatView(
+            state,
+            st_birthtime_ns=100,
+            st_ctime_ns=100,
+        )
+
+    def windows_handle_fstat(descriptor):
+        state = real_fstat(descriptor)
+        return _StatView(
+            state,
+            st_birthtime_ns=100,
+            st_ctime_ns=200,
+        )
+
+    monkeypatch.setattr(Path, "lstat", windows_path_lstat)
+    monkeypatch.setattr(cli.os, "fstat", windows_handle_fstat)
+    monkeypatch.setattr(inventory.sys, "platform", "win32")
+    monkeypatch.setattr(inventory.sys, "version_info", (3, 12, 13, "final", 0))
+
+    assert (
+        cli._read_detached_cli_regular(
+            report_path,
+            "detached retired report",
+            max_bytes=len(payload),
+        )
+        == payload
+    )
+
+
+def test_same_domain_reader_state_retains_ctime(monkeypatch):
+    state = _StatView(
+        os.stat(__file__),
+        st_birthtime_ns=100,
+        st_ctime_ns=200,
+    )
+    changed = _StatView(state._base, st_birthtime_ns=100, st_ctime_ns=201)
+    monkeypatch.setattr(inventory.sys, "platform", "win32")
+    monkeypatch.setattr(inventory.sys, "version_info", (3, 12, 13, "final", 0))
+
+    assert not cli._same_domain_file_observations_match(state, changed)

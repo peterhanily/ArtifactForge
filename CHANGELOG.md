@@ -159,6 +159,12 @@ times, unavailable file identity, and unavailable reparse metadata are rejected.
 capture also binds reliable cached-entry fields to a fresh, nonzero path identity instead of
 trusting the zero device and inode values returned by `DirEntry.stat()` on Windows.
 
+The path-to-handle comparison now lives in the shared filesystem inventory layer. Detached
+Benchmark v3 report verification, Fixture Core path ingress and the publish rehearsal use the
+same rule, closing three additional Windows-capable readers that made the same invalid ctime
+comparison. Each caller still owns its regular-file, link, reparse, size, exact-length and
+same-domain mutation checks.
+
 ### Security
 
 Benchmark v2 is frozen as permanently non-reportable, including suites carrying its historical

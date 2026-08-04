@@ -72,7 +72,12 @@ from artifactforge.fixture.model_v2 import (
 )
 from artifactforge.fixture.operations import VerificationResult, verify_fixture
 from artifactforge.gates.oracles.prefetch_profile import decode_mam_xpress_huffman
-from artifactforge.inventory import canonical_relative_paths, validate_relative_path
+from artifactforge.inventory import (
+    canonical_relative_paths,
+    path_handle_file_observations_match as _cross_api_file_state_matches,
+    validate_relative_path,
+    windows_creation_time_ns as _windows_creation_time_ns,
+)
 
 
 PORTABLE_SCHEMA_ID = "artifactforge-native-windows-portable-prerequisite-v1"
@@ -638,7 +643,6 @@ def _is_linklike(path: Path, state: os.stat_result) -> bool:
 
 
 _STABLE_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-_CROSS_API_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
 
 
 def _stat_fields_match(
@@ -647,45 +651,6 @@ def _stat_fields_match(
     fields: tuple[str, ...],
 ) -> bool:
     return all(getattr(first, field) == getattr(second, field) for field in fields)
-
-
-def _windows_creation_time_ns(state: os.stat_result) -> int | None:
-    # CPython 3.12 added the explicit birth-time field. On 3.11, Windows path
-    # and handle stats both expose creation time through st_ctime_ns.
-    if sys.version_info[:2] >= (3, 12):
-        field = "st_birthtime_ns"
-    else:
-        if hasattr(state, "st_birthtime_ns"):
-            return None
-        field = "st_ctime_ns"
-    value = getattr(state, field, None)
-    return value if type(value) is int and value > 0 else None
-
-
-def _cross_api_file_state_matches(first: os.stat_result, second: os.stat_result) -> bool:
-    """Compare only fields with the same path-stat and handle-stat meaning."""
-    # Since 3.12, CPython maps Windows path st_ctime to birth time but handle
-    # st_ctime to change time. The semantic accessor also covers 3.11 safely.
-    fields = _CROSS_API_FILE_FIELDS
-    if sys.platform == "win32":
-        identities = (
-            getattr(state, field, None)
-            for state in (first, second)
-            for field in ("st_dev", "st_ino")
-        )
-        if any(type(value) is not int or value <= 0 for value in identities):
-            return False
-        first_creation = _windows_creation_time_ns(first)
-        second_creation = _windows_creation_time_ns(second)
-        if (
-            first_creation is None
-            or second_creation is None
-            or first_creation != second_creation
-        ):
-            return False
-    else:
-        fields = (*fields, "st_ctime_ns")
-    return _stat_fields_match(first, second, fields)
 
 
 def _inventory_path_state_matches(
@@ -772,7 +737,7 @@ def _read_regular(
     if (
         not _cross_api_file_state_matches(before, opened)
         or not _stat_fields_match(opened, after_read, _STABLE_FILE_FIELDS)
-        or not _cross_api_file_state_matches(after_read, after)
+        or not _cross_api_file_state_matches(after, after_read)
         or not _stat_fields_match(before, after, _STABLE_FILE_FIELDS)
     ):
         raise RuntimeError(f"{where} changed while it was being read")

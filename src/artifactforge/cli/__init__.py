@@ -33,6 +33,7 @@ from artifactforge.inventory import (
     directory_path_matches_descriptor,
     inventory_regular_files,
     open_real_directory,
+    path_handle_file_observations_match,
     write_regular_file_at,
 )
 
@@ -44,6 +45,36 @@ _MAX_SUBMISSION_ROWS = suite.BENCHMARK_MAX_SCENARIOS
 _MAX_SUBMISSION_ANSWER_CHARS = suite.BENCHMARK_ANSWER_MAX_CHARS
 _MAX_RETIRED_REPORT_BYTES = 32 * 1024 * 1024
 _SHA256_LABEL = re.compile(r"sha256:[0-9a-f]{64}")
+_STABLE_FILE_OBSERVATION_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _same_domain_file_observations_match(
+    first: os.stat_result,
+    second: os.stat_result,
+) -> bool:
+    for field in _STABLE_FILE_OBSERVATION_FIELDS:
+        first_value = getattr(first, field, None)
+        second_value = getattr(second, field, None)
+        if (
+            type(first_value) is not int
+            or type(second_value) is not int
+            or first_value != second_value
+        ):
+            return False
+    return True
+
+
+def _windows_file_identity_available(state: os.stat_result) -> bool:
+    if sys.platform != "win32":
+        return True
+    identity = (getattr(state, "st_dev", None), getattr(state, "st_ino", None))
+    return all(type(value) is int and value > 0 for value in identity)
 
 
 def _positive_count(value: str) -> int:
@@ -119,6 +150,7 @@ def _read_detached_cli_regular(
             stat.S_ISLNK(parent_before.st_mode)
             or not stat.S_ISDIR(parent_before.st_mode)
             or is_reparse(parent_before)
+            or not _windows_file_identity_available(parent_before)
         ):
             raise ValueError(f"{where} parent must be a real directory")
         candidate = parent / source.name
@@ -145,9 +177,9 @@ def _read_detached_cli_regular(
         if (
             not stat.S_ISREG(opened.st_mode)
             or is_reparse(opened)
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-            or (after_open_path.st_dev, after_open_path.st_ino)
-            != (opened.st_dev, opened.st_ino)
+            or not path_handle_file_observations_match(before, opened)
+            or not path_handle_file_observations_match(after_open_path, opened)
+            or not _same_domain_file_observations_match(before, after_open_path)
             or stat.S_ISLNK(after_open_path.st_mode)
             or not stat.S_ISREG(after_open_path.st_mode)
             or is_reparse(after_open_path)
@@ -155,6 +187,7 @@ def _read_detached_cli_regular(
             != (parent_after_open.st_dev, parent_after_open.st_ino)
             or not stat.S_ISDIR(parent_after_open.st_mode)
             or is_reparse(parent_after_open)
+            or not _windows_file_identity_available(parent_after_open)
         ):
             raise ValueError(f"{where} changed while it was being opened")
         chunks: list[bytes] = []
@@ -175,17 +208,15 @@ def _read_detached_cli_regular(
         if descriptor >= 0:
             os.close(descriptor)
 
-    stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
     if (
-        any(
-            getattr(opened, field) != getattr(after_read, field)
-            or getattr(after_read, field) != getattr(after_path, field)
-            for field in stable
-        )
+        not _same_domain_file_observations_match(opened, after_read)
+        or not path_handle_file_observations_match(after_path, after_read)
+        or not _same_domain_file_observations_match(before, after_path)
         or (parent_before.st_dev, parent_before.st_ino)
         != (parent_after.st_dev, parent_after.st_ino)
         or not stat.S_ISDIR(parent_after.st_mode)
         or is_reparse(parent_after)
+        or not _windows_file_identity_available(parent_after)
         or stat.S_ISLNK(after_path.st_mode)
         or not stat.S_ISREG(after_path.st_mode)
         or is_reparse(after_path)

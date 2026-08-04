@@ -19,6 +19,7 @@ from artifactforge.inventory import (
     MAX_SCENE_FILE_BYTES,
     MAX_SCENE_FILES,
     MAX_SCENE_TOTAL_BYTES,
+    path_handle_file_observations_match,
 )
 
 READ_CHUNK = 1024 * 1024
@@ -138,7 +139,10 @@ def read_stable_regular_path(path: Path, *, max_bytes: int, label: str) -> bytes
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or _state(before) != _state(opened):
+        if not stat.S_ISREG(opened.st_mode) or not path_handle_file_observations_match(
+            before,
+            opened,
+        ):
             raise FixtureResourceError(f"{label} changed while it was being opened")
         payload = _bounded_descriptor_bytes(
             descriptor,
@@ -148,7 +152,10 @@ def read_stable_regular_path(path: Path, *, max_bytes: int, label: str) -> bytes
             use_pread=False,
         )
         after_path = path.lstat()
-        if _state(opened) != _state(after_path):
+        if (
+            not path_handle_file_observations_match(after_path, opened)
+            or _state(before) != _state(after_path)
+        ):
             raise FixtureResourceError(f"{label} changed while it was being read")
         return payload
     except FixtureResourceError:
@@ -180,7 +187,10 @@ def read_stable_regular_at(
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(name, flags, dir_fd=parent_descriptor)
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or _state(before) != _state(opened):
+        if not stat.S_ISREG(opened.st_mode) or not path_handle_file_observations_match(
+            before,
+            opened,
+        ):
             raise FixtureResourceError(f"{label} changed while it was being opened")
         payload = _bounded_descriptor_bytes(
             descriptor,
@@ -190,7 +200,10 @@ def read_stable_regular_at(
             use_pread=False,
         )
         after_path = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-        if _state(opened) != _state(after_path):
+        if (
+            not path_handle_file_observations_match(after_path, opened)
+            or _state(before) != _state(after_path)
+        ):
             raise FixtureResourceError(f"{label} changed while it was being read")
         return payload
     except FixtureResourceError:

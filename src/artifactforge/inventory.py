@@ -34,6 +34,60 @@ MAX_SCENE_FILES = 4096
 MAX_SCENE_FILE_BYTES = 64 * 1024 * 1024
 MAX_SCENE_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_SCENE_DEPTH = 32
+_CROSS_OBSERVATION_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+_STABLE_FILE_FIELDS = (*_CROSS_OBSERVATION_FILE_FIELDS, "st_ctime_ns")
+
+
+def windows_creation_time_ns(state: os.stat_result) -> int | None:
+    """Return CPython's explicit Windows creation time, failing closed if unavailable."""
+    if sys.version_info[:2] >= (3, 12):
+        field = "st_birthtime_ns"
+    else:
+        if hasattr(state, "st_birthtime_ns"):
+            return None
+        field = "st_ctime_ns"
+    value = getattr(state, field, None)
+    return value if type(value) is int and value > 0 else None
+
+
+def path_handle_file_observations_match(
+    path_state: os.stat_result,
+    handle_state: os.stat_result,
+) -> bool:
+    """Compare one path stat with one handle stat using their shared semantics.
+
+    Callers remain responsible for type, link, reparse, bounds, read length, and
+    same-observation-domain stability checks.
+    """
+    fields = _CROSS_OBSERVATION_FILE_FIELDS
+    if sys.platform == "win32":
+        identities = (
+            getattr(state, field, None)
+            for state in (path_state, handle_state)
+            for field in ("st_dev", "st_ino")
+        )
+        if any(type(value) is not int or value <= 0 for value in identities):
+            return False
+        path_creation = windows_creation_time_ns(path_state)
+        handle_creation = windows_creation_time_ns(handle_state)
+        if (
+            path_creation is None
+            or handle_creation is None
+            or path_creation != handle_creation
+        ):
+            return False
+    else:
+        fields = _STABLE_FILE_FIELDS
+    for field in fields:
+        path_value = getattr(path_state, field, None)
+        handle_value = getattr(handle_state, field, None)
+        if (
+            type(path_value) is not int
+            or type(handle_value) is not int
+            or path_value != handle_value
+        ):
+            return False
+    return True
 
 
 @dataclass(frozen=True)

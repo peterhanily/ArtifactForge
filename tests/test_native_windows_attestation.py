@@ -19,6 +19,7 @@ import pytest
 
 from artifactforge.artifacts.shell_link import parse_shell_link
 from artifactforge.artifacts.prefetch import build_prefetch_v30
+from artifactforge.content import build_pe_stub
 from artifactforge.fixture import FixtureSpecV2, ProfileSpecV2, build_fixture
 
 
@@ -581,8 +582,10 @@ def test_powershell_observations_pass_target_separately_and_use_literal_path(tmp
     if sys.platform == "win32":
         powershell = shutil.which("pwsh.exe") or shutil.which("pwsh")
         assert powershell, "hosted Windows native lane requires pwsh"
-        literal = tmp_path / "literal [brackets] & apostrophe' space.bin"
-        payload = b"ArtifactForge literal-path and ADS control\r\n"
+        literal = tmp_path / "literal [brackets] & apostrophe' space.exe"
+        payload = build_pe_stub(
+            hashlib.sha256(b"windows-hostile-literal-path-control").digest()
+        )
         logical = b"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://artifactforge.invalid/\r\n"
         literal.write_bytes(payload)
         real_digest, _ = _native_file_hash(literal, powershell, _run)

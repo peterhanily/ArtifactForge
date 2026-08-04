@@ -59,6 +59,7 @@ _verified_fixture_evidence = _GLOBALS["_verified_fixture_evidence"]
 _validate_native_report = _GLOBALS["_validate_native_report"]
 _write_new_output = _GLOBALS["_write_new_output"]
 _zone_attestation = _GLOBALS["_zone_attestation"]
+main = _GLOBALS["main"]
 _SHELL_LINK_SCRIPT = _GLOBALS["_SHELL_LINK_SCRIPT"]
 _TASK_XML_SCRIPT = _GLOBALS["_TASK_XML_SCRIPT"]
 attest = _GLOBALS["attest"]
@@ -1596,3 +1597,73 @@ def test_output_creation_is_exclusive_and_outside_protected_roots(tmp_path):
             b"{}\n",
             forbidden_roots=(protected,),
         )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_failure"),
+    [
+        ("sentinel native postcondition", "sentinel native postcondition"),
+        ("", "RuntimeError"),
+    ],
+)
+def test_observe_main_preserves_a_native_failure_in_a_v5_envelope(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    message,
+    expected_failure,
+):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    prerequisite = tmp_path / "portable.json"
+    output = tmp_path / "native.json"
+    captured = {}
+
+    def failing_attest(_fixture, _prerequisite):
+        raise RuntimeError(message)
+
+    def capture_output(destination, data, *, forbidden_roots):
+        captured["data"] = data
+        captured["destination"] = destination
+        captured["forbidden_roots"] = forbidden_roots
+        return destination
+
+    monkeypatch.setitem(main.__globals__, "attest", failing_attest)
+    monkeypatch.setitem(main.__globals__, "_write_new_output", capture_output)
+    monkeypatch.setitem(
+        main.__globals__,
+        "_timestamp",
+        lambda _now=None: "2026-08-04T13:08:13Z",
+    )
+    monkeypatch.setattr(
+        main.__globals__["sys"],
+        "argv",
+        [
+            str(_SCRIPT),
+            "observe",
+            "--fixture",
+            str(fixture),
+            "--prerequisite",
+            str(prerequisite),
+            "--out",
+            str(output),
+        ],
+    )
+
+    assert main() == 1
+    report = json.loads(captured["data"])
+    assert report == {
+        "canonicalization": main.__globals__["CANONICALIZATION"],
+        "failures": [expected_failure],
+        "generated_at_utc": "2026-08-04T13:08:13Z",
+        "schema": main.__globals__["SCHEMA_ID"],
+        "schema_version": 5,
+        "verdict": "fail",
+    }
+    assert captured["destination"] == output
+    assert len(captured["forbidden_roots"]) == 2
+    output_text = capsys.readouterr()
+    assert "wrote" in output_text.out
+    assert f"FAIL: {expected_failure}" in output_text.err
+    assert "invalid envelope" not in output_text.err
+    assert "cannot safely write" not in output_text.err

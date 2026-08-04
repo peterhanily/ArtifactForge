@@ -81,7 +81,9 @@ from artifactforge.inventory import (
 
 
 PORTABLE_SCHEMA_ID = "artifactforge-native-windows-portable-prerequisite-v1"
+PORTABLE_SCHEMA_VERSION = 1
 SCHEMA_ID = "artifactforge-native-windows-attestation-v5"
+SCHEMA_VERSION = 5
 CANONICALIZATION = "UTF-8 JSON, sorted keys, compact separators, no NaN, one trailing LF"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PORTABLE_DISTRIBUTIONS = (
@@ -1159,7 +1161,7 @@ def prepare(
             "source_post_preparation": source_post,
         },
         "schema": PORTABLE_SCHEMA_ID,
-        "schema_version": 1,
+        "schema_version": PORTABLE_SCHEMA_VERSION,
     }
     report["verdict"] = "pass" if not failures else "fail"
     return report
@@ -1277,7 +1279,7 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
         set(value) != expected_root
         or value.get("canonicalization") != CANONICALIZATION
         or value.get("schema") != PORTABLE_SCHEMA_ID
-        or value.get("schema_version") != 1
+        or value.get("schema_version") != PORTABLE_SCHEMA_VERSION
         or value.get("verdict") != "pass"
         or value.get("failures") != []
     ):
@@ -3425,7 +3427,7 @@ def attest(
         },
         "producer": {"name": "ArtifactForge", "source": source},
         "schema": SCHEMA_ID,
-        "schema_version": 5,
+        "schema_version": SCHEMA_VERSION,
     }
 
     tools: dict[str, str] | None = None
@@ -4446,7 +4448,7 @@ def _validate_native_report(report: object) -> None:
     if (
         report.get("canonicalization") != CANONICALIZATION
         or report.get("schema") != SCHEMA_ID
-        or report.get("schema_version") != 5
+        or report.get("schema_version") != SCHEMA_VERSION
         or report.get("verdict") not in {"pass", "fail"}
         or type(report.get("failures")) is not list
         or not all(type(item) is str and item for item in report["failures"])
@@ -4619,7 +4621,7 @@ def _validate_native_report(report: object) -> None:
         or {name: value for name, value in source_post.items() if name != "unchanged"} != source
         or type(portable_record) is not dict
         or portable_record.get("schema") != PORTABLE_SCHEMA_ID
-        or portable_record.get("schema_version") != 1
+        or portable_record.get("schema_version") != PORTABLE_SCHEMA_VERSION
         or portable_record.get("verdict") != "pass"
         or portable_record.get("failures") != []
         or portable_record.get("producer", {}).get("source") != source
@@ -4895,28 +4897,27 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    if args.stage == "prepare":
+        schema = PORTABLE_SCHEMA_ID
+        schema_version = PORTABLE_SCHEMA_VERSION
+    else:
+        schema = SCHEMA_ID
+        schema_version = SCHEMA_VERSION
     prerequisite = None
     try:
         if args.stage == "prepare":
             report = prepare(fixture)
-            schema_version = 1
-            schema = PORTABLE_SCHEMA_ID
         else:
             prerequisite = Path(os.path.abspath(args.prerequisite))
             report = attest(fixture, prerequisite)
-            schema_version = 5
-            schema = SCHEMA_ID
     except Exception as exc:  # noqa: BLE001 - emit a canonical machine-readable failure
+        failure = str(exc) or type(exc).__name__
         report = {
             "canonicalization": CANONICALIZATION,
-            "failures": [str(exc)],
+            "failures": [failure],
             "generated_at_utc": _timestamp(),
-            "schema": schema
-            if "schema" in locals()
-            else (PORTABLE_SCHEMA_ID if args.stage == "prepare" else SCHEMA_ID),
-            "schema_version": schema_version
-            if "schema_version" in locals()
-            else (1 if args.stage == "prepare" else 4),
+            "schema": schema,
+            "schema_version": schema_version,
             "verdict": "fail",
         }
     try:

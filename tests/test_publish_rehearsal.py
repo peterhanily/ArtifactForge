@@ -72,19 +72,20 @@ def test_bounded_reader_uses_cross_observation_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "distribution.whl"
+    path = tmp_path / "reviewed-uv.exe"
     expected = b"distribution bytes"
     path.write_bytes(expected)
     comparisons: list[tuple[str, str]] = []
     real_match = rehearsal.path_handle_file_observations_match
-    mode = stat.S_IFREG | 0o600
+    path_mode = stat.S_IFREG | 0o777
+    handle_mode = stat.S_IFREG | 0o666
     path_state = SimpleNamespace(
         observation_domain="path",
         st_birthtime_ns=100,
         st_ctime_ns=100,
         st_dev=11,
         st_ino=22,
-        st_mode=mode,
+        st_mode=path_mode,
         st_mtime_ns=300,
         st_size=len(expected),
     )
@@ -94,7 +95,7 @@ def test_bounded_reader_uses_cross_observation_contract(
         st_ctime_ns=200,
         st_dev=11,
         st_ino=22,
-        st_mode=mode,
+        st_mode=handle_mode,
         st_mtime_ns=300,
         st_size=len(expected),
     )
@@ -112,6 +113,7 @@ def test_bounded_reader_uses_cross_observation_contract(
         "sys",
         SimpleNamespace(platform="win32", version_info=(3, 12, 13, "final", 0)),
     )
+    monkeypatch.setattr(rehearsal, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(rehearsal, "path_handle_file_observations_match", observed_match)
     payload, observation = rehearsal._read_regular(
         path,
@@ -122,12 +124,41 @@ def test_bounded_reader_uses_cross_observation_contract(
     assert payload == expected
     assert path_state.st_birthtime_ns == handle_state.st_birthtime_ns
     assert path_state.st_ctime_ns != handle_state.st_ctime_ns
+    assert path_state.st_mode != handle_state.st_mode
+    assert stat.S_IFMT(path_state.st_mode) == stat.S_IFMT(handle_state.st_mode)
     assert comparisons == [("path", "handle"), ("path", "handle")]
     assert observation.device == 11
     assert observation.inode == 22
     assert observation.size == len(payload)
     assert observation.modified_ns == 300
     assert observation.changed_ns == 200
+
+
+def test_bounded_reader_retains_posix_cross_observation_mode_check(monkeypatch):
+    path_state = SimpleNamespace(
+        st_ctime_ns=100,
+        st_dev=11,
+        st_ino=22,
+        st_mode=stat.S_IFREG | 0o600,
+        st_mtime_ns=300,
+        st_size=4,
+    )
+    handle_state = SimpleNamespace(
+        st_ctime_ns=100,
+        st_dev=11,
+        st_ino=22,
+        st_mode=stat.S_IFREG | 0o644,
+        st_mtime_ns=300,
+        st_size=4,
+    )
+    monkeypatch.setattr(
+        inventory,
+        "sys",
+        SimpleNamespace(platform="linux", version_info=(3, 12, 13, "final", 0)),
+    )
+    monkeypatch.setattr(rehearsal, "sys", SimpleNamespace(platform="linux"))
+
+    assert not rehearsal._path_handle_observations_match(path_state, handle_state)
 
 
 def test_rehearsal_uses_one_fixed_command_and_a_strict_environment(

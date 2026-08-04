@@ -86,8 +86,13 @@ def _path_handle_observations_match(
     path_state: os.stat_result,
     handle_state: os.stat_result,
 ) -> bool:
+    path_mode = path_state.st_mode
+    handle_mode = handle_state.st_mode
+    if sys.platform == "win32":
+        path_mode = stat.S_IFMT(path_mode)
+        handle_mode = stat.S_IFMT(handle_mode)
     return (
-        path_state.st_mode == handle_state.st_mode
+        path_mode == handle_mode
         and path_handle_file_observations_match(path_state, handle_state)
     )
 

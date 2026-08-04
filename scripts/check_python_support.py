@@ -433,6 +433,15 @@ def _field(digest: "hashlib._Hash", payload: bytes) -> None:
     digest.update(payload)
 
 
+def _same_file_state(state: os.stat_result) -> tuple[int, int, int, int]:
+    return state.st_dev, state.st_ino, state.st_mode, state.st_size
+
+
+def _path_handle_file_state(state: os.stat_result) -> tuple[int, int, int, int]:
+    mode = stat.S_IFMT(state.st_mode) if sys.platform == "win32" else state.st_mode
+    return state.st_dev, state.st_ino, mode, state.st_size
+
+
 def fixture_tree_evidence(root: Path) -> dict:
     """Return a canonical, bounded inventory digest for one hostile fixture tree."""
     try:
@@ -515,7 +524,7 @@ def fixture_tree_evidence(root: Path) -> dict:
                         raise FixtureEvidenceError(
                             f"fixture entry changed type while opening {relative_path!r}"
                         )
-                    if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    if _path_handle_file_state(before) != _path_handle_file_state(opened):
                         raise FixtureEvidenceError(
                             f"fixture entry changed while opening {relative_path!r}"
                         )
@@ -535,9 +544,10 @@ def fixture_tree_evidence(root: Path) -> dict:
                 raise FixtureEvidenceError(
                     f"cannot read fixture entry {relative_path!r}: {exc}"
                 ) from exc
-            identity_before = (before.st_dev, before.st_ino, before.st_mode, before.st_size)
-            identity_after = (finished.st_dev, finished.st_ino, finished.st_mode, finished.st_size)
-            if identity_before != identity_after or observed_size != finished.st_size:
+            if (
+                _same_file_state(opened) != _same_file_state(finished)
+                or observed_size != finished.st_size
+            ):
                 raise FixtureEvidenceError(f"fixture entry changed while reading {relative_path!r}")
             try:
                 final_path = child.stat(follow_symlinks=False)
@@ -545,13 +555,11 @@ def fixture_tree_evidence(root: Path) -> dict:
                 raise FixtureEvidenceError(
                     f"cannot recheck fixture entry {relative_path!r}: {exc}"
                 ) from exc
-            final_identity = (
-                final_path.st_dev,
-                final_path.st_ino,
-                final_path.st_mode,
-                final_path.st_size,
-            )
-            if identity_before != final_identity:
+            if (
+                _same_file_state(before) != _same_file_state(final_path)
+                or _path_handle_file_state(final_path)
+                != _path_handle_file_state(finished)
+            ):
                 raise FixtureEvidenceError(f"fixture entry changed after reading {relative_path!r}")
             total_bytes += observed_size
             entries.append(

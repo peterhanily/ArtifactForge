@@ -163,7 +163,17 @@ The path-to-handle comparison now lives in the shared filesystem inventory layer
 Benchmark v3 report verification, Fixture Core path ingress and the publish rehearsal use the
 same rule, closing three additional Windows-capable readers that made the same invalid ctime
 comparison. Each caller still owns its regular-file, link, reparse, size, exact-length and
-same-domain mutation checks.
+same-domain mutation checks. On Windows, the publish rehearsal compares file type across path
+and handle observations without requiring identical permission bits because path stats infer
+execute bits from executable filename extensions while handle stats have no filename. The
+zero-dependency Python-support fixture evidence reader applies the same Windows-only rule while
+retaining full permission modes in its evidence and same-domain mutation checks. POSIX
+path-to-handle comparisons remain full-mode checks.
+
+The Windows native CLI now selects its report schema before observation begins. An exception
+raised before the native report exists is preserved in a canonical schema-v5 failure record
+instead of being replaced by an invalid-envelope error from the stale schema-v4 fallback. An
+exception type supplies the diagnostic when the exception itself has no message.
 
 ### Security
 

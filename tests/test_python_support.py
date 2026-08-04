@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import stat
 import sys
 from types import SimpleNamespace
 
@@ -401,6 +402,126 @@ def test_fixture_tree_evidence_detects_byte_path_and_mode_changes(tmp_path):
     if os.name == "posix":
         os.chmod(root / "renamed", 0o600)
         assert fixture_tree_evidence(root)["tree_sha256"] != path_changed
+
+
+def test_fixture_tree_evidence_accepts_windows_executable_mode_projection(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "fixture"
+    root.mkdir()
+    payload = root / "payload.exe"
+    payload.write_bytes(b"inert executable bytes")
+    payload.chmod(0o777)
+    path_mode = payload.lstat().st_mode
+    real_fstat = fixture_tree_evidence.__globals__["os"].fstat
+    observed_handle_modes = []
+
+    def windows_handle_fstat(descriptor):
+        state = real_fstat(descriptor)
+        handle_mode = state.st_mode & ~0o111
+        observed_handle_modes.append(handle_mode)
+        return SimpleNamespace(
+            st_dev=state.st_dev,
+            st_ino=state.st_ino,
+            st_mode=handle_mode,
+            st_size=state.st_size,
+        )
+
+    monkeypatch.setattr(
+        fixture_tree_evidence.__globals__["os"],
+        "fstat",
+        windows_handle_fstat,
+    )
+    monkeypatch.setitem(
+        fixture_tree_evidence.__globals__,
+        "sys",
+        SimpleNamespace(platform="win32"),
+    )
+
+    evidence = fixture_tree_evidence(root)
+    entry = next(item for item in evidence["entries"] if item["path"] == payload.name)
+    assert observed_handle_modes
+    assert all(stat.S_IFMT(mode) == stat.S_IFREG for mode in observed_handle_modes)
+    assert all(mode != path_mode for mode in observed_handle_modes)
+    assert entry["mode"] == f"{stat.S_IMODE(path_mode):04o}"
+
+
+def test_fixture_tree_evidence_retains_handle_mode_mutation_check(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "fixture"
+    root.mkdir()
+    payload = root / "payload.exe"
+    payload.write_bytes(b"inert executable bytes")
+    payload.chmod(0o777)
+    real_fstat = fixture_tree_evidence.__globals__["os"].fstat
+    observations = 0
+
+    def changing_handle_fstat(descriptor):
+        nonlocal observations
+        state = real_fstat(descriptor)
+        observations += 1
+        handle_mode = state.st_mode & ~0o111
+        if observations > 1:
+            handle_mode &= ~0o022
+        return SimpleNamespace(
+            st_dev=state.st_dev,
+            st_ino=state.st_ino,
+            st_mode=handle_mode,
+            st_size=state.st_size,
+        )
+
+    monkeypatch.setattr(
+        fixture_tree_evidence.__globals__["os"],
+        "fstat",
+        changing_handle_fstat,
+    )
+    monkeypatch.setitem(
+        fixture_tree_evidence.__globals__,
+        "sys",
+        SimpleNamespace(platform="win32"),
+    )
+
+    with pytest.raises(FixtureEvidenceError, match="changed while reading"):
+        fixture_tree_evidence(root)
+    assert observations == 2
+
+
+def test_fixture_tree_evidence_retains_posix_cross_api_mode_check(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "fixture"
+    root.mkdir()
+    payload = root / "payload.bin"
+    payload.write_bytes(b"fixture bytes")
+    payload.chmod(0o600)
+    real_fstat = fixture_tree_evidence.__globals__["os"].fstat
+
+    def changed_handle_fstat(descriptor):
+        state = real_fstat(descriptor)
+        return SimpleNamespace(
+            st_dev=state.st_dev,
+            st_ino=state.st_ino,
+            st_mode=stat.S_IFREG | 0o644,
+            st_size=state.st_size,
+        )
+
+    monkeypatch.setattr(
+        fixture_tree_evidence.__globals__["os"],
+        "fstat",
+        changed_handle_fstat,
+    )
+    monkeypatch.setitem(
+        fixture_tree_evidence.__globals__,
+        "sys",
+        SimpleNamespace(platform="linux"),
+    )
+
+    with pytest.raises(FixtureEvidenceError, match="changed while opening"):
+        fixture_tree_evidence(root)
 
 
 def test_fixture_tree_evidence_rejects_symlinks(tmp_path):

@@ -694,7 +694,12 @@ def _inventory_path_state_matches(
         or inventory_creation != current_creation
     ):
         return False
-    fields = ("st_size", "st_mtime_ns", *required_fields)
+    # Windows DirEntry snapshots obtain size from WIN32_FIND_DATA, while a fresh
+    # path stat can obtain it from FILE_STAT_BASIC_INFORMATION. Neither API defines
+    # a meaningful size for directories, so bind size only for non-directories.
+    fields = ("st_mtime_ns", *required_fields)
+    if not stat.S_ISDIR(current.st_mode):
+        fields = ("st_size", *fields)
     return _stat_fields_match(inventory, current, fields)
 
 

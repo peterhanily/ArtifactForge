@@ -175,6 +175,12 @@ raised before the native report exists is preserved in a canonical schema-v5 fai
 instead of being replaced by an invalid-envelope error from the stale schema-v4 fallback. An
 exception type supplies the diagnostic when the exception itself has no message.
 
+Windows native scene capture no longer compares directory `st_size` between a cached
+`DirEntry` snapshot and a fresh path stat. CPython can obtain those values from different
+Windows structures, and neither Python nor Win32 defines directory size as meaningful.
+Regular-file size, identity, type, creation time, modification time, file attributes,
+reparse metadata, directory name sets and same-domain observations remain strict.
+
 ### Security
 
 Benchmark v2 is frozen as permanently non-reportable, including suites carrying its historical

@@ -186,6 +186,8 @@ wheel tags alone are not promotion evidence.
 
 The Windows-native implementation prepares a byte-bound portable prerequisite on Ubuntu and
 observes private copies on fixed `windows-2025` with Microsoft-signed PowerShell and Visual C++
-inspection tools. It never executes an emitted PE. Its first successful hosted Windows run is
-still required evidence; unit and mutation tests on another host do not substitute for that
-observation.
+inspection tools. Target-bearing observations require PowerShell 7.5 or later and use
+`-CommandWithArgs` so literal paths stay separate from PowerShell source. The signed-tool
+version record must agree with the in-process `$PSVersionTable` observation. It never executes
+an emitted PE. Its first successful hosted Windows run is still required evidence; unit and
+mutation tests on another host do not substitute for that observation.

@@ -72,9 +72,11 @@ EXPECTED_ARCHIVE_TIMESTAMP = "2020-02-02T00:00:00Z"
 EXPECTED_DEV_REQUIREMENTS = (
     "dissect-target==3.25.1",
     "jsonschema>=4.23,<5",
+    "liblnk-python==20260525",
     "libregf-python",
     "libscca-python==20260527",
     "lief",
+    "LnkParse3==1.6.0",
     "macholib",
     "pefile",
     "pyelftools==0.33",
@@ -88,9 +90,11 @@ EXPECTED_DEV_REQUIREMENTS = (
 EXPECTED_METADATA_REQUIREMENTS = (
     "dissect-target==3.25.1",
     "jsonschema<5,>=4.23",
+    "liblnk-python==20260525",
     "libregf-python",
     "libscca-python==20260527",
     "lief",
+    "lnkparse3==1.6.0",
     "macholib",
     "pefile",
     "pyelftools==0.33",

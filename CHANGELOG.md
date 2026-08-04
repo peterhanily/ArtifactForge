@@ -124,6 +124,30 @@ It correctly describes Fixture ABI v2 logical modes, macOS records as modeled ev
 Task/Shell-Link records as references rather than activation. The EvidenceForge review drafts
 and all active technical guides received the same claim-boundary and plain-language pass.
 
+### Fixed
+
+Windows-native observations now use PowerShell's argument-aware `-CommandWithArgs` boundary
+whenever a target path is supplied. The previous `-Command` invocation treated the target as
+additional PowerShell source, so a valid filename containing an apostrophe failed before the
+native Prefetch canary ran. The hosted contract keeps the hostile literal-path control and now
+asserts the exact argument transport through a named parameter and `--` separator. The
+attestor rejects PowerShell older than 7.5 before its first target-bearing observation and
+requires its signed-tool version record to agree with `$PSVersionTable`. This evidence change
+advances the Windows native report from schema v4 to v5.
+
+Release evidence now includes the exact liblnk and LnkParse3 oracle requirements already
+declared by the project and lock. A repository-backed regression test checks the real
+`pyproject.toml` and `uv.lock`, closing the self-consistent synthetic-fixture gap that allowed
+the stale 14-requirement contract to pass unit tests.
+
+The CI sample baseline now lives under `RUNNER_TEMP`, outside the checkout. A clean-worktree
+preflight runs immediately before Gate 4, so sample regeneration cannot make a valid
+source-bound scorecard fail because of its own comparison copy.
+
+The generation overview now places each numbered step badge above its title. The badges and
+labels remain separate when GitHub scales the SVG, with no raster layer, filter, shadow, or
+blur effect.
+
 ### Security
 
 Benchmark v2 is frozen as permanently non-reportable, including suites carrying its historical

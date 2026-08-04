@@ -70,7 +70,8 @@ def test_gate4_ci_requires_a_fresh_current_source_scorecard():
     assert workflow.count("- name: Gate 4 — solvability") == 1
     assert re.search(
         r"- name: Gate 4 — solvability \(fresh current-source scorecard must pass\)\s+"
-        r"run: >-\s+uv run artifactforge scorecard --n 40\s+"
+        r"run: \|\s+test -z \"\$\(git status --porcelain --untracked-files=all\)\"\s+"
+        r"uv run artifactforge scorecard --n 40 \\\s+"
         r"--out \"\$RUNNER_TEMP/artifactforge-current-scorecard\.json\" --require-pass",
         workflow,
     )

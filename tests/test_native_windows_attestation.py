@@ -34,6 +34,7 @@ _load_prerequisite = _GLOBALS["_load_prerequisite"]
 _logical_zone_map = _GLOBALS["_logical_zone_map"]
 _native_file_hash = _GLOBALS["_native_file_hash"]
 _native_tools = _GLOBALS["_native_tools"]
+_powershell_json = _GLOBALS["_powershell_json"]
 _pe_attestation = _GLOBALS["_pe_attestation"]
 _pe_inert_profile = _GLOBALS["_pe_inert_profile"]
 _prefetch_artifacts = _GLOBALS["_prefetch_artifacts"]
@@ -43,6 +44,7 @@ _profile_artifacts = _GLOBALS["_profile_artifacts"]
 _read_regular = _GLOBALS["_read_regular"]
 _require_related_github_runs = _GLOBALS["_require_related_github_runs"]
 _require_microsoft_signature = _GLOBALS["_require_microsoft_signature"]
+_require_command_with_args_version = _GLOBALS["_require_command_with_args_version"]
 _run = _GLOBALS["_run"]
 _scene_capture = _GLOBALS["_scene_capture"]
 _timestamp = _GLOBALS["_timestamp"]
@@ -82,8 +84,9 @@ def _powershell_observation(result: object, label: str) -> dict:
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
-            "-Command",
+            "-CommandWithArgs",
             f"<fixed:{label}>",
+            "--",
             "<target>",
         ],
         "result_sha256": _canonical_digest(result),
@@ -534,7 +537,7 @@ def test_powershell_observations_pass_target_separately_and_use_literal_path(tmp
 
     def runner(command, **kwargs):
         calls.append((command, kwargs))
-        if "Get-FileHash" in command[-2]:
+        if "Get-FileHash" in command[-3]:
             stdout = json.dumps({"Algorithm": "SHA256", "Hash": "A" * 64})
         else:
             stdout = json.dumps(
@@ -560,10 +563,20 @@ def test_powershell_observations_pass_target_separately_and_use_literal_path(tmp
     assert digest == "a" * 64
     assert signature["Status"] == "NotSigned"
     for command, kwargs in calls:
-        assert "-LiteralPath" in command[-2]
+        assert command[-4] == "-CommandWithArgs"
+        assert "-LiteralPath" in command[-3]
+        assert command[-2] == "--"
         assert command[-1] == str(target)
         assert command[0] != str(target)
+        assert kwargs["recorded_argv"][-4] == "-CommandWithArgs"
+        assert kwargs["recorded_argv"][-2] == "--"
         assert kwargs["recorded_argv"][-1] == "<target>"
+
+    leading_dash = Path("-leading [literal] & apostrophe' target.bin")
+    _native_file_hash(leading_dash, "pwsh.exe", runner)
+    command, kwargs = calls[-1]
+    assert command[-2:] == ["--", str(leading_dash)]
+    assert kwargs["recorded_argv"][-2:] == ["--", "<target>"]
 
     if sys.platform == "win32":
         powershell = shutil.which("pwsh.exe") or shutil.which("pwsh")
@@ -588,6 +601,68 @@ def test_powershell_observations_pass_target_separately_and_use_literal_path(tmp
         assert literal.read_bytes() == payload
 
 
+def test_powershell_without_target_keeps_command_as_the_final_switch():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": '{"Ok":true}',
+        }
+
+    value, _evidence = _powershell_json(
+        "pwsh.exe",
+        "[ordered]@{Ok = $true} | ConvertTo-Json -Compress",
+        "no-target-control",
+        runner,
+    )
+    assert value == {"Ok": True}
+    command, kwargs = calls[0]
+    assert command[-2] == "-Command"
+    assert command[-1].startswith("[ordered]")
+    assert kwargs["recorded_argv"][-2:] == ["-Command", "<fixed:no-target-control>"]
+
+    def noisy_runner(_command, **noisy_kwargs):
+        return {
+            "argv": noisy_kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "unexpected diagnostic",
+            "stdout": '{"Ok":true}',
+        }
+
+    with pytest.raises(RuntimeError, match="unexpected stderr"):
+        _powershell_json(
+            "pwsh.exe",
+            "[ordered]@{Ok = $true} | ConvertTo-Json -Compress",
+            "stderr-control",
+            noisy_runner,
+        )
+
+
+def test_command_with_args_requires_supported_powershell_version():
+    assert _require_command_with_args_version(
+        {"returncode": 0, "stdout": "PowerShell 7.5.0", "stderr": ""}
+    ) == (7, 5, 0)
+    assert _require_command_with_args_version(
+        {"returncode": 0, "stdout": "PowerShell 7.6.4", "stderr": ""}
+    ) == (7, 6, 4)
+    with pytest.raises(RuntimeError, match="7.5 or later"):
+        _require_command_with_args_version(
+            {"returncode": 0, "stdout": "PowerShell 7.4.7", "stderr": ""}
+        )
+    with pytest.raises(RuntimeError, match="parse"):
+        _require_command_with_args_version(
+            {"returncode": 0, "stdout": "PowerShell unknown", "stderr": ""}
+        )
+    with pytest.raises(RuntimeError, match="parse"):
+        _require_command_with_args_version(
+            {"returncode": 0, "stdout": "PowerShell 7.7.0-preview.1", "stderr": ""}
+        )
+
+
 def test_task_and_shell_link_native_scripts_have_no_activation_surface():
     assert "$service.Connect()" in _TASK_XML_SCRIPT
     assert "$service.NewTask(0)" in _TASK_XML_SCRIPT
@@ -600,7 +675,7 @@ def test_task_and_shell_link_native_scripts_have_no_activation_surface():
     ):
         assert forbidden.casefold() not in _TASK_XML_SCRIPT.casefold()
 
-    assert "$shell.CreateShortcut($args[0])" in _SHELL_LINK_SCRIPT
+    assert "$shell.CreateShortcut($TargetPath)" in _SHELL_LINK_SCRIPT
     for forbidden in (".Save(", ".Resolve(", ".Run("):
         assert forbidden.casefold() not in _SHELL_LINK_SCRIPT.casefold()
 
@@ -718,7 +793,7 @@ def test_tool_discovery_uses_vswhere_and_numeric_latest_toolset(tmp_path, monkey
             stdout = str(installation)
         elif "installationVersion" in command:
             stdout = "17.14.37502.11"
-        elif "-Command" in command and "Get-AuthenticodeSignature" in command[-2]:
+        elif "-CommandWithArgs" in command and "Get-AuthenticodeSignature" in command[-3]:
             stdout = json.dumps(
                 {
                     "Status": "Valid",
@@ -836,7 +911,7 @@ def test_private_zone_identifier_is_removed_even_on_readback_failure(tmp_path, c
     target.write_bytes(default_bytes)
 
     def runner(command, **kwargs):
-        script = command[-2]
+        script = command[-3]
         path = Path(command[-1])
         stream = Path(f"{path}:Zone.Identifier")
         if "Get-Item" in script:
@@ -931,9 +1006,28 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
             },
             "winverifytrust": _valid_wintrust(),
         }
+    powershell_version = "PowerShell 7.6.3"
+    powershell_version_observation = {
+        "argv": ["<powershell>", "--version"],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": powershell_version,
+    }
+    tool_evidence["powershell"].update(
+        {
+            "version_observation": powershell_version_observation,
+            "version_stdout": powershell_version,
+            "version_stdout_sha256": hashlib.sha256(powershell_version.encode()).hexdigest(),
+        }
+    )
     tool_evidence["discovery"] = {"returncode": 0}
     monkeypatch.setitem(attest.__globals__, "_native_tools", lambda _runner: (tools, tool_evidence))
-    host = {"native": {"OSVersion": "mocked Windows"}}
+    host = {
+        "native": {
+            "OSVersion": "mocked Windows",
+            "PowerShellVersion": "7.6.3",
+        }
+    }
     monkeypatch.setitem(
         attest.__globals__,
         "_platform_evidence",
@@ -985,8 +1079,8 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
 
     def runner(command, **kwargs):
         observed_commands.append(command)
-        if "-Command" in command:
-            script = command[-2]
+        if "-CommandWithArgs" in command:
+            script = command[-3]
             path = Path(command[-1])
             stream = Path(f"{path}:Zone.Identifier")
             if "Schedule.Service" in script:
@@ -1087,6 +1181,16 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     assert observed_commands
     assert all(command[0] in tools.values() for command in observed_commands)
     assert json.loads(_canonical_json_bytes(report)) == report
+    mutated = json.loads(_canonical_json_bytes(report))
+    mutated["tools"]["initial"]["powershell"]["version_stdout"] = "PowerShell 7.6.2"
+    with pytest.raises(RuntimeError, match="PowerShell version evidence"):
+        _validate_native_report(mutated)
+
+    mutated = json.loads(_canonical_json_bytes(report))
+    mutated["artifacts"]["pe"][0]["get_file_hash"]["observation"]["argv"][-4] = "-Command"
+    with pytest.raises(RuntimeError, match="Get-FileHash observation"):
+        _validate_native_report(mutated)
+
     mutated = json.loads(_canonical_json_bytes(report))
     mutated["portable_prerequisite"]["post_observation"]["sha256"] = "0" * 64
     with pytest.raises(RuntimeError, match="prerequisite post-state"):

@@ -351,9 +351,11 @@ jobs:
       # Every file, including all three databases, must match across OS and architecture.
       - name: Samples — regenerate and byte-diff against what is committed
         run: |
-          cp -r samples samples.committed
+          SAMPLES_BASELINE="$RUNNER_TEMP/artifactforge-samples-committed"
+          test ! -e "$SAMPLES_BASELINE"
+          cp -R samples "$SAMPLES_BASELINE"
           PY=.venv/bin/python AF=.venv/bin/artifactforge ./scripts/make-samples.sh
-          diff -r samples.committed samples
+          diff -r "$SAMPLES_BASELINE" samples
           echo "every sample artifact is byte-identical across OS and architecture"
           for db in knowledgeC.db TCC.db QuarantineEventsV2; do
             uv run python -c "
@@ -383,8 +385,9 @@ jobs:
       # declared test permits a Type-I rejection, so that outcome cannot be a deterministic
       # build invariant.
       - name: Gate 4 — solvability (fresh current-source scorecard must pass)
-        run: >-
-          uv run artifactforge scorecard --n 40
+        run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
+          uv run artifactforge scorecard --n 40 \
           --out "$RUNNER_TEMP/artifactforge-current-scorecard.json" --require-pass
 
       - name: Determinism — regenerate and byte-diff
@@ -1057,8 +1060,8 @@ jobs:
               sort_keys=True,
           ) + "\n").encode()
           assert raw == canonical
-          assert report["schema"] == "artifactforge-native-windows-attestation-v4"
-          assert report["schema_version"] == 4
+          assert report["schema"] == "artifactforge-native-windows-attestation-v5"
+          assert report["schema_version"] == 5
           assert report["verdict"] == "pass", report["failures"]
           assert report["claim_scope"]["emitted_pe_execution"] is False
           assert report["producer"]["source"]["worktree_clean"] is True

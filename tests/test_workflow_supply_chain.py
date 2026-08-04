@@ -1014,3 +1014,22 @@ def test_release_inputs_do_not_dirty_the_checkout_before_source_capture():
     assert text.index('test -z "$(git status --porcelain --untracked-files=all)"') < text.index(
         "PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv build"
     )
+
+
+def test_sample_regeneration_keeps_gate4_source_provenance_clean():
+    text = (WORKFLOWS / "ci.yml").read_text()
+    samples_start = text.index("- name: Samples — regenerate and byte-diff")
+    gate4_start = text.index("- name: Gate 4 — solvability", samples_start)
+    determinism_start = text.index("- name: Determinism — regenerate", gate4_start)
+    samples = text[samples_start:gate4_start]
+    gate4 = text[gate4_start:determinism_start]
+
+    assert 'SAMPLES_BASELINE="$RUNNER_TEMP/artifactforge-samples-committed"' in samples
+    assert 'cp -R samples "$SAMPLES_BASELINE"' in samples
+    assert 'diff -r "$SAMPLES_BASELINE" samples' in samples
+    assert "samples.committed" not in samples
+
+    cleanliness = 'test -z "$(git status --porcelain --untracked-files=all)"'
+    scorecard = "uv run artifactforge scorecard --n 40"
+    assert cleanliness in gate4
+    assert gate4.index(cleanliness) < gate4.index(scorecard)

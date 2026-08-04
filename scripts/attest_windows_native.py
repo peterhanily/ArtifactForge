@@ -76,7 +76,7 @@ from artifactforge.inventory import canonical_relative_paths, validate_relative_
 
 
 PORTABLE_SCHEMA_ID = "artifactforge-native-windows-portable-prerequisite-v1"
-SCHEMA_ID = "artifactforge-native-windows-attestation-v4"
+SCHEMA_ID = "artifactforge-native-windows-attestation-v5"
 CANONICALIZATION = "UTF-8 JSON, sorted keys, compact separators, no NaN, one trailing LF"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PORTABLE_DISTRIBUTIONS = (
@@ -92,6 +92,8 @@ _PORTABLE_DISTRIBUTIONS = (
     "windowsprefetch",
 )
 _POWERSHELL = "pwsh"
+_MIN_POWERSHELL_COMMAND_WITH_ARGS = (7, 5, 0)
+_POWERSHELL_VERSION = re.compile(r"^PowerShell\s+([0-9]+)\.([0-9]+)\.([0-9]+)$")
 _ZONE_STREAM = "Zone.Identifier"
 _PE_MAGIC = b"MZ"
 _HEX_40 = re.compile(r"^[0-9a-f]{40}$")
@@ -347,6 +349,7 @@ def _capture_bounded_process(
             env=None if env is None else dict(env),
             start_new_session=os.name == "posix",
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
         )
     except Exception:
@@ -2015,8 +2018,14 @@ def _prefetch_corruption_control(
 
 
 _SIGNATURE_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
 $ErrorActionPreference = 'Stop'
-$signature = Get-AuthenticodeSignature -LiteralPath $args[0]
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
+$signature = Get-AuthenticodeSignature -LiteralPath $TargetPath
 $certificate = $signature.SignerCertificate
 [ordered]@{
   Status = $signature.Status.ToString()
@@ -2030,33 +2039,57 @@ $certificate = $signature.SignerCertificate
 """.strip()
 
 _FILE_HASH_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
 $ErrorActionPreference = 'Stop'
-$hash = Get-FileHash -LiteralPath $args[0] -Algorithm SHA256
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
+$hash = Get-FileHash -LiteralPath $TargetPath -Algorithm SHA256
 [ordered]@{Algorithm = [string]$hash.Algorithm; Hash = [string]$hash.Hash} |
   ConvertTo-Json -Compress
 """.strip()
 
 _ADS_READ_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
 $ErrorActionPreference = 'Stop'
-$bytes = [byte[]](Get-Content -LiteralPath $args[0] -Stream 'Zone.Identifier' -AsByteStream -Raw)
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
+$bytes = [byte[]](Get-Content -LiteralPath $TargetPath -Stream 'Zone.Identifier' -AsByteStream -Raw)
 [ordered]@{Length = $bytes.Length; Base64 = [Convert]::ToBase64String($bytes)} |
   ConvertTo-Json -Compress
 """.strip()
 
 _ADS_EXISTS_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
 $ErrorActionPreference = 'Stop'
-$stream = Get-Item -LiteralPath $args[0] -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
+$stream = Get-Item -LiteralPath $TargetPath -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue
 [ordered]@{Exists = ($null -ne $stream)} | ConvertTo-Json -Compress
 """.strip()
 
 _TASK_XML_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
 $ErrorActionPreference = 'Stop'
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
 function Get-Sha256Hex([byte[]]$Bytes) {
   $hasher = [Security.Cryptography.SHA256]::Create()
   try { $digest = $hasher.ComputeHash($Bytes) } finally { $hasher.Dispose() }
   return [BitConverter]::ToString($digest).Replace('-', '')
 }
-$bytes = [IO.File]::ReadAllBytes($args[0])
+$bytes = [IO.File]::ReadAllBytes($TargetPath)
 if ($bytes.Length -lt 4 -or $bytes[0] -ne 0xff -or $bytes[1] -ne 0xfe) {
   throw 'Task XML is not UTF-16LE with a BOM'
 }
@@ -2079,15 +2112,21 @@ $roundTripBytes = [Text.Encoding]::Unicode.GetBytes($roundTrip)
 """.strip()
 
 _SHELL_LINK_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
 $ErrorActionPreference = 'Stop'
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
 function Get-Sha256Hex([byte[]]$Bytes) {
   $hasher = [Security.Cryptography.SHA256]::Create()
   try { $digest = $hasher.ComputeHash($Bytes) } finally { $hasher.Dispose() }
   return [BitConverter]::ToString($digest).Replace('-', '')
 }
-$bytes = [IO.File]::ReadAllBytes($args[0])
+$bytes = [IO.File]::ReadAllBytes($TargetPath)
 $shell = New-Object -ComObject 'WScript.Shell'
-$shortcut = $shell.CreateShortcut($args[0])
+$shortcut = $shell.CreateShortcut($TargetPath)
 [ordered]@{
   ApiSequence = 'WScript.Shell.CreateShortcut-read-only'
   Arguments = [string]$shortcut.Arguments
@@ -2119,8 +2158,11 @@ $ErrorActionPreference = 'Stop'
 def _json_stdout(record: dict, where: str) -> dict:
     if record.get("returncode") != 0:
         raise RuntimeError(
-            f"{where} failed with exit {record.get('returncode')}: {record.get('stderr', '')}"
+            f"{where} failed with exit {record.get('returncode')}: "
+            f"stderr={record.get('stderr', '')!r}; stdout={record.get('stdout', '')!r}"
         )
+    if record.get("stderr") != "":
+        raise RuntimeError(f"{where} returned unexpected stderr: {record.get('stderr')!r}")
     stdout = record.get("stdout")
     if type(stdout) is not str or not stdout:
         raise RuntimeError(f"{where} returned no JSON")
@@ -2141,20 +2183,28 @@ def _powershell_json(
     *,
     target: Path | None = None,
 ) -> tuple[dict, dict]:
-    command = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
+    command_switch = "-CommandWithArgs" if target is not None else "-Command"
+    command = [
+        powershell,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        command_switch,
+        script,
+    ]
     recorded = [
         "<pwsh>",
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-Command",
+        command_switch,
         f"<fixed:{label}>",
     ]
     redactions = {}
     if target is not None:
         target_text = str(target)
-        command.append(target_text)
-        recorded.append("<target>")
+        command.extend(["--", target_text])
+        recorded.extend(["--", "<target>"])
         redactions[target_text] = "<target>"
     record = command_runner(
         command,
@@ -2478,6 +2528,18 @@ def _find_vswhere() -> Path:
     raise RuntimeError("vswhere.exe was not found in the fixed Visual Studio Installer location")
 
 
+def _require_command_with_args_version(record: Mapping[str, object]) -> tuple[int, int, int]:
+    if record.get("returncode") != 0 or type(record.get("stdout")) is not str:
+        raise RuntimeError("cannot obtain PowerShell version evidence")
+    match = _POWERSHELL_VERSION.fullmatch(record["stdout"].strip())
+    if match is None:
+        raise RuntimeError("cannot parse PowerShell version evidence")
+    version = tuple(int(component) for component in match.groups())
+    if version < _MIN_POWERSHELL_COMMAND_WITH_ARGS:
+        raise RuntimeError("Windows native attestation requires PowerShell 7.5 or later")
+    return version
+
+
 def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str], dict]:
     powershell = _find_powershell()
     vswhere = _find_vswhere()
@@ -2489,6 +2551,11 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
         name: _independent_trust_observation(path, initial[name], f"native tool {name}")
         for name, path in (("powershell", powershell), ("vswhere", vswhere))
     }
+    powershell_version = command_runner(
+        [str(powershell), "--version"],
+        recorded_argv=["<powershell>", "--version"],
+    )
+    _require_command_with_args_version(powershell_version)
     authenticode = {}
     for name, path in (("powershell", powershell), ("vswhere", vswhere)):
         signature, observation = _authenticode(path, str(powershell), command_runner)
@@ -2601,9 +2668,13 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
     }
     evidence = {}
     for name, command in version_commands.items():
-        record = command_runner(
-            command,
-            recorded_argv=[f"<{name}>", *command[1:]],
+        record = (
+            powershell_version
+            if name == "powershell"
+            else command_runner(
+                command,
+                recorded_argv=[f"<{name}>", *command[1:]],
+            )
         )
         if record["returncode"] != 0 or not record["stdout"]:
             raise RuntimeError(f"cannot obtain {name} version evidence: {record['stderr']}")
@@ -3283,7 +3354,7 @@ def attest(
         },
         "producer": {"name": "ArtifactForge", "source": source},
         "schema": SCHEMA_ID,
-        "schema_version": 4,
+        "schema_version": 5,
     }
 
     tools: dict[str, str] | None = None
@@ -3300,6 +3371,9 @@ def attest(
                 tools, tool_evidence = _native_tools(command_runner)
                 report["tools"] = {"initial": tool_evidence}
                 report["host"] = _platform_evidence(tools["powershell"], command_runner)
+                _validate_powershell_version_evidence(
+                    tool_evidence["powershell"], report["host"]
+                )
                 positive_control, control_path = _signed_positive_control(
                     tools["powershell"], command_runner
                 )
@@ -3459,8 +3533,9 @@ def _validate_powershell_observation(
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-Command",
+        "-CommandWithArgs",
         f"<fixed:{label}>",
+        "--",
         "<target>",
     ]
     if (
@@ -3477,12 +3552,38 @@ def _validate_powershell_observation(
         or observation["argv"] != expected_argv
         or observation["result_sha256"] != _canonical_digest(result)
         or observation["returncode"] != 0
-        or type(observation["stderr"]) is not str
+        or observation["stderr"] != ""
         or _HEX_64.fullmatch(str(observation["stdout_sha256"])) is None
         or type(observation["stdout_size"]) is not int
         or not 1 <= observation["stdout_size"] <= MAX_COMMAND_OUTPUT_BYTES
     ):
         raise RuntimeError(f"passing native attestation has invalid {where} observation")
+
+
+def _validate_powershell_version_evidence(tool: object, host: object) -> None:
+    if type(tool) is not dict or type(host) is not dict:
+        raise RuntimeError("passing native attestation has invalid PowerShell version evidence")
+    observation = tool.get("version_observation")
+    stdout = tool.get("version_stdout")
+    if (
+        type(observation) is not dict
+        or set(observation) != {"argv", "returncode", "stderr", "stdout"}
+        or observation["argv"] != ["<powershell>", "--version"]
+        or observation["returncode"] != 0
+        or observation["stderr"] != ""
+        or type(stdout) is not str
+        or observation["stdout"] != stdout
+        or tool.get("version_stdout_sha256") != hashlib.sha256(stdout.encode()).hexdigest()
+    ):
+        raise RuntimeError("passing native attestation has invalid PowerShell version evidence")
+    _require_command_with_args_version(observation)
+    native = host.get("native")
+    if (
+        type(native) is not dict
+        or type(native.get("PowerShellVersion")) is not str
+        or stdout != f"PowerShell {native['PowerShellVersion']}"
+    ):
+        raise RuntimeError("PowerShell version probes disagree")
 
 
 def _validate_native_hash_evidence(evidence: object, expected_sha256: str, where: str) -> None:
@@ -4274,7 +4375,7 @@ def _validate_native_report(report: object) -> None:
     if (
         report.get("canonicalization") != CANONICALIZATION
         or report.get("schema") != SCHEMA_ID
-        or report.get("schema_version") != 4
+        or report.get("schema_version") != 5
         or report.get("verdict") not in {"pass", "fail"}
         or type(report.get("failures")) is not list
         or not all(type(item) is str and item for item in report["failures"])
@@ -4558,6 +4659,7 @@ def _validate_native_report(report: object) -> None:
             f"reported native tool {name}",
             independent_trust=initial.get("winverifytrust"),
         )
+    _validate_powershell_version_evidence(tool_initial.get("powershell"), host)
     positive = report.get("positive_control")
     if type(positive) is not dict:
         raise RuntimeError("passing native attestation has invalid positive-control evidence")
@@ -4731,7 +4833,7 @@ def main() -> int:
         else:
             prerequisite = Path(os.path.abspath(args.prerequisite))
             report = attest(fixture, prerequisite)
-            schema_version = 4
+            schema_version = 5
             schema = SCHEMA_ID
     except Exception as exc:  # noqa: BLE001 - emit a canonical machine-readable failure
         report = {

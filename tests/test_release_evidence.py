@@ -126,7 +126,9 @@ def _fixture_locked_version(name: str) -> str:
     return {
         "dissect-target": "3.25.1",
         "jsonschema": "4.23.0",
+        "liblnk-python": "20260525",
         "libscca-python": "20260527",
+        "lnkparse3": "1.6.0",
         "pyelftools": "0.33",
         "pytest": "8.0.0",
         "pyxdg": "0.28",
@@ -420,6 +422,23 @@ def _patch_inputs(monkeypatch, *, clean=True):
 
     monkeypatch.setattr(release, "_bound_uv_exports", bound_exports)
     return observed_source
+
+
+def test_repository_dependency_files_match_the_closed_release_contract():
+    repository = Path(__file__).resolve().parents[1]
+    project = release._project_contract(
+        (repository / "pyproject.toml").read_bytes(),
+        expected_version=release.__version__,
+    )
+    locked = release._locked_development_contract(
+        (repository / "uv.lock").read_bytes(),
+        project_version=release.__version__,
+    )
+    assert project["dev_requirements"] == release._requirement_contract(
+        release.EXPECTED_METADATA_REQUIREMENTS,
+        where="expected wheel metadata requirements",
+    )
+    assert locked["component_count"] >= len(release.EXPECTED_DEV_REQUIREMENTS)
 
 
 def test_bound_uv_exports_uses_one_private_snapshot_and_rejects_original_swap(

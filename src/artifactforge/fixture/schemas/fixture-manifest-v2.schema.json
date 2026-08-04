@@ -1,0 +1,820 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:artifactforge:schema:fixture-manifest:v2",
+  "title": "ArtifactForge logical-filesystem fixture manifest v2",
+  "$comment": "This is a structural companion to the authoritative Python model. Canonical bytes/NFC, duplicate JSON-member rejection, sorted node/blob order, reversible guest mappings, parent/orphan and case-fold collision rules, canonical base64 plus blob size/digest equations, aggregate counters, recipe/tree digests, exact clock derivation, SID numeric ranges, name-keyed xattr/ADS uniqueness, and USTAR representability are enforced by artifactforge.fixture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "canonicalization",
+    "recipe_digest_domain",
+    "purpose",
+    "generator",
+    "recipe",
+    "recipe_sha256",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "artifactforge-fixture-manifest-v2"
+    },
+    "canonicalization": {
+      "const": "artifactforge-canonical-json-v1"
+    },
+    "recipe_digest_domain": {
+      "const": "artifactforge-fixture-recipe-digest-v2"
+    },
+    "purpose": {
+      "$ref": "#/$defs/purpose"
+    },
+    "generator": {
+      "$ref": "#/$defs/generator"
+    },
+    "recipe": {
+      "$ref": "#/$defs/recipe"
+    },
+    "recipe_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "payload": {
+      "$ref": "#/$defs/payload"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "recipe": {
+            "properties": {
+              "family": {
+                "const": "windows"
+              }
+            },
+            "required": [
+              "family"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "family": {
+                "const": "windows"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "recipe": {
+            "properties": {
+              "family": {
+                "const": "macos"
+              }
+            },
+            "required": [
+              "family"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "family": {
+                "const": "macos"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "recipe": {
+            "properties": {
+              "family": {
+                "const": "linux"
+              }
+            },
+            "required": [
+              "family"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "family": {
+                "const": "linux"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "purpose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "benchmark_eligible"
+      ],
+      "properties": {
+        "kind": {
+          "const": "public-reproducible-fixture"
+        },
+        "benchmark_eligible": {
+          "const": false
+        }
+      }
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "abi",
+        "producer_profile"
+      ],
+      "properties": {
+        "name": {
+          "const": "artifactforge"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[\\x20-\\x7e]+$"
+        },
+        "abi": {
+          "const": "artifactforge-fixture-generator-v2"
+        },
+        "producer_profile": {
+          "const": "artifactforge-fixture-producer-v2"
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "hostname",
+        "username"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "windows-loose-v2",
+            "macos-14-loose-v2",
+            "linux-glibc-x86_64-loose-v2"
+          ]
+        },
+        "hostname": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$"
+        },
+        "username": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        }
+      }
+    },
+    "windows_username": {
+      "type": "string",
+      "pattern": "^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\..*)?$)(?!.*[.]$)[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "$comment": "Matches the model's reserved DOS device-name and trailing-dot restrictions for a single Windows path component."
+    },
+    "causal_clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "anchor_unix_ns"
+      ],
+      "properties": {
+        "profile": {
+          "const": "artifactforge-causal-clock-v1"
+        },
+        "anchor_unix_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807,
+          "multipleOf": 1000000000
+        }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "purpose",
+        "fixture_id",
+        "family",
+        "profile",
+        "seed_hex",
+        "causal_clock"
+      ],
+      "properties": {
+        "schema": {
+          "const": "artifactforge-fixture-spec-v2"
+        },
+        "purpose": {
+          "const": "public-reproducible-fixture"
+        },
+        "fixture_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "family": {
+          "enum": [
+            "windows",
+            "macos",
+            "linux"
+          ]
+        },
+        "profile": {
+          "$ref": "#/$defs/profile"
+        },
+        "seed_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "causal_clock": {
+          "$ref": "#/$defs/causal_clock"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "windows"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "properties": {
+                  "id": {
+                    "const": "windows-loose-v2"
+                  },
+                  "username": {
+                    "$ref": "#/$defs/windows_username"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "macos"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "properties": {
+                  "id": {
+                    "const": "macos-14-loose-v2"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "linux"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "profile": {
+                "properties": {
+                  "id": {
+                    "const": "linux-glibc-x86_64-loose-v2"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "data_base64",
+        "size",
+        "sha256"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._$-]{0,254}$"
+        },
+        "data_base64": {
+          "type": "string",
+          "maxLength": 87384,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "linux_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "mode",
+        "uid",
+        "gid",
+        "atime_unix_ns",
+        "mtime_unix_ns",
+        "ctime_unix_ns"
+      ],
+      "properties": {
+        "schema": {
+          "const": "artifactforge-linux-posix-metadata-v2"
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "uid": {
+          "$ref": "#/$defs/owner_id"
+        },
+        "gid": {
+          "$ref": "#/$defs/owner_id"
+        },
+        "atime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "mtime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "ctime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        }
+      }
+    },
+    "macos_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "mode",
+        "uid",
+        "gid",
+        "atime_unix_ns",
+        "mtime_unix_ns",
+        "ctime_unix_ns",
+        "birthtime_unix_ns",
+        "xattrs"
+      ],
+      "properties": {
+        "schema": {
+          "const": "artifactforge-macos-metadata-v2"
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "uid": {
+          "$ref": "#/$defs/owner_id"
+        },
+        "gid": {
+          "$ref": "#/$defs/owner_id"
+        },
+        "atime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "mtime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "ctime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "birthtime_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "xattrs": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "$comment": "artifactforge.fixture additionally requires case-sensitive uniqueness by blob name, even when two objects have different bodies.",
+          "items": {
+            "$ref": "#/$defs/blob"
+          }
+        }
+      }
+    },
+    "windows_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "owner_sid",
+        "attributes",
+        "creation_unix_ns",
+        "access_unix_ns",
+        "write_unix_ns",
+        "change_unix_ns",
+        "streams"
+      ],
+      "properties": {
+        "schema": {
+          "const": "artifactforge-windows-metadata-v2"
+        },
+        "owner_sid": {
+          "type": "string",
+          "maxLength": 184,
+          "pattern": "^S-1-(?:0|[1-9][0-9]{0,14})(?:-(?:0|[1-9][0-9]{0,9})){1,15}$",
+          "$comment": "The Python model additionally enforces authority < 2^48 and every subauthority < 2^32."
+        },
+        "attributes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 11,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "ARCHIVE",
+              "COMPRESSED",
+              "DIRECTORY",
+              "ENCRYPTED",
+              "HIDDEN",
+              "NORMAL",
+              "NOT_CONTENT_INDEXED",
+              "OFFLINE",
+              "READONLY",
+              "SYSTEM",
+              "TEMPORARY"
+            ]
+          }
+        },
+        "creation_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "access_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "write_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "change_unix_ns": {
+          "$ref": "#/$defs/unix_ns"
+        },
+        "streams": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "$comment": "artifactforge.fixture additionally requires case-insensitive uniqueness by stream name, even when two objects have different bodies.",
+          "items": {
+            "$ref": "#/$defs/blob"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "attributes": {
+                "contains": {
+                  "const": "NORMAL"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "maxItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "owner_id": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "unix_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "guest_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[\\x20-\\x7e]+$"
+    },
+    "served_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)(?:\\.{1,2})(?:/|$))(?!.*//)[\\x20-\\x7e]+$"
+    },
+    "directory_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "guest_path",
+        "served_path",
+        "metadata"
+      ],
+      "properties": {
+        "guest_path": {
+          "$ref": "#/$defs/guest_path"
+        },
+        "served_path": {
+          "$ref": "#/$defs/served_path"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "file_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "guest_path",
+        "served_path",
+        "size",
+        "sha256",
+        "metadata"
+      ],
+      "properties": {
+        "guest_path": {
+          "$ref": "#/$defs/guest_path"
+        },
+        "served_path": {
+          "$ref": "#/$defs/served_path"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "family",
+        "canonicalization",
+        "digest_domain",
+        "directory_count",
+        "file_count",
+        "regular_file_bytes",
+        "metadata_blob_count",
+        "metadata_blob_bytes",
+        "total_bound_bytes",
+        "tree_sha256",
+        "directories",
+        "files"
+      ],
+      "properties": {
+        "root": {
+          "const": "artifacts"
+        },
+        "family": {
+          "enum": [
+            "windows",
+            "macos",
+            "linux"
+          ]
+        },
+        "canonicalization": {
+          "const": "artifactforge-fixture-tree-v2"
+        },
+        "digest_domain": {
+          "const": "artifactforge-fixture-tree-digest-v2"
+        },
+        "directory_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "regular_file_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "metadata_blob_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 12288
+        },
+        "metadata_blob_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "total_bound_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "directories": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "$ref": "#/$defs/directory_base"
+          }
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/file_base"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "linux"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "directories": {
+                "items": {
+                  "properties": {
+                    "metadata": {
+                      "$ref": "#/$defs/linux_metadata"
+                    }
+                  }
+                }
+              },
+              "files": {
+                "items": {
+                  "properties": {
+                    "metadata": {
+                      "$ref": "#/$defs/linux_metadata"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "macos"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "directories": {
+                "items": {
+                  "properties": {
+                    "metadata": {
+                      "$ref": "#/$defs/macos_metadata"
+                    }
+                  }
+                }
+              },
+              "files": {
+                "items": {
+                  "properties": {
+                    "metadata": {
+                      "$ref": "#/$defs/macos_metadata"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "family": {
+                "const": "windows"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "directories": {
+                "items": {
+                  "properties": {
+                    "metadata": {
+                      "$ref": "#/$defs/windows_metadata",
+                      "properties": {
+                        "attributes": {
+                          "contains": {
+                            "const": "DIRECTORY"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "files": {
+                "items": {
+                  "$comment": "A one-component uppercase served path is a Windows drive root and can only be represented by a directory node.",
+                  "not": {
+                    "properties": {
+                      "served_path": {
+                        "pattern": "^[A-Z]$"
+                      }
+                    },
+                    "required": [
+                      "served_path"
+                    ]
+                  },
+                  "properties": {
+                    "metadata": {
+                      "$ref": "#/$defs/windows_metadata",
+                      "properties": {
+                        "attributes": {
+                          "not": {
+                            "contains": {
+                              "const": "DIRECTORY"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

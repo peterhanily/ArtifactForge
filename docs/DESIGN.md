@@ -1,323 +1,304 @@
-# ArtifactForge — design
+# ArtifactForge design
 
-## §1 What this is
+ArtifactForge creates deterministic forensic fixture files and tests specific claims about
+those files. It does not try to simulate a complete host.
 
-ArtifactForge generates **forensic artifacts**: the files a responder finds on a host once
-they dig in. A synthetic PE with a real import table and a real IMPHASH; Windows registry
-hives carrying Run-key persistence and an Amcache installation record; a prefetch file; macOS
-knowledgeC, TCC and QuarantineEventsV2 databases, a quarantine xattr value serialized as a
-sidecar file, and a LaunchAgent plist; or nested Linux ELF64 files, XDG autostart entries and
-timestamped Bash history.
+## 1. Scope
 
-Everything is a pure function of a seed. No wall clock, no entropy, no PID. The same scenario
-regenerates byte-identical forever, which is the property every other claim rests on.
+ArtifactForge emits loose artifacts that an investigator can open directly:
 
-## §2 The premise is a test, not a claim
+- Windows PE files, registry hives, Prefetch, Chromium download history, Zone.Identifier,
+  Task Scheduler XML, and Shell Links
+- macOS Mach-O files, knowledgeC, TCC, QuarantineEventsV2, quarantine xattr values, and
+  LaunchAgent plists
+- Linux ELF files, XDG autostart entries, and timestamped Bash history
 
-Two useful questions about synthetic evidence are "does a tool a responder actually runs open
-it?" and "do the declared cross-artifact pivots agree?" Both are pass/fail, so both are gates
-rather than adjectives. They establish parser readability and selected consistency properties,
-not realism in general; `KNOWN_TELLS.md` records the remaining fidelity limits.
+A seed and named profile determine the modeled values. A declared generator ABI and producer
+profile determine the bytes. No wall clock, process identifier, or ambient random source enters
+the output.
 
-The second half is the harder one and the reason this project exists. EvidenceForge — whose
-synthetic *logs* this complements — computes these values from emitter-local synthetic seed
-domains rather than from file bytes. On one unmodified branch-office run, the same-algorithm
-Sysmon and Zeek digest sets have zero overlap. Their basenames have zero overlap as well, so
-that stock run does **not** prove that one logical file received inconsistent hashes across two
-emitters; a controlled transfer-to-execution witness is required for that causal claim.
+Determinism is a versioned contract, not an unlimited promise. Current Fixture ABI v2 database
+bytes come from `artifactforge-owned-sqlite-leaf-v1`, so they do not depend on the host SQLite
+release. Historical v1 databases came from the host SQLite library. Fixture ABI v1 does not
+bind that producer, so its 0.5.0 vectors are parse-only. Any cross-runtime byte identity claim
+is limited to its named ABI, producer profile, and tested runtime matrix.
 
-ArtifactForge's answer for materialized, answer-bearing binaries is content-first identity.
-`ContentStore` synthesizes a binary's bytes once and derives its content digests and structural
-hashes from those bytes and their parsed structures. Gate 2 re-derives the Windows Amcache
-`FileId`-to-resident-byte agreements and macOS quarantine UUID-to-event agreements from disk.
-Benchmark v2 then uses those same two closed value-agreement rules without publishing the
-private expected results. Deliberate stale and absent Amcache decoys are outside the resident
-content-blob claim.
+## 2. Content-first identity
 
-There is deliberately no general evidence graph. Byte-derived `Content`, public fixture
-integrity, private scene truth, evaluator answers and EvidenceForge's modeled logical-content
-references have different evidence and disclosure boundaries. The consumer audit, future
-trigger and smallest acceptable snapshot-bound digest-view shape are in
+`ContentStore` builds each materialized binary once. Its digests and structural hashes are then
+derived from those bytes. Scene composition reuses that identity when it creates Amcache,
+Prefetch, browser, task, Shell Link, quarantine, and Linux path relations.
+
+Gate 2 reopens the emitted scene and reconstructs the selected relations. Private truth is the
+expected answer, not evidence that the answer is correct. The emitted bytes and their parsed
+values provide that evidence.
+
+This rule applies only to relations that claim resident content. Stale and absent decoys are
+modeled as stale or absent. EvidenceForge modeled-log identities, public fixture integrity,
+private scene truth, and benchmark answers also have different disclosure and evidence
+boundaries. ArtifactForge therefore does not publish one catch-all evidence graph. See
 [`identity-boundaries.md`](identity-boundaries.md).
 
-## §3 Layering
+## 3. Package structure
 
-Dependencies point one way:
+Arrows point toward imported lower layers.
 
-    model <- content <- artifacts <- compose <- fixture / bench <- cli
-    inventory ---------------------> compose / fixture / bench / gates
+![ArtifactForge package layering. Import arrows point toward lower-level dependencies; inventory is the shared bounded filesystem layer, and ingest remains outside the core chain.](assets/layering.svg)
 
-- `model` — hosts, profiles, pinned times. Depends on nothing.
-- `inventory` — canonical recursive loose-file paths, bounded no-follow capture and exclusive
-  scene publication. Depends only on the standard library.
-- `content` — file bytes and their identity. The ContentStore lives here.
-- `artifacts` — pure builders for structured formats and serialized loose values; every
-  classified format is validated by its declared readers.
-- `compose` — assembles formats into a scene directory plus evaluator-private relation truth.
-- `fixture` — turns a public recipe into a canonical, byte-bound loose-file bundle. It drops
-  the private scene join and stays separate from benchmark suites because its manifest
-  publishes content digests.
-- `bench` — turns Windows/macOS scenes into five-question closed-rule tasks, exact public
-  exports, evaluator-side grades, reference solvers, adversaries and counterfactuals. Linux
-  scenes are generator assurance and Fixture Core inputs only.
-- `gates`, `scorecard` — measurement.
-- `ingest` — the EvidenceForge companion adapter, outside the chain. Nothing in the chain may
-  import it, and upstream's private seed formulas are never re-exported as ArtifactForge API.
+| Package | Responsibility |
+|---|---|
+| `model` | Host, profile, and time types |
+| `inventory` | Canonical paths, bounded no-follow capture, and exclusive publication |
+| `content` | Materialized bytes and content identity |
+| `artifacts` | Pure format builders |
+| `compose` | Scene assembly and evaluator-private relation truth |
+| `fixture` | Public recipes, manifests, verification, comparison, and release |
+| `bench` | Closed-rule tasks, public exports, solvers, attacks, and attempt evidence |
+| `gates`, `scorecard` | Measurement and source-bound results |
+| `ingest` | Optional EvidenceForge adapter outside the core dependency chain |
 
-ArtifactForge runs standalone. EvidenceForge is never a declared dependency: it is not on
-PyPI, so naming it would force a git URL into the metadata, which makes the distribution
-unbuildable. Two isolated CI jobs install it for a pinned contract and a default-branch drift
-canary; the standalone test job does not.
+ArtifactForge has no runtime dependency on EvidenceForge. Isolated CI jobs install a pinned
+EvidenceForge revision for contract testing and a separate default-branch drift canary.
 
-### Fixture Core contract
+## 4. Fixture Core
 
-Fixture Core is the public-reproducible product surface. A strict v1 recipe carries a public
-seed and one named loose-artifact profile. Its canonical manifest embeds that recipe and an
-exact sorted inventory of payload paths, sizes and SHA-256 values. Verification checks the
-manifest, re-inventories the tree, and independently regenerates the complete payload. An
-optional assurance pass runs Gates 1 and 3; Gate 2 is not claimed because the fixture manifest
-deliberately omits the private scene join.
+Fixture Core turns a public recipe into a logical filesystem manifest and a private host
+carrier. V2 is the current producible ABI. V1 remains readable at its frozen 0.5.0 vectors but
+has no current writer.
 
-Nested and dot-prefixed components are ordinary artifact paths. The shared grammar rejects
-literal `.`/`..`, empty components, links, special files, empty directories, case-folding and
-file/ancestor conflicts. Scene capture additionally rejects resource-limit violations before
-a scene can be certified.
+### Recipe and manifest
 
-The benchmark boundary is absolute: fixture manifests set `benchmark_eligible` to false and
-must never appear under a suite's served `scenarios/` tree. Their hashes and seed are public,
-which is useful for reproducibility and disqualifying for a hold-out. Deterministic USTAR
-release archives add no authenticity claim; they preserve exact bytes with fixed metadata.
-The v1 manifest does not bind POSIX modes and release normalizes artifact files to 0644. That
-is sufficient for loose evidence but deliberately cannot represent an activation-ready Linux
-filesystem. The full contract is in `docs/fixture-core.md`.
+A v2 recipe contains a public seed, a named platform profile, and a derived causal clock. Scene
+keys, scene values, and content bytes use separate derivation domains. None reuses benchmark
+key material.
 
-The shared scene stager also rejects the case-insensitive basenames
-`ARTIFACT_ANSWERS.json`, `GROUND_TRUTH.json`, `JOIN_MANIFEST.json` and `fixture.json` at any
-depth, plus the Fixture Core schema marker under any name. This is defense in depth around the
-exact allowlist: a future builder cannot accidentally serve a known answer or evaluation
-manifest merely by adding it to that allowlist.
+The manifest records every logical directory, file, default stream, and supported auxiliary
+value. It binds reversible guest and served paths, byte sizes, SHA-256 values, logical owners,
+modes, timestamps, macOS xattrs, and Windows ADS values. A tree digest covers the complete
+logical model.
 
-Benchmark v2 adds a second structural boundary. The finalized evaluator root retains `_key/`,
-`_answers/` and `_content/`; construction staging is transient and absent after atomic
-publication. `bench export` creates a no-replace solver root containing exactly canonical
-`public.json` and its declared `scenarios/` artifacts. One
-aggregate tree commitment avoids publishing answer-bearing per-file digests, while `suite_id`
-binds the canonical public protocol, questions, inventories and commitment and is required on
-every submission row. The export is a transfer boundary, not an in-process sandbox: arbitrary
-solver code must run in a separate OS-enforced trust domain with no path or mount to the
-evaluator root. The complete contract is in
-[`benchmark-v2.md`](benchmark-v2.md).
+The path grammar rejects empty components, `.` and `..`, links, special files, case aliases,
+file and ancestor collisions, and orphaned directories. Count, depth, component-length, and
+total-byte ceilings apply before an untrusted tree can reach a parser.
 
-## §4 Scope and validation gate
+### Carrier boundary
 
-A gate is a numbered question wired into six places, and it is not built until all six exist:
+The carrier is not the logical guest filesystem. It contains default streams under served
+paths with fixed private host modes: 0700 for directories and 0600 for files. Construction does
+not apply host ownership, timestamps, xattrs, or ADS values. Those values remain data in the
+manifest. Incidental host metadata is outside raw-carrier verification and is not inferred to
+be absent.
 
-1. a module in `artifactforge/gates/`, whose docstring's first line **is the question**
-2. a CLI subcommand that exits non-zero when the answer is no
-3. a dedicated pytest file
-4. a `gates.<name>` block in the committed `fidelity-scorecard.json`
-5. a row in `scorecard._METRICS` giving the metric a direction and a tolerance
-6. a registered mutation in `tests/test_gate_mutations.py` that turns it **red**
+### Verification and assurance
 
-`tests/test_gates.py::test_every_gate_has_all_six_bindings` enforces this mechanically.
+Verification reports distinct results for:
 
-The sixth binding is the one that matters. A gate never observed to fail proves nothing, and
-this repository shipped tests that stayed green when the data they checked was replaced with
-the literal string `GARBAGE-NOT-A-SHA1`.
+1. canonical structure
+2. byte and manifest integrity
+3. complete reproduction from the embedded recipe
+4. optional parser and inertness assurance
 
-Failures block. **Declared gaps do not** — they are named limitations carried in the
-scorecard's `honest_gaps` so they cannot be forgotten. Anything undeclared is a failure.
+Inspection does not invoke a producer, so historical v1 fixtures remain inspectable. V2
+reproduction uses the registered producer profile and compares every default-stream byte and
+logical metadata value.
 
-### Gate 1 — validity
+macOS assurance decodes every logical quarantine xattr with both readers before joining its
+UUID to QuarantineEventsV2. Windows assurance decodes the one logical Zone.Identifier with two
+readers, joins it to the matching Chromium History row, and rehashes the resident PE. It also
+re-parses the task and Shell Link and rehashes their distinct resident targets. These are
+serialized relations, not activation claims.
 
-*Do declared parser and semantic oracles validate each classified artifact?*
+### Release
 
-PE, Mach-O, registry hive and prefetch each require two independently implemented parsers,
-because one permissive parser can hide what a strict one rejects. Every prefetch file this
-project emitted was accepted by `windowsprefetch` and refused by `pyscca` — the libyal parser
-plaso is built on — for as long as `windowsprefetch` was the only oracle installed.
+Release validates the source carrier, captures it through held no-follow descriptors, and
+performs a complete second state pass after the final byte read. Output parents are traversed
+and created through held descriptors. Source-directory inodes, case aliases, replacement
+races, and mixed snapshots are rejected.
 
-A missing oracle is a **failure, never a skip**: a skipped check exits 0 and reads exactly
-like a passing one. Before any oracle runs, Gate 1 captures the bounded recursive tree through
-held no-follow descriptors and materializes a private frozen snapshot. Its directories are
-read/execute-only while the oracles run, and descriptor-bound cleanup never follows a replaced
-link. SQLite and binary plists pair
-the standard-library implementation with small raw readers derived directly from the published
-container layouts. Both implementations
-receive one bounded immutable snapshot, return type-tagged observations, and must agree on the
-complete modeled object graph before either format's semantic profile can pass. Those raw
-readers are independently implemented, but maintained in this repository; that is not an
-external validation or a claim about SQLite/plist features outside their strict emitted subset.
+The archive is normalized USTAR. It contains the manifest, declared directories, and declared
+default streams. It contains no host xattrs, native ADS values, PAX metadata, or producer
+authentication. See [`fixture-core.md`](fixture-core.md) for the full contract.
 
-Opening a container is necessary but not sufficient for structural claims. For PE, pefile and
-LIEF independently enumerate the named import sequence, confirm pefile/VT-normalised IMPHASH
-semantics and then agree with each other. For v17 prefetch, a separate raw-structure verifier
-recomputes the XP path hash from the referenced UTF-16LE device path and binds it to the header
-and filename. Parseable mutations that remove the PE import directory or change the embedded
-prefetch hash turn this gate red.
+### Benchmark separation
 
-For the macOS databases, container consensus covers schema SQL, root-page ownership, typed
-rows, order, duplicates and primary-key index entries; the profile then fixes the marker plus
-knowledgeC, TCC or QuarantineEventsV2 meanings. Binary-plist consensus is type-exact—boolean
-`true` cannot collapse into integer `1`—and the LaunchAgent profile fixes its six keys,
-filename/label, program path, persistence settings and disclosure. Parser-only and
-meaning-only mutations prove both layers turn red independently.
+Fixture manifests publish their seeds and content digests, so they are always
+`benchmark_eligible: false`. Benchmark evaluator roots keep keys and answers private. Public
+exports contain only canonical `public.json` and the declared `scenarios/` tree.
 
-Serialized quarantine xattrs are parser-classified rather than exempt prose. Gate 1 snapshots
-their bounded bytes, pairs the artifact module's strict parser with an independently
-implemented byte reader, requires type-exact agreement and then enforces the exact flags,
-lowercase hexadecimal timestamp, bounded ASCII agent and uppercase RFC 4122 v4 UUID profile.
-BOMs, newlines, padding, extra fields and noncanonical encodings are red.
+An export is a transfer boundary, not a Python sandbox. Arbitrary solver code requires a
+separate OS account, container or VM without the evaluator mount, or another machine. Local v3
+attempt ledgers cannot prove that external isolation or an independent witness.
 
-For Linux, LIEF and pyelftools independently enumerate the ELF header, interpreter, sole
-`DT_NEEDED` library, segments, sections, dynamic allowlist and ArtifactForge note. PyXDG and a
-bounded raw reader agree on an exact single-group XDG 1.5 desktop-entry subset; dissect.target
-and a bounded raw reader agree on strictly timestamped one-line Bash-history records. The raw
-text readers never expand `Exec` or evaluate command text. Their profile checks require exact
-resident absolute paths and reject arguments, field codes, shell syntax, multiline history,
-unsafe command verbs and non-profile keys. The scene profile further fixes four history rows:
-the exact Linux disclosure marker first, followed by three distinct resident paths.
+## 5. Gate discipline
 
-### Gate 2 — identity
+A gate is complete only when all of these bindings exist:
 
-*Do the declared answer-bearing identities and cross-artifact pivots agree with the emitted
-bytes?*
+1. a module whose first docstring line states its question
+2. a CLI command with a failing exit status
+3. dedicated tests
+4. scorecard metrics with a registered direction and tolerance
+5. a named CI step
+6. a section in this design document
+7. a mutation that turns the gate red
 
-The keystone. Gate 2 also works from one bounded no-follow capture and private snapshot. Each
-declared value in the gate's scope is re-derived from those bytes, through a real parser where
-the value is structural, and only then compared. Every check names
-the artifacts it spans, because a check confined to one artifact cannot detect a broken pivot.
-The gate does not claim that stale or absent decoy Amcache `FileId`s correspond to bytes shipped
-in the scene. Linux's join is path-exact rather than basename-based: XDG names three resident
-guest paths, Bash history names another three, their unique intersection names the subject,
-and `/home/<user>/...` maps to exactly `home/<user>/...` in the served recursive tree before
-the subject name, SHA-256, SHA-1, MD5 and ELF-note marker are re-derived from its bytes. The
-gate binds each served desktop path to that file's parsed `Exec` value and inventories the
-single declared history path, so swapping two valid records cannot preserve the join.
+`tests/test_gates.py` checks those bindings. A missing oracle is a failure, not a skip.
+Declared limitations are recorded separately and never converted into passing checks.
 
-For each benchmark-family scene, Gate 2 also binds five independently permuted relations. On
-Windows, each selected historical Amcache row carries a `FileId` whose SHA-1 agrees with one
-of five resident PE byte strings, and the question answer is that resident's SHA-256. On
-macOS, each exact relative xattr path strictly yields one UUID that agrees with one of five
-`QuarantineEventsV2` rows and its data URL. The five answers in either family form a bijection;
-names, row order, agent and timestamp are deliberately not answer selectors.
+Every filesystem gate first captures one bounded recursive tree through held no-follow
+descriptors. Path-only parsers receive a frozen private copy of that capture. Parser pairs
+therefore observe the same bytes.
 
-### Gate 3 — inertness
+### Gate 1: validity
 
-*Are generated binaries payload-free, and is every classified structured format marked
-synthetic?*
+**Question:** Do the declared readers decode each classified artifact and satisfy its named
+profile?
 
-Generated binaries reproduce the forensic **signal** — a real import table, a real symbol
-table, real content and structural hashes — without a payload. PE `.text` is `ret` plus zero
-padding and the DOS stub is the fixed print-and-exit stub; Mach-O `__text` is
-`mov w0,#0 ; ret`; ELF's sole RX segment is the nine bytes
-`xor edi,edi ; mov eax,60 ; syscall`, which directly exits zero. The ELF declares
-`/lib64/ld-linux-x86-64.so.2` and `libc.so.6`, so a real execution attempt enters the dynamic
-loader before that bounded entry body. The main object imports and calls no libc symbol and
-has no alternate entry surface; external loader/dependency code is out of scope. For PE, Gate 3
-independently pins the DOS profile, sole executable section,
-entry point, import-only data directories and modeled system DLLs. For Mach-O it fixes the
-load-command, library, segment and section profile, requires `LC_MAIN` to name the sole
-instruction entry, and independently verifies the CodeDirectory's page hashes and exact
-pre-signature coverage boundary. For ELF it independently parses the headers and tables,
-requires the exact entry body, file size and section geometry, non-overlapping R/RX/RW file
-and virtual ranges, zero-only unclaimed slack, NX stack, RELRO and the dynamic-tag allowlist,
-and rejects alternate executable sections, initializers, finalizers, TLS, relocations,
-imported symbols and hidden payload bytes.
-Every marker-eligible classified structured format anywhere in the recursive tree—including
-beneath a dot directory—carries an in-band `ARTIFACTFORGE` anchor. The strict serialized
-quarantine-xattr format is the sole classified exception because its real four-field grammar
-has no extension slot: Gate 3 grants the non-executable marker exemption only after the strict
-parser accepts its complete bytes. Documentation sidecars remain outside the marker gate but
-are still inspected for indicator hygiene. Domains must be RFC
-2606 reserved and addresses RFC 5737 / RFC 3849, so no artifact can name a host that might be
-real.
+Gate 1 separates five claim levels:
 
-A separate Ubuntu 24.04/x86-64 native lane first verifies a complete Fixture Core root with
-exact reproduction and portable Gates 1 and 3, then records GNU `readelf`/`objdump`, `file`,
-`desktop-file-validate` and Bash observations only from a held private snapshot byte-equal to
-the verified payload manifest. The canonical record binds Git/GitHub-run identity, CPython and
-portable-parser versions, package and native-tool bytes before and after observation, exact
-fixture/snapshot pre/post state, disassembly and a Bash history read/writeback control. It never
-executes an emitted ELF, invokes `ldd`, launches XDG content, or sources/evaluates history;
-native acceptance therefore does not expand the portable gate's activation claims.
+1. container acceptance
+2. typed semantic extraction
+3. independent agreement
+4. declared profile conformance
+5. named downstream-consumer compatibility
 
-### Gate 4 — solvability
+Passing one level does not imply the next. Two readers accepting a file does not turn
+acceptance into realism, native provenance, or whole-format support.
 
-*Are benchmark answers closed-rule value agreements rather than shortcuts?*
+| Format | Readers and claim boundary |
+|---|---|
+| PE | pefile and LIEF agree on imports and IMPHASH semantics |
+| Registry hive | regipy and libregf agree on the complete typed modeled tree; the profile also requires the Amcache and Software-persistence plugins to recognise and extract the declared records |
+| Prefetch | A strict expected-size reader owns MAM framing and the v30 inner profile; pyscca and Dissect agree on typed semantics |
+| Chromium History and macOS SQLite | sqlite3 is paired with an independent reader for the owned leaf profile |
+| Mach-O | LIEF, macholib, and a raw symbol-table decoder agree on the typed writer profile |
+| Binary plist | plistlib and an independent reader agree on the complete modeled value |
+| Quarantine xattr | Two readers agree on the strict four-field representation |
+| Zone.Identifier | ConfigParser and a raw reader agree on the ordered Internet-zone profile |
+| Task XML | ElementTree and a UTF-16LE byte reader agree; dissect.target is a separate consumer observation |
+| Shell Link | liblnk and LnkParse3 agree on a reliable typed intersection; a strict byte reader owns wire extents and termination |
+| ELF | LIEF and pyelftools agree on the declared ELF profile |
+| XDG desktop entry | PyXDG and a raw reader agree on the single-group profile |
+| Bash history | dissect.target and a raw reader agree on timestamped single-line records |
 
-Benchmark v1 is invalidated, not grandfathered. Completed footprint and stored-order solvers
-recovered every answer on the hostile audit corpus without performing the claimed forensic
-investigation; a co-located task path exposed evaluator answers by parent traversal; the
-public-key corpus was exactly reconstructable without reading target artifacts; candidate-aware
-chance was approximately one in five rather than the published filename lottery; and its
-`joins` value was author-supplied rather than a re-derived dependency trace. No v1 score is a
-benchmark result.
+Current Prefetch scenes use MAM algorithm-4 XPRESS-Huffman compression around SCCA v30
+variant 1. The strict reader owns the declared output length, Huffman table, single-chunk
+framing, inner layout, path hash, volume token, and canonical 260-character device-path limit.
+`pyscca` must accept the record. `pyscca` and Dissect must agree on their typed semantic view.
+Dissect is semantic-only because its EOF-driven decoder exposes the current three post-output
+bytes. ArtifactForge does not run a Plaso extraction, so pyscca acceptance is not a Plaso
+compatibility result.
 
-V2 permits exactly two closed rules. Windows selects one historical Amcache
-`LowerCaseLongPath`, follows its `FileId` SHA-1 into five captured resident PE byte strings and
-returns the uniquely agreeing file's SHA-256. macOS strictly parses one xattr at an exact
-relative path, follows its UUID into `QuarantineEventsV2` and returns that row's data URL.
-Every scene has five scalar questions, five distinct candidates and a question-to-candidate
-bijection, making exact candidate chance 20%. The resolver captures one recursive tree,
-enumerates candidates from it and returns the artifact paths actually used; Gate 4 never trusts
-a private join count as proof.
+The public `build_prefetch` and `prefetch_name_hash` functions retain the v17/XP compatibility
+contract. Current scenes call `build_prefetch_v30`. The existing `windows-loose-v2` identifier
+received a compatibility reset before release; earlier outputs remain bound to the source that
+produced them.
 
-Reference recovery is only the positive half. Complete selection shortcuts must answer every
-question, while deliberately low-information constant/listing/null controls remain measured
-controls rather than calibrated evidence of resistance. Eleven registered attacks and two
-development-trained ensembles—partial union with cross-slot source selection and rank union—
-are frozen without measurement answers and evaluated in aggregate and per family/rule class.
-That is 39 exact conditional comparisons over the `5!` within-scene assignments, all sharing
-a 5% familywise alpha with Bonferroni correction. The eight complete attacks and both exact
-production ensemble wrappers must first pass ten independent vulnerable-world controls; an
-attack or ensemble execution error fails red. Both measured and development corpora require at
-least 20 scenes per class; an exact scene-level power contract additionally requires 99% power
-against its predeclared 50%-signal alternative.
+Task XML passes only when it is disabled, trigger-free, principal-free, and contains one
+argument-free `Exec` action. A Shell Link passes only when it names one local resident target
+and has no arguments, working directory, network target, environment block, or ExtraData.
+These checks validate stored files. They do not show that Windows registered or activated
+them.
 
-Counterfactuals prove that each rule depends on the field it names. Parser-valid pair swaps
-must change exactly two predicted answers; absent links or same-size resident replacements must
-make exactly one answer unavailable; every other answer must remain unchanged. Rebuilt
-Amcache, PE, quarantine database and xattr artifacts must pass their independent parser pairs
-and exact profiles before the effect counts.
+The first-party SQLite and binary-plist readers intentionally cover only emitted subsets. They
+provide independent implementation, not outside governance or general-format validation.
+`KNOWN_TELLS.md` owns the exact format limitations.
 
-The source-aware blind solver and parent-escape solver are mandatory positive controls. Blind
-reconstruction must succeed on disclosed-key development/scorecard corpora and fail on a fresh
-hold-out. Parent traversal must recover co-located evaluator answers and find none in the exact
-public export. That export does not sandbox arbitrary code, so an actual solver still requires
-a separate OS-enforced trust domain.
+### Gate 2: identity
 
-A green result is deliberately narrower than “shortcut resistant”: it means no member of this
-finite registered attack/ensemble surface was detected at the declared familywise alpha after
-all mandatory controls passed. It does not establish equivalence to candidate chance, cover an
-unregistered strategy or create a reportable public-corpus performance score.
+**Question:** Do declared answer-bearing identities and cross-artifact pivots agree with the
+emitted bytes?
 
-Gate 4 remains Windows/macOS-only. Linux is appended to the deterministic Gates 1–3 generator
-assurance corpus but receives no public question set, benchmark answer or score. Public
-development and scorecard corpora are non-reportable controls. No v2 performance score is
-reportable until a freshly keyed hold-out is exported, executed in a separate trust domain,
-graded against matching `suite_id` submissions and audited end to end. See
-[`benchmark-v2.md`](benchmark-v2.md).
+Gate 2 reparses values and rehashes resident bytes. Its relation classes include:
 
-## §5 The scorecard
+- PE content digests and import-derived hashes
+- five resident Amcache `FileId` SHA-1 joins
+- the exact four-file Prefetch set, decoded executable names, path hashes, and volume tokens
+- one Chromium completed-download final URL, path, size, and resident PE digest
+- one disabled task command and one Shell Link target, each bound to a distinct
+  non-persistence PE
+- five macOS quarantine xattr UUID joins to QuarantineEventsV2
+- Linux XDG and Bash-history paths resolved against the recursive carrier, then rehashed
 
-`fidelity-scorecard.json` is committed at the root and carries what the gates actually
-measured, including what they measured badly. Historical benchmark-v1 fields remain evidence
-of that old protocol, not results that may be relabeled v2. It ships reading whatever it
-honestly reads; a scorecard saying `pass` on day one would be the least believable thing in
-the repository.
-Regression is enforced by one declarative table, with tolerance 0 on every count: an artifact
-that used to be readable and now is not, or a join that used to hold and now does not, is a
-regression at any magnitude.
+The task and Shell Link relations prove references only. The browser relation proves a modeled
+download record only. None proves registration, activation, download by a native browser, or
+execution.
 
-A release scorecard is also a source attestation. It records the full Git commit and tree and
-digests of the package metadata and lock file, and the CLI refuses to write it from a dirty
-worktree. The explicit `--allow-dirty` escape hatch is for diagnosis, never release: its source
-record is marked unclean and binds the complete tracked binary diff plus every untracked path
-and byte to one digest.
+Mutations alter resident bytes, identity values, paths, UUIDs, counts, and reference targets.
+Each mutation must turn the affected relation red while leaving unrelated relations intact.
 
-Development and scorecard-measurement derivations are public, deterministic controls and must
-remain machine-labeled non-reportable. A future hold-out performance record needs separate
-provenance for the secret-key evaluator, exact public export, solver trust domain and matching
-`suite_id` submissions. Scanner evidence is independent of all four gates; no fresh scanner
-attestation currently exists for the v2 corpus.
+### Gate 3: inertness
+
+**Question:** Are generated executable bytes within their inert profile, and are synthetic
+formats disclosed in-band?
+
+The Windows PE executable section is one `ret` instruction plus zero padding. The macOS
+Mach-O entry contains `mov w0,#0; ret`. Each Linux ELF has a nine-byte direct `exit(0)` body.
+Gate 3 also rejects alternate executable surfaces, initializers, finalizers, unexpected data
+directories, executable slack, hidden load commands, and unsupported dynamic behavior.
+
+The Linux dynamic loader executes before the entry body on a real execution attempt. External
+loader and dependency code is outside the emitted-byte claim. ArtifactForge does not execute
+generated files during portable validation.
+
+Every marker-eligible classified format contains the ASCII `ARTIFACTFORGE` anchor. The strict
+serialized quarantine-xattr profile is the only classified marker exemption because its real
+four-field grammar has no extension field. The exemption applies only after both readers and
+the exact profile pass.
+
+Native lanes add observations without changing the portable claim. The Linux lane inspects a
+verified private snapshot with `readelf`, `objdump`, `file`, `desktop-file-validate`, and a
+non-executing Bash history round trip. The Windows canaries load task XML into an unregistered
+in-memory definition, open a Shell Link without `Save`, `Resolve`, or `Run`, and call
+`RtlDecompressBufferEx` only for the declared Prefetch output. The first hosted Windows result
+for current source is still pending.
+
+### Gate 4: solvability
+
+**Question:** Are benchmark answers closed-rule value agreements rather than shortcut
+features?
+
+Benchmark v1 is withdrawn. Its answer layout, key disclosure, co-located evaluator state, and
+incorrect chance model allowed shortcut recovery without the intended artifact joins.
+
+V2 defines two rules. Windows follows an Amcache `FileId` SHA-1 into five resident PE byte
+strings. macOS follows a strict xattr UUID into five QuarantineEventsV2 rows. Each scene has
+five scalar questions and a five-answer bijection, so exact candidate chance is 20%.
+
+Gate 4 derives candidates and dependency traces from captured artifacts. It runs registered
+attacks and ensembles with vulnerable-world positive controls, evaluates exact within-scene
+permutation inference, and enforces the predeclared scene and power contract. Parser-valid
+counterfactuals cover every unordered candidate pair. Deterministic representatives exhaust
+all 120 mappings for each of the Windows FileId, macOS xattr UUID, and macOS database UUID
+mechanisms.
+
+A green result means that no member of the finite registered attack/ensemble surface crossed
+its declared corrected threshold after all controls passed. It does not establish equivalence to candidate chance,
+cover unregistered strategies, or create a reportable public-corpus performance score.
+
+Every v2 suite is permanently non-reportable because callers provide its raw key. V3 adds an
+internally keyed evaluator ceremony, canonical precommitment, one-shot POSIX attempt ledger,
+feedback-withholding receipt, and detached retired report. The ledger owner can still read the
+private result and can copy evaluator state. Detached verification checks the report chain,
+not ceremony authenticity or evaluator correctness. V3 therefore remains `reportable: false`
+until an independent witness attests the solver trust boundary and unique attempt procedure.
+
+Linux is generator and Fixture Core material only. It is not part of Gate 4.
+
+See [`benchmark-v2.md`](benchmark-v2.md) and [`benchmark-v3.md`](benchmark-v3.md).
+
+## 6. Scorecards and external evidence
+
+`fidelity-scorecard.json` records the gate results and their declared gaps. Each metric has a
+direction and zero tolerance. Current CI creates a fresh scorecard for the checked-out source
+and requires every gate to pass.
+
+The committed root scorecard is historical v0.5 evidence. Its smaller counterfactual contract
+cannot be compared with the current source contract, so CI does not relabel it as current.
+
+A release scorecard contains a measurement-source record for the Git commit, tree, package
+metadata, lock file, and dirty-state digest. It is not a signature, producer authentication,
+or proof about a later tag. `--allow-dirty` creates diagnostic evidence only.
+
+Scanner results are independent of all four gates. The latest scanner checkpoint and its exact
+provenance live in [`../SECURITY.md`](../SECURITY.md). A scanner slot can be complete while the
+overall record is red, and a passing gate cannot fill a missing scanner observation.

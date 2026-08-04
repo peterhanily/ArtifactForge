@@ -22,13 +22,17 @@ by construction, rather than by filtering a listing after the fact.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from artifactforge import pools
-from artifactforge.artifacts.hive import build_amcache_hive, build_run_hive
+from artifactforge.artifacts.hive import (
+    HiveTimestampSpec,
+    build_amcache_hive,
+    build_run_hive,
+)
 from artifactforge.artifacts.macos import (
     build_knowledgec,
     build_launch_agent,
@@ -36,31 +40,53 @@ from artifactforge.artifacts.macos import (
     build_tcc,
     quarantine_xattr,
 )
-from artifactforge.artifacts.prefetch import build_prefetch, prefetch_name_hash
+from artifactforge.artifacts.prefetch import (
+    PrefetchTimestamps,
+    build_prefetch_v30,
+    prefetch_vista_name_hash,
+)
+from artifactforge.artifacts.shell_link import (
+    ShellLinkTimestamps,
+    build_shell_link,
+)
+from artifactforge.artifacts.windows import ChromiumDownload, build_chromium_history
+from artifactforge.artifacts.windows_task import build_scheduled_task_xml
 from artifactforge.artifacts.linux import build_bash_history, build_desktop_entry
 from artifactforge import suite
+from artifactforge.compose.derivation import (
+    BENCHMARK_SCENE_DERIVATION,
+    SceneDerivation,
+)
 from artifactforge.content import ContentStore
+from artifactforge.disclosure import RESERVED_NAME
 from artifactforge.inventory import open_real_directory, write_regular_file_at
-from artifactforge.model import PINNED_UNIX, HostProfile, deterministic_uuid
+from artifactforge.model import HostProfile, deterministic_uuid
+
+if TYPE_CHECKING:
+    from artifactforge.fixture.causal import CausalClockSpec
 
 
 WINDOWS_AMCACHE_RULE = "amcache-fileid-byte-agreement-v1"
 MACOS_QUARANTINE_RULE = "quarantine-uuid-event-agreement-v1"
+WINDOWS_TASK_XML_SOURCE = "ArtifactForgeMaintenance.task.xml"
+WINDOWS_SHELL_LINK_SOURCE = "ArtifactForgeMaintenance.lnk"
 
 
-def _keyed_order(skey: bytes, label: str, values, *, identity) -> list:
+def _keyed_order(
+    derivation: SceneDerivation,
+    skey: bytes,
+    label: str,
+    values,
+    *,
+    identity,
+) -> list:
     """A deterministic order with a domain independent from every other scene order.
 
     Record position is observable evidence.  Reusing construction order for residents,
     database rows and public questions made the first role the answer in every scene, so each
     sequence gets its own keyed ranking even when it contains the same logical objects.
     """
-    return sorted(
-        values,
-        key=lambda value: suite.scene_value(
-            skey, f"scene-order:{label}:{identity(value)}"
-        ),
-    )
+    return derivation.order(skey, label, values, identity=identity)
 
 
 @dataclass
@@ -69,6 +95,54 @@ class Scene:
     directory: str                                  # the served directory
     artifacts: list = field(default_factory=list)   # exactly what a solver can see
     join: dict = field(default_factory=dict)        # server-side: answers and how they join
+    # Public, answer-free facts available to Fixture v2 guest-metadata materialisation.
+    # Each value is (generic artifact role, exact Unix nanoseconds); it never names private
+    # subject/persisted/decoy roles or any cross-artifact answer relation.
+    timestamp_roles: dict[str, tuple[tuple[str, int], ...]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.timestamp_roles:
+            return
+        if set(self.timestamp_roles) != set(self.artifacts):
+            raise ValueError("scene timestamp roles must cover the exact served inventory")
+        forbidden = {"answer", "decoy", "join", "persisted", "subject"}
+        for path, records in self.timestamp_roles.items():
+            if type(path) is not str or type(records) is not tuple or not records:
+                raise ValueError("scene timestamp roles require non-empty tuples by public path")
+            names = set()
+            for record in records:
+                if type(record) is not tuple or len(record) != 2:
+                    raise ValueError("scene timestamp role records must be (role, unix_ns) tuples")
+                role, unix_ns = record
+                if (
+                    type(role) is not str
+                    or not role
+                    or any(token in forbidden for token in role.split("."))
+                ):
+                    raise ValueError("scene timestamp role is empty or answer-bearing")
+                if role in names or type(unix_ns) is not int:
+                    raise ValueError("scene timestamp roles must be unique exact integer facts")
+                names.add(role)
+
+
+def _causal_clock(skey: bytes, causal_clock: CausalClockSpec | None) -> CausalClockSpec:
+    # Import lazily: fixture lifecycle imports compose, so importing the fixture package while
+    # compose itself is initialising would make the package dependency cycle executable.
+    from artifactforge.fixture.causal import CausalClockSpec
+
+    if causal_clock is None:
+        if type(skey) is not bytes:
+            raise ValueError("scene key must be bytes when deriving its causal clock")
+        return CausalClockSpec.from_seed_hex(skey.hex())
+    if type(causal_clock) is not CausalClockSpec:
+        raise ValueError("causal_clock must be a CausalClockSpec or None")
+    return causal_clock
+
+
+def _scene_derivation(value: object) -> SceneDerivation:
+    if type(value) is not SceneDerivation:
+        raise ValueError("derivation must be an exact SceneDerivation")
+    return value
 
 
 def _device_path(exec_path: str) -> str:
@@ -105,11 +179,6 @@ def _full_path(name: str) -> str:
     return f"{_install_dir(name)}\\{name}"
 
 
-def _absent_sha1(skey: bytes, tag: str) -> str:
-    """A hash-shaped value belonging to no file here — the decoy Amcache rows' whole job."""
-    return hashlib.sha1(skey + tag.encode()).hexdigest()          # noqa: S324 - identity
-
-
 def _write(staging: str, name: str, data: bytes) -> None:
     root_fd = open_real_directory(staging, create=True)
     try:
@@ -142,13 +211,23 @@ def _linux_served_path(profile: HostProfile, guest_path: str) -> str:
 
 
 def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
-                        scene_dir: str, staging_dir: str) -> Scene:
+                        scene_dir: str, staging_dir: str,
+                        causal_clock: CausalClockSpec | None = None,
+                        derivation: SceneDerivation = BENCHMARK_SCENE_DERIVATION) -> Scene:
+    derivation = _scene_derivation(derivation)
+    derivation.validate_key(skey)
+    timeline = _causal_clock(skey, causal_clock).windows()
     temp = f"{profile.home_dir}\\AppData\\Local\\Temp"
 
-    persisted_name = suite.pick(skey, "persisted-name", pools.MALWARE_NAMES)
-    amcache_name, *noise_names = suite.pick_many(skey, "resident", pools.BENIGN_NAMES, 4)
-    absent_name = suite.pick(skey, "absent",
-                             [n for n in pools.MALWARE_NAMES if n != persisted_name])
+    persisted_name = derivation.pick(skey, "persisted-name", pools.MALWARE_NAMES)
+    amcache_name, *noise_names = derivation.pick_many(
+        skey, "resident", pools.BENIGN_NAMES, 4
+    )
+    absent_name = derivation.pick(
+        skey,
+        "absent",
+        [name for name in pools.MALWARE_NAMES if name != persisted_name],
+    )
 
     persisted_path = f"{temp}\\{persisted_name}"
 
@@ -162,12 +241,16 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
         *[(f"noise{i}", name) for i, name in enumerate(noise_names)],
     ]
     resident_specs = _keyed_order(
-        skey, "windows-resident-generation", resident_specs, identity=lambda item: item[0]
+        derivation,
+        skey,
+        "windows-resident-generation",
+        resident_specs,
+        identity=lambda item: item[0],
     )
     resident = {}
     resident_claims = {}
     for role, name in resident_specs:
-        c = store.materialize("pe:" + suite.content_seed(skey, role))
+        c = store.materialize("pe:" + derivation.content_seed(skey, role))
         resident[name] = c
         path = persisted_path if role == "persisted" else _full_path(name)
         resident_claims[name] = {
@@ -189,14 +272,29 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     persisted = resident[persisted_name]
 
     # --- persistence: three autostarts, only one naming a program that is here --------
-    names = suite.pick_many(skey, "run-values", pools.RUN_VALUE_NAMES, 3)
+    names = derivation.pick_many(skey, "run-values", pools.RUN_VALUE_NAMES, 3)
     absent_targets = [n for n in pools.BENIGN_NAMES if n not in resident]
     run_values = [
         (names[0], persisted_path),
-        (names[1], _full_path(suite.pick(skey, "run-decoy-1", absent_targets))),
-        (names[2], _full_path(suite.pick(skey, "run-decoy-2", absent_targets))),
+        (names[1], _full_path(derivation.pick(skey, "run-decoy-1", absent_targets))),
+        (names[2], _full_path(derivation.pick(skey, "run-decoy-2", absent_targets))),
     ]
-    _write(staging_dir, "Software.run.hive", build_run_hive(run_values))
+    run_filetime = timeline.run_configured.filetime
+    _write(
+        staging_dir,
+        "Software.run.hive",
+        build_run_hive(
+            run_values,
+            timestamps=HiveTimestampSpec(
+                hive_filetime=run_filetime,
+                default_key_filetime=timeline.host_initialized.filetime,
+                key_filetimes=(
+                    (f"ROOT\\{RESERVED_NAME}", run_filetime),
+                    (r"ROOT\Microsoft\Windows\CurrentVersion\Run", run_filetime),
+                ),
+            ),
+        ),
+    )
 
     # --- Amcache: five independent byte-identity relations plus stale noise ------------
     # Each prompted historical row describes bytes later found under a different resident
@@ -208,10 +306,11 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
             resident_name.lower() for resident_name in resident_names
         }
     ]
-    historical_names = suite.pick_many(
+    historical_names = derivation.pick_many(
         skey, "amcache-historical-names", historical_pool, len(resident)
     )
     mapped_residents = _keyed_order(
+        derivation,
         skey,
         "windows-amcache-mapping",
         list(resident_claims.values()),
@@ -224,7 +323,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
         """Derive a row identifier that cannot act as an alternate resident-hash link."""
         resident_sha1s = tuple(claim["sha1"] for claim in resident_claims.values())
         for nonce in range(256):
-            token = suite.content_seed(skey, f"amcache-record:{label}:{nonce}")[:16]
+            token = derivation.content_seed(skey, f"amcache-record:{label}:{nonce}")[:16]
             if not any(sha1.startswith(token) for sha1 in resident_sha1s):
                 return "0000" + token
         raise ValueError("could not derive an Amcache record key independent of resident SHA1")
@@ -232,7 +331,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     for index, (historical_name, claim) in enumerate(
         zip(historical_names, mapped_residents, strict=True)
     ):
-        token = suite.content_seed(skey, f"amcache-history:{index}")[:12]
+        token = derivation.content_seed(skey, f"amcache-history:{index}")[:12]
         lower_path = (
             f"c:\\programdata\\package cache\\{token}\\{historical_name.lower()}"
         )
@@ -255,15 +354,18 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
     used_names = resident_names | set(historical_names)
     decoy_pool = [name for name in pools.BENIGN_NAMES if name not in used_names]
     stale_rows = []
-    for index, name in enumerate(suite.pick_many(skey, "amcache-decoys", decoy_pool, 3)):
+    for index, name in enumerate(
+        derivation.pick_many(skey, "amcache-decoys", decoy_pool, 3)
+    ):
         stale_rows.append({
-            "sha1": _absent_sha1(skey, f"amcache-decoy:{index}"),
+            "sha1": derivation.opaque_sha1(skey, f"amcache-decoy:{index}"),
             "lower_path": _full_path(name).lower(),
             "name": name,
             "size": len(persisted.bytes),
             "record_key": opaque_amcache_record_key(f"stale:{index}:{name}"),
         })
     amcache_rows = _keyed_order(
+        derivation,
         skey,
         "windows-amcache-row",
         [*current_rows, *stale_rows],
@@ -281,34 +383,308 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
                 row["record_key"],
             )
             for row in amcache_rows
-        ]),
+        ], timestamps=HiveTimestampSpec(
+            hive_filetime=timeline.amcache_observed.filetime,
+            default_key_filetime=timeline.host_initialized.filetime,
+            key_filetimes=(
+                (f"amcache\\{RESERVED_NAME}", timeline.amcache_observed.filetime),
+                *(
+                    (
+                        "amcache\\Root\\InventoryApplicationFile\\" + row["record_key"],
+                        timeline.amcache_observed.filetime,
+                    )
+                    for row in amcache_rows
+                ),
+            ),
+        )),
     )
 
+    # --- browser download history: native-empty hash field, byte-derived URL identity ---
+    # Current Chromium persists an empty BLOB in downloads.hash for completed downloads.
+    # ArtifactForge therefore binds each candidate digest into a marked reserved URL rather
+    # than filling a schema-valid field with bytes Chrome itself does not retain.  Only the
+    # downloaded temporary executable is resident; two absent completed downloads prevent
+    # the history surface from becoming a one-row lookup.
+    browser_decoy_names = derivation.pick_many(
+        skey,
+        "windows-browser-download-decoys",
+        [name for name in pools.BENIGN_NAMES if name not in resident],
+        2,
+    )
+    browser_specs = [
+        {
+            "kind": "resident",
+            "name": persisted_name,
+            "path": persisted_path,
+            "sha256": persisted.sha256,
+            "size": len(persisted.bytes),
+            "start": timeline.host_initialized.filetime // 10 + 30_000_000,
+            "end": timeline.file_created.filetime // 10,
+            "opened": True,
+            "last_access": timeline.executed.filetime // 10,
+        }
+    ]
+    for index, name in enumerate(browser_decoy_names, start=1):
+        start = timeline.host_initialized.filetime // 10 + index * 10_000_000
+        browser_specs.append(
+            {
+                "kind": f"absent-{index}",
+                "name": name,
+                "path": f"{profile.home_dir}\\Downloads\\{name}",
+                "sha256": derivation.value(
+                    skey, "windows-browser-download-decoy", str(index)
+                ).hex(),
+                "size": len(persisted.bytes),
+                "start": start,
+                "end": start + 5_000_000,
+                "opened": False,
+                "last_access": 0,
+            }
+        )
+    browser_specs = _keyed_order(
+        derivation,
+        skey,
+        "windows-browser-download-row",
+        browser_specs,
+        identity=lambda row: row["kind"],
+    )
+    browser_rows = []
+    browser_truth = None
+    for index, row in enumerate(browser_specs):
+        digest = row["sha256"]
+        name = row["name"]
+        token = derivation.content_seed(skey, f"windows-browser-referrer:{index}")[:12]
+        source_url = (
+            "https://downloads.artifactforge.invalid/ARTIFACTFORGE/sha256/"
+            f"{digest}/{name}"
+        )
+        referrer_url = (
+            "https://portal.artifactforge.invalid/ARTIFACTFORGE/catalog/" + token
+        )
+        browser_rows.append(
+            ChromiumDownload(
+                target_path=row["path"],
+                source_url=source_url,
+                referrer_url=referrer_url,
+                sha256=bytes.fromhex(digest),
+                size=row["size"],
+                start_time_windows_us=row["start"],
+                end_time_windows_us=row["end"],
+                opened=row["opened"],
+                last_access_time_windows_us=row["last_access"],
+            )
+        )
+        if row["kind"] == "resident":
+            browser_truth = {
+                "target_path": row["path"],
+                "sha256": digest,
+                "size": row["size"],
+                "source_url": source_url,
+                "referrer_url": referrer_url,
+            }
+    if browser_truth is None:
+        raise AssertionError("browser history lost its resident download relation")
+    _write(
+        staging_dir,
+        "History",
+        build_chromium_history(tuple(browser_rows), identity_seed=skey),
+    )
+
+    # --- inert reference/configuration surfaces ---------------------------------------
+    # A disabled, trigger-free Task definition and a local Shell Link each name a real
+    # resident PE, but neither is execution evidence.  Their targets come from separately
+    # ordered non-persistence sets and must be distinct: adding these reference surfaces must
+    # not amplify the Run-key/browser answer into a mention-count shortcut.
+    non_persistence_targets = [
+        claim for claim in resident_claims.values() if claim["role"] != "persisted"
+    ]
+    task_targets = _keyed_order(
+        derivation,
+        skey,
+        "windows-task-targets",
+        non_persistence_targets,
+        identity=lambda claim: claim["name"],
+    )
+    shell_link_targets = _keyed_order(
+        derivation,
+        skey,
+        "windows-shell-link-targets",
+        non_persistence_targets,
+        identity=lambda claim: claim["name"],
+    )
+    if len(task_targets) < 2:
+        raise AssertionError("Windows reference artifacts require two non-persistence residents")
+    task_name = "Maintenance-" + derivation.content_seed(
+        skey, "windows-task-name"
+    )[:12]
+    task_guest_path = rf"C:\Windows\System32\Tasks\ArtifactForge\{task_name}"
+    task_target = None
+    task_data = None
+    for candidate in task_targets:
+        try:
+            candidate_data = build_scheduled_task_xml(
+                task_name,
+                candidate["path"],
+                resident_pe_paths=(candidate["path"],),
+            )
+        except ValueError:
+            # The task profile deliberately excludes interpreters and command utilities.
+            # Candidate ordering remains independent; compatibility is proved by the writer
+            # itself rather than by duplicating its denylist in scene composition.
+            continue
+        task_target = candidate
+        task_data = candidate_data
+        break
+    if task_target is None or task_data is None:
+        raise ValueError(
+            "Windows scene has no non-persistence resident inside the scheduled-task profile"
+        )
+    shell_link_target = next(
+        (claim for claim in shell_link_targets if claim["name"] != task_target["name"]),
+        None,
+    )
+    if shell_link_target is None:
+        raise AssertionError("Windows Shell Link requires a target distinct from the Task")
+    _write(
+        staging_dir,
+        WINDOWS_TASK_XML_SOURCE,
+        task_data,
+    )
+    scheduled_task_truth = {
+        "source": WINDOWS_TASK_XML_SOURCE,
+        "guest_path": task_guest_path,
+        "task_name": task_name,
+        "target_name": task_target["name"],
+        "target_path": task_target["path"],
+        "target_role": task_target["role"],
+        "target_size": task_target["size"],
+        "target_sha256": task_target["sha256"],
+    }
+
+    shell_link_guest_path = (
+        f"{profile.home_dir}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\"
+        f"Programs\\{WINDOWS_SHELL_LINK_SOURCE}"
+    )
+    shell_link_timestamps = ShellLinkTimestamps(
+        creation_filetime=timeline.file_created.filetime,
+        access_filetime=timeline.executed.filetime,
+        write_filetime=timeline.file_created.filetime,
+    )
+    volume_serial = int(
+        derivation.content_seed(skey, "windows-shell-link-volume")[:8], 16
+    ) | 1
+    _write(
+        staging_dir,
+        WINDOWS_SHELL_LINK_SOURCE,
+        build_shell_link(
+            shell_link_target["path"],
+            "System Maintenance",
+            shell_link_target["size"],
+            timestamps=shell_link_timestamps,
+            volume_serial=volume_serial,
+            volume_label="SYSTEM",
+        ),
+    )
+    shell_link_truth = {
+        "source": WINDOWS_SHELL_LINK_SOURCE,
+        "guest_path": shell_link_guest_path,
+        "target_name": shell_link_target["name"],
+        "target_path": shell_link_target["path"],
+        "target_role": shell_link_target["role"],
+        "target_size": shell_link_target["size"],
+        "target_sha256": shell_link_target["sha256"],
+        "creation_filetime": shell_link_timestamps.creation_filetime,
+        "access_filetime": shell_link_timestamps.access_filetime,
+        "write_filetime": shell_link_timestamps.write_filetime,
+        "volume_serial": volume_serial,
+    }
+
     # --- prefetch: four executions, one of a program that has since gone --------------
-    run_count = 1 + skey[0] % 9
+    run_count = derivation.bounded_key_value(
+        skey,
+        "windows-prefetch-persisted-run-count",
+        key_index=0,
+        modulus=9,
+        offset=1,
+    )
     executions = [
         (persisted_name, persisted_path, run_count),
-        (amcache_name, _full_path(amcache_name), 1 + skey[1] % 5),
-        (noise_names[0], _full_path(noise_names[0]), 1 + skey[2] % 5),
-        (absent_name, f"{temp}\\{absent_name}", 1 + skey[3] % 5),
+        (
+            amcache_name,
+            _full_path(amcache_name),
+            derivation.bounded_key_value(
+                skey,
+                "windows-prefetch-amcache-run-count",
+                key_index=1,
+                modulus=5,
+                offset=1,
+            ),
+        ),
+        (
+            noise_names[0],
+            _full_path(noise_names[0]),
+            derivation.bounded_key_value(
+                skey,
+                "windows-prefetch-noise-run-count",
+                key_index=2,
+                modulus=5,
+                offset=1,
+            ),
+        ),
+        (
+            absent_name,
+            f"{temp}\\{absent_name}",
+            derivation.bounded_key_value(
+                skey,
+                "windows-prefetch-absent-run-count",
+                key_index=3,
+                modulus=5,
+                offset=1,
+            ),
+        ),
     ]
     pf_names = []
     for name, path, count in executions:
         dev = _device_path(path)
-        pf = f"{name.upper()}-{prefetch_name_hash(dev):08X}.pf"
-        _write(staging_dir, pf, build_prefetch(name, dev, count))
+        pf = f"{name.upper()}-{prefetch_vista_name_hash(dev):08X}.pf"
+        _write(
+            staging_dir,
+            pf,
+            build_prefetch_v30(
+                name,
+                dev,
+                count,
+                timestamps=PrefetchTimestamps(
+                    last_run_filetime=timeline.executed.filetime,
+                    volume_creation_filetime=timeline.host_initialized.filetime,
+                ),
+                volume_serial=volume_serial,
+            ),
+        )
         pf_names.append(pf)
 
-    allowlist = sorted([*resident, "Software.run.hive", "Amcache.hve", *pf_names])
+    allowlist = sorted(
+        [
+            *resident,
+            "Software.run.hive",
+            "Amcache.hve",
+            "History",
+            WINDOWS_TASK_XML_SOURCE,
+            WINDOWS_SHELL_LINK_SOURCE,
+            *pf_names,
+        ]
+    )
     artifacts = suite.stage(scene_dir, staging_dir, allowlist)
 
     benchmark_relations = _keyed_order(
+        derivation,
         skey,
         "windows-question",
         benchmark_relations,
         identity=lambda relation: relation["selector"]["lower_case_long_path"],
     )
     benchmark_candidates = _keyed_order(
+        derivation,
         skey,
         "windows-candidate",
         [
@@ -331,6 +707,7 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
                       "md5": persisted.md5, "imphash": persisted.imphash,
                       "marker": persisted.marker, "run_count": run_count},
         "residents": _keyed_order(
+            derivation,
             skey,
             "windows-private-resident-truth",
             list(resident_claims.values()),
@@ -339,26 +716,83 @@ def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfil
         "benchmark_candidates": benchmark_candidates,
         "benchmark_relations": benchmark_relations,
         "orphan_execution": absent_name,
+        "prefetch": {
+            "artifact_count": len(executions),
+            "execution_names": sorted(name for name, _path, _count in executions),
+        },
+        "browser_download": browser_truth,
+        "scheduled_task": scheduled_task_truth,
+        "shell_link": shell_link_truth,
         "decoys": {"binaries": len(resident), "run_values": len(run_values),
-                   "amcache_rows": len(amcache_rows), "prefetch": len(pf_names)},
+                   "amcache_rows": len(amcache_rows), "prefetch": len(pf_names),
+                   "browser_downloads": len(browser_rows)},
         "pivots": {
             "persisted": "the one Run value naming a resident program -> that file on disk",
             "amcache": "five historical rows' FileId SHA1 values -> five resident files",
             "run_count": "Run value -> resident program -> its prefetch record",
             "orphan_execution": "the prefetch record naming a program absent from disk",
+            "browser_download": (
+                "completed-download content-addressed URL -> resident PE SHA256; "
+                "URL/referrer -> logical Zone.Identifier"
+            ),
+            "scheduled_task": (
+                "disabled trigger-free Task command -> a distinct resident PE reference; "
+                "configuration only, never execution"
+            ),
+            "shell_link": (
+                "local Shell Link target path/size/timestamps -> a distinct resident PE; "
+                "reference only, never execution"
+            ),
         },
     }
-    return Scene("windows", scene_dir, artifacts, join)
+    timestamp_roles = {
+        **{
+            name: (("artifact.file-created", timeline.file_created.unix_ns),)
+            for name in resident
+        },
+        "Software.run.hive": (
+            ("artifact.logical-updated", timeline.run_configured.unix_ns),
+            ("registry.run-key-last-written", timeline.run_configured.unix_ns),
+        ),
+        "Amcache.hve": (
+            ("artifact.logical-updated", timeline.amcache_observed.unix_ns),
+            ("registry.inventory-key-last-written", timeline.amcache_observed.unix_ns),
+        ),
+        "History": (
+            ("artifact.logical-updated", timeline.executed.unix_ns),
+        ),
+        WINDOWS_TASK_XML_SOURCE: (
+            ("artifact.logical-updated", timeline.run_configured.unix_ns),
+            ("task.definition-written", timeline.run_configured.unix_ns),
+        ),
+        WINDOWS_SHELL_LINK_SOURCE: (
+            ("artifact.logical-updated", timeline.run_configured.unix_ns),
+            ("shell-link.reference-written", timeline.run_configured.unix_ns),
+        ),
+        **{
+            name: (
+                ("artifact.logical-updated", timeline.prefetch_updated.unix_ns),
+                ("prefetch.last-run", timeline.executed.unix_ns),
+                ("prefetch.volume-created", timeline.host_initialized.unix_ns),
+            )
+            for name in pf_names
+        },
+    }
+    return Scene("windows", scene_dir, artifacts, join, timestamp_roles)
 
 
 def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
-                      scene_dir: str, staging_dir: str) -> Scene:
+                      scene_dir: str, staging_dir: str,
+                      causal_clock: CausalClockSpec | None = None,
+                      derivation: SceneDerivation = BENCHMARK_SCENE_DERIVATION) -> Scene:
+    derivation = _scene_derivation(derivation)
+    derivation.validate_key(skey)
+    timeline = _causal_clock(skey, causal_clock).macos()
     support = f"{profile.home_dir}/Library/Application Support"
-    t = profile.mac_abs_time()
 
     # Five candidate apps. Two hold an allowed TCC grant; only one of those was ever used.
-    bundles = suite.pick_many(skey, "bundles", pools.BUNDLES, 3)
-    benign = suite.pick_many(skey, "benign-bundles", pools.BENIGN_BUNDLES, 2)
+    bundles = derivation.pick_many(skey, "bundles", pools.BUNDLES, 3)
+    benign = derivation.pick_many(skey, "benign-bundles", pools.BENIGN_BUNDLES, 2)
     subject, also_granted, persisted_only = bundles
 
     def app_path(b):
@@ -371,10 +805,16 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
     binaries = {}
     all_bundles = [subject, also_granted, persisted_only, *benign]
     binary_order = _keyed_order(
-        skey, "macos-binary-generation", all_bundles, identity=lambda bundle: bundle
+        derivation,
+        skey,
+        "macos-binary-generation",
+        all_bundles,
+        identity=lambda bundle: bundle,
     )
     for b in binary_order:
-        c = store.materialize(f"macho:{b}:" + suite.content_seed(skey, f"macho:{b}"))
+        c = store.materialize(
+            f"macho:{b}:" + derivation.content_seed(skey, f"macho:{b}")
+        )
         binaries[b] = c
         _write(staging_dir, b, c.bytes)
 
@@ -383,18 +823,26 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
     # value into QuarantineEventsV2.  Bundle names do not occur in URLs, while agent and time
     # are deliberately equal across rows, leaving UUID equality as the only row selector.
     uuids, events = {}, []
-    shared_agent = suite.pick(skey, "quarantine-agent", pools.DOWNLOAD_AGENTS)
-    shared_host = suite.pick(skey, "quarantine-host", pools.DOWNLOAD_HOSTS)
+    shared_agent = derivation.pick(skey, "quarantine-agent", pools.DOWNLOAD_AGENTS)
+    shared_host = derivation.pick(skey, "quarantine-host", pools.DOWNLOAD_HOSTS)
     benchmark_relations = []
     for b in all_bundles:
-        u = deterministic_uuid(suite.content_seed(skey, f"quarantine:{b}"))
-        opaque_download = suite.content_seed(skey, f"quarantine-url:{b}")[:24]
+        u = deterministic_uuid(derivation.content_seed(skey, f"quarantine:{b}"))
+        opaque_download = derivation.content_seed(skey, f"quarantine-url:{b}")[:24]
         url = f"https://{shared_host}/downloads/{opaque_download}.dmg"
         uuids[b] = (u, shared_agent, url)
-        events.append((u, shared_agent, url, f"https://{shared_host}/downloads", t))
+        events.append(
+            (
+                u,
+                shared_agent,
+                url,
+                f"https://{shared_host}/downloads",
+                timeline.downloaded.mac_seconds_real,
+            )
+        )
         xattr_relative_path = f"{b}.quarantine.xattr"
         _write(staging_dir, f"{b}.quarantine.xattr",
-               quarantine_xattr(u, shared_agent, PINNED_UNIX).encode())
+               quarantine_xattr(u, shared_agent, timeline.downloaded.unix_seconds).encode())
         benchmark_relations.append({
             "rule": MACOS_QUARANTINE_RULE,
             "selector": {"xattr_relative_path": xattr_relative_path},
@@ -403,25 +851,50 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
             "link_value": u,
         })
     events = _keyed_order(
-        skey, "macos-quarantine-row", events, identity=lambda event: event[0]
+        derivation,
+        skey,
+        "macos-quarantine-row",
+        events,
+        identity=lambda event: event[0],
     )
     _write(staging_dir, "QuarantineEventsV2", build_quarantine_events(events))
 
     # --- TCC: four clients, two allowed. Only one of those appears in knowledgeC -------
     tcc_rows = [
-        (subject, suite.pick(skey, "tcc-subject", pools.TCC_SERVICES), 2),
-        (also_granted, suite.pick(skey, "tcc-other", pools.TCC_SERVICES), 2),
+        (subject, derivation.pick(skey, "tcc-subject", pools.TCC_SERVICES), 2),
+        (also_granted, derivation.pick(skey, "tcc-other", pools.TCC_SERVICES), 2),
         (benign[0], "kTCCServiceAppleEvents", 0),
         (persisted_only, "kTCCServiceCamera", 0),
     ]
     # TCC stores Unix time, not Mac absolute time — see build_tcc.
     _write(staging_dir, "TCC.db",
-           build_tcc([(c, s, a, PINNED_UNIX) for c, s, a in tcc_rows]))
+           build_tcc([
+               (c, s, a, timeline.tcc_decided.unix_seconds)
+               for c, s, a in tcc_rows
+           ]))
 
     # --- knowledgeC: three apps actually used -----------------------------------------
     used = [subject, *benign]
-    _write(staging_dir, "knowledgeC.db",
-           build_knowledgec([(b, t + 60 * i, t + 60 * i + 120) for i, b in enumerate(used)]))
+    knowledge_intervals = tuple(
+        timeline.knowledge_interval(index, count=len(used))
+        for index in range(len(used))
+    )
+    knowledge_identity_seed = None
+    if derivation != BENCHMARK_SCENE_DERIVATION:
+        knowledge_identity_seed = bytes.fromhex(
+            derivation.content_seed(skey, "knowledgec-row-identities")
+        )
+    _write(
+        staging_dir,
+        "knowledgeC.db",
+        build_knowledgec(
+            [
+                (bundle, interval.start.mac_seconds_real, interval.end.mac_seconds_real)
+                for bundle, interval in zip(used, knowledge_intervals, strict=True)
+            ],
+            identity_seed=knowledge_identity_seed,
+        ),
+    )
 
     # --- persistence: three LaunchAgents, only one for an app with an allowed grant ----
     agents = [subject, persisted_only, benign[1]]
@@ -435,12 +908,14 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
     artifacts = suite.stage(scene_dir, staging_dir, allowlist)
 
     benchmark_relations = _keyed_order(
+        derivation,
         skey,
         "macos-question",
         benchmark_relations,
         identity=lambda relation: relation["selector"]["xattr_relative_path"],
     )
     benchmark_candidates = _keyed_order(
+        derivation,
         skey,
         "macos-candidate",
         [
@@ -452,6 +927,7 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
     u, agent, url = uuids[subject]
     c = binaries[subject]
     binary_truth = _keyed_order(
+        derivation,
         skey,
         "macos-private-binary-truth",
         [
@@ -494,11 +970,51 @@ def build_macos_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
             "sha256": "subject -> the binary on disk carrying its bundle identifier",
         },
     }
-    return Scene("macos", scene_dir, artifacts, join)
+    timestamp_roles = {
+        **{
+            bundle: (("artifact.logical-installed", timeline.installed.unix_ns),)
+            for bundle in all_bundles
+        },
+        **{
+            f"{bundle}.quarantine.xattr": (
+                ("artifact.logical-updated", timeline.downloaded.unix_ns),
+                ("quarantine.timestamp", timeline.downloaded.unix_ns),
+            )
+            for bundle in all_bundles
+        },
+        "QuarantineEventsV2": (
+            ("artifact.logical-updated", timeline.downloaded.unix_ns),
+            ("quarantine.event-timestamp", timeline.downloaded.unix_ns),
+        ),
+        "TCC.db": (
+            ("artifact.logical-updated", timeline.tcc_decided.unix_ns),
+            ("tcc.last-modified", timeline.tcc_decided.unix_ns),
+        ),
+        "knowledgeC.db": (
+            ("artifact.logical-updated", timeline.knowledge_ended.unix_ns),
+            *tuple(
+                item
+                for index, interval in enumerate(knowledge_intervals)
+                for item in (
+                    (f"knowledge.record-{index}.start", interval.start.unix_ns),
+                    (f"knowledge.record-{index}.end", interval.end.unix_ns),
+                )
+            ),
+        ),
+        **{
+            f"{bundle}.plist": (
+                ("artifact.logical-updated", timeline.launch_agent_written.unix_ns),
+            )
+            for bundle in agents
+        },
+    }
+    return Scene("macos", scene_dir, artifacts, join, timestamp_roles)
 
 
 def build_linux_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
-                      scene_dir: str, staging_dir: str) -> Scene:
+                      scene_dir: str, staging_dir: str,
+                      causal_clock: CausalClockSpec | None = None,
+                      derivation: SceneDerivation = BENCHMARK_SCENE_DERIVATION) -> Scene:
     """Build the bounded glibc/x86-64 loose-artifact assurance scene.
 
     This is not a benchmark task and does not claim a working desktop session.  It emits five
@@ -511,8 +1027,11 @@ def build_linux_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
         raise ValueError(
             "Linux loose scenes require the exact linux/glibc-x86_64 host profile"
         )
+    derivation = _scene_derivation(derivation)
+    derivation.validate_key(skey)
+    timeline = _causal_clock(skey, causal_clock).linux()
 
-    names = suite.pick_many(skey, "linux-residents", pools.LINUX_EXECUTABLE_NAMES, 5)
+    names = derivation.pick_many(skey, "linux-residents", pools.LINUX_EXECUTABLE_NAMES, 5)
     roles = (
         "subject",
         "autostart-decoy-1",
@@ -524,7 +1043,9 @@ def build_linux_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
     for role, name in zip(roles, names):
         guest_path = f"{profile.home_dir}/.local/bin/{name}"
         served_relpath = _linux_served_path(profile, guest_path)
-        content = store.materialize("elf:" + suite.content_seed(skey, f"linux:{role}"))
+        content = store.materialize(
+            "elf:" + derivation.content_seed(skey, f"linux:{role}")
+        )
         _write(staging_dir, served_relpath, content.bytes)
         resident_by_role[role] = {
             "role": role,
@@ -569,11 +1090,10 @@ def build_linux_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
         resident_by_role[role]["guest_path"] for role in roles
     )
     history_entries = [
-        (PINNED_UNIX, ": 'ARTIFACTFORGE-SYNTHETIC-LINUX'"),
-        *[
-            (PINNED_UNIX + index, resident_by_role[role]["guest_path"])
-            for index, role in enumerate(history_roles, start=1)
-        ],
+        (timeline.history_marker.unix_seconds, ": 'ARTIFACTFORGE-SYNTHETIC-LINUX'"),
+        (timeline.history_subject.unix_seconds, resident_by_role[history_roles[0]]["guest_path"]),
+        (timeline.history_decoy_one.unix_seconds, resident_by_role[history_roles[1]]["guest_path"]),
+        (timeline.history_decoy_two.unix_seconds, resident_by_role[history_roles[2]]["guest_path"]),
     ]
     _write(
         staging_dir,
@@ -616,4 +1136,25 @@ def build_linux_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
             "digest": "guest path -> exact served relative path -> resident ELF bytes",
         },
     }
-    return Scene("linux", scene_dir, artifacts, join)
+    timestamp_roles = {
+        **{
+            resident["served_relpath"]: (
+                ("artifact.logical-installed", timeline.installed.unix_ns),
+            )
+            for resident in residents
+        },
+        **{
+            record["served_relpath"]: (
+                ("artifact.logical-updated", timeline.autostart_written.unix_ns),
+            )
+            for record in desktop_records
+        },
+        history_served: (
+            ("artifact.logical-updated", timeline.history_decoy_two.unix_ns),
+            ("bash-history.record-0", timeline.history_marker.unix_ns),
+            ("bash-history.record-1", timeline.history_subject.unix_ns),
+            ("bash-history.record-2", timeline.history_decoy_one.unix_ns),
+            ("bash-history.record-3", timeline.history_decoy_two.unix_ns),
+        ),
+    }
+    return Scene("linux", scene_dir, artifacts, join, timestamp_roles)

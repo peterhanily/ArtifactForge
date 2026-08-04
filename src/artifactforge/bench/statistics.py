@@ -26,6 +26,10 @@ MIN_SCENES_PER_FAMILY = 20
 PREDECLARED_SIGNAL_PROBABILITY = Fraction(1, 2)
 PREDECLARED_TARGET_POWER = Fraction(99, 100)
 SCENE_CANDIDATE_COUNT = 5
+SPARSE_POWER_SCENES_PER_FAMILY = 60
+ONE_CORRECT_EDGE_EVERY_SCENE = "one-correct-edge-every-scene-v1"
+WHOLE_MAPPING_QUARTER_SCENES = "whole-mapping-quarter-scenes-v1"
+WHOLE_MAPPING_QUARTER_PROBABILITY = Fraction(1, 4)
 
 
 def _probability(value, *, name: str, allow_zero: bool = False) -> Fraction:
@@ -329,6 +333,213 @@ def permutation_power_contract(
 
 
 @dataclass(frozen=True)
+class NamedSparseAlternativePower:
+    """Exact power for one named, predeclared sparse shortcut alternative."""
+
+    name: str
+    model: str
+    signal_probability: Fraction
+    one_scene_probabilities: tuple[Fraction, ...]
+    power: Fraction
+    minimum_scenes_for_target: int | None
+    target_power: Fraction
+
+    @property
+    def target_met(self) -> bool:
+        return self.power >= self.target_power
+
+
+@dataclass(frozen=True)
+class SparsePermutationPowerContract:
+    """Exact family-level power contract over all named sparse alternatives."""
+
+    scene_count: int
+    candidate_count: int
+    minimum_scenes: int
+    comparisons: int
+    familywise_alpha: Fraction
+    adjusted_alpha: Fraction
+    critical_hits: int | None
+    null_upper_tail: Fraction
+    target_power: Fraction
+    alternatives: tuple[NamedSparseAlternativePower, ...]
+
+    @property
+    def minimum_met(self) -> bool:
+        return self.scene_count >= self.minimum_scenes
+
+    @property
+    def target_met(self) -> bool:
+        return all(alternative.target_met for alternative in self.alternatives)
+
+    @property
+    def satisfied(self) -> bool:
+        return self.minimum_met and self.target_met
+
+    @property
+    def worst_case_power(self) -> Fraction:
+        return min(alternative.power for alternative in self.alternatives)
+
+    def alternative(self, name: str) -> NamedSparseAlternativePower:
+        """Return one named alternative or fail rather than silently substituting one."""
+        for alternative in self.alternatives:
+            if alternative.name == name:
+                return alternative
+        raise KeyError(name)
+
+
+@dataclass(frozen=True)
+class _SparseAlternativeDefinition:
+    name: str
+    model: str
+    signal_probability: Fraction
+    one_scene_probabilities: tuple[Fraction, ...]
+
+
+def _sparse_alternative_definitions(
+    candidate_count: int,
+) -> tuple[_SparseAlternativeDefinition, ...]:
+    """Build the two exact one-scene alternatives without sampling."""
+    remaining_count = candidate_count - 1
+    remaining_denominator = factorial(remaining_count)
+    one_edge = (Fraction(0),) + tuple(
+        Fraction(count, remaining_denominator)
+        for count in fixed_point_permutation_counts(remaining_count)
+    )
+
+    null_counts = fixed_point_permutation_counts(candidate_count)
+    null_denominator = factorial(candidate_count)
+    whole_mapping_probability = WHOLE_MAPPING_QUARTER_PROBABILITY
+    whole_mapping_quarter = tuple(
+        (1 - whole_mapping_probability) * Fraction(count, null_denominator)
+        + (whole_mapping_probability if hits == candidate_count else 0)
+        for hits, count in enumerate(null_counts)
+    )
+    return (
+        _SparseAlternativeDefinition(
+            name=ONE_CORRECT_EDGE_EVERY_SCENE,
+            model="one-fixed-edge-plus-uniform-remaining-bijection-v1",
+            signal_probability=Fraction(1),
+            one_scene_probabilities=one_edge,
+        ),
+        _SparseAlternativeDefinition(
+            name=WHOLE_MAPPING_QUARTER_SCENES,
+            model="whole-mapping-recovery-mixture-v1",
+            signal_probability=whole_mapping_probability,
+            one_scene_probabilities=whole_mapping_quarter,
+        ),
+    )
+
+
+def _critical_region(
+    null_counts: Sequence[int],
+    *,
+    null_denominator: int,
+    adjusted_alpha: Fraction,
+) -> tuple[int | None, Fraction]:
+    for hits in range(len(null_counts)):
+        tail = Fraction(sum(null_counts[hits:]), null_denominator)
+        if tail <= adjusted_alpha:
+            return hits, tail
+    return None, Fraction(0)
+
+
+def sparse_permutation_power_contract(
+    scene_count: int,
+    *,
+    comparisons: int,
+    candidate_count: int = SCENE_CANDIDATE_COUNT,
+    familywise_alpha=DEFAULT_FAMILYWISE_ALPHA,
+    minimum_scenes: int = SPARSE_POWER_SCENES_PER_FAMILY,
+    target_power=PREDECLARED_TARGET_POWER,
+) -> SparsePermutationPowerContract:
+    """Evaluate exact power for both predeclared sparse alternatives.
+
+    ``one-correct-edge-every-scene-v1`` fixes one specified edge in every scene and
+    uniformly permutes the remaining candidates. ``whole-mapping-quarter-scenes-v1``
+    independently recovers the complete mapping with probability one quarter and otherwise
+    draws a uniform candidate permutation. The returned minimum for each alternative is the
+    first exact scene count, up to the larger of ``scene_count`` and ``minimum_scenes``, whose
+    power reaches ``target_power``. A missing minimum means the predeclared evaluated range is
+    insufficient; it is never extrapolated from a simulation or asymptotic approximation.
+    """
+    scene_count = _positive_integer(scene_count, name="scene_count")
+    candidate_count = _positive_integer(candidate_count, name="candidate_count")
+    if candidate_count < 2:
+        raise ValueError("candidate_count must be at least two for a sparse edge alternative")
+    comparisons = _positive_integer(comparisons, name="comparisons")
+    minimum_scenes = _positive_integer(minimum_scenes, name="minimum_scenes")
+    alpha = _probability(familywise_alpha, name="familywise_alpha")
+    target = _probability(target_power, name="target_power")
+    adjusted_alpha = alpha / comparisons
+
+    definitions = _sparse_alternative_definitions(candidate_count)
+    null_one_scene = fixed_point_permutation_counts(candidate_count)
+    null_denominator_per_scene = factorial(candidate_count)
+    null_counts: tuple[int, ...] = (1,)
+    null_denominator = 1
+    alternative_distributions = {
+        definition.name: (Fraction(1),) for definition in definitions
+    }
+    minimums: dict[str, int] = {}
+    requested_critical_hits: int | None = None
+    requested_null_tail = Fraction(0)
+    requested_powers: dict[str, Fraction] = {}
+
+    for current_scene_count in range(1, max(scene_count, minimum_scenes) + 1):
+        null_counts = _convolve_counts(null_counts, null_one_scene)
+        null_denominator *= null_denominator_per_scene
+        critical_hits, null_tail = _critical_region(
+            null_counts,
+            null_denominator=null_denominator,
+            adjusted_alpha=adjusted_alpha,
+        )
+        for definition in definitions:
+            distribution = _convolve_probabilities(
+                alternative_distributions[definition.name],
+                definition.one_scene_probabilities,
+            )
+            alternative_distributions[definition.name] = distribution
+            power = (
+                sum(distribution[critical_hits:], Fraction(0))
+                if critical_hits is not None
+                else Fraction(0)
+            )
+            if power >= target and definition.name not in minimums:
+                minimums[definition.name] = current_scene_count
+            if current_scene_count == scene_count:
+                requested_powers[definition.name] = power
+        if current_scene_count == scene_count:
+            requested_critical_hits = critical_hits
+            requested_null_tail = null_tail
+
+    alternatives = tuple(
+        NamedSparseAlternativePower(
+            name=definition.name,
+            model=definition.model,
+            signal_probability=definition.signal_probability,
+            one_scene_probabilities=definition.one_scene_probabilities,
+            power=requested_powers[definition.name],
+            minimum_scenes_for_target=minimums.get(definition.name),
+            target_power=target,
+        )
+        for definition in definitions
+    )
+    return SparsePermutationPowerContract(
+        scene_count=scene_count,
+        candidate_count=candidate_count,
+        minimum_scenes=minimum_scenes,
+        comparisons=comparisons,
+        familywise_alpha=alpha,
+        adjusted_alpha=adjusted_alpha,
+        critical_hits=requested_critical_hits,
+        null_upper_tail=requested_null_tail,
+        target_power=target,
+        alternatives=alternatives,
+    )
+
+
+@dataclass(frozen=True)
 class RankPermutationModel:
     """One attack's fixed rank permutation selected on development scenes."""
 
@@ -545,6 +756,8 @@ __all__ = [
     "DEFAULT_FAMILYWISE_ALPHA",
     "ExactPermutationResult",
     "MIN_SCENES_PER_FAMILY",
+    "NamedSparseAlternativePower",
+    "ONE_CORRECT_EDGE_EVERY_SCENE",
     "PREDECLARED_SIGNAL_PROBABILITY",
     "PREDECLARED_TARGET_POWER",
     "PermutationPowerContract",
@@ -552,6 +765,10 @@ __all__ = [
     "RankPermutationModel",
     "RankUnionModel",
     "SCENE_CANDIDATE_COUNT",
+    "SPARSE_POWER_SCENES_PER_FAMILY",
+    "SparsePermutationPowerContract",
+    "WHOLE_MAPPING_QUARTER_PROBABILITY",
+    "WHOLE_MAPPING_QUARTER_SCENES",
     "bonferroni_alpha",
     "exact_permutation_inference",
     "fixed_point_permutation_counts",
@@ -559,5 +776,6 @@ __all__ = [
     "permutation_power_contract",
     "require_minimum_scene_counts",
     "scene_permutation_counts",
+    "sparse_permutation_power_contract",
     "train_rank_union",
 ]

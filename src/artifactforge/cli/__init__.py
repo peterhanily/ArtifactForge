@@ -10,12 +10,13 @@ a check that cannot fail a build is a comment.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,8 @@ from artifactforge.gates import GateReport, identity, inertness, solvability, va
 from artifactforge.inventory import (
     InventoryError,
     canonical_relative_paths,
+    directory_ancestry_snapshot,
+    directory_path_matches_descriptor,
     inventory_regular_files,
     open_real_directory,
     write_regular_file_at,
@@ -39,6 +42,8 @@ _MAX_SUBMISSION_BYTES = 16 * 1024 * 1024
 _MAX_SUBMISSION_LINE_BYTES = 1024 * 1024
 _MAX_SUBMISSION_ROWS = suite.BENCHMARK_MAX_SCENARIOS
 _MAX_SUBMISSION_ANSWER_CHARS = suite.BENCHMARK_ANSWER_MAX_CHARS
+_MAX_RETIRED_REPORT_BYTES = 32 * 1024 * 1024
+_SHA256_LABEL = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def _positive_count(value: str) -> int:
@@ -52,17 +57,317 @@ def _positive_count(value: str) -> int:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _benchmark_v3_count(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("scenario count must be an integer") from exc
+    try:
+        return suite.validate_benchmark_v3_scenario_count(count)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _labelled_sha256(value: str) -> str:
+    if _SHA256_LABEL.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("digest must be sha256: followed by 64 lowercase hex")
+    return value
+
+
+def _read_cli_regular(path: str | os.PathLike[str], where: str, *, max_bytes: int) -> bytes:
+    source = Path(path)
+    if not source.name or source.name in {".", ".."}:
+        raise ValueError(f"{where} must name one regular file")
+    try:
+        parent = source.parent.resolve(strict=True)
+        parent_fd = open_real_directory(parent)
+    except (InventoryError, OSError) as exc:
+        raise ValueError(f"{where} parent must be a real directory: {exc}") from exc
+    try:
+        return suite._read_regular_at(parent_fd, source.name, where, max_bytes=max_bytes)
+    finally:
+        os.close(parent_fd)
+
+
+def _read_detached_cli_regular(
+    path: str | os.PathLike[str], where: str, *, max_bytes: int
+) -> bytes:
+    """Read one bounded stable file without requiring live-ledger POSIX primitives.
+
+    The resolved parent and final file must be real filesystem objects, not symlinks or
+    Windows reparse points.  Identity is checked before opening, immediately after opening,
+    and again after the read.  ``O_NOFOLLOW`` is used where the host exposes it; the identity
+    check fails closed on hosts where it does not.
+    """
+    source = Path(path)
+    if not source.name or source.name in {".", ".."}:
+        raise ValueError(f"{where} must name one regular file")
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError(f"{where} byte limit must be a positive integer")
+
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def is_reparse(value: os.stat_result) -> bool:
+        attributes = getattr(value, "st_file_attributes", 0)
+        return bool(attributes & reparse_flag)
+
+    descriptor = -1
+    try:
+        parent = source.parent.resolve(strict=True)
+        parent_before = parent.lstat()
+        if (
+            stat.S_ISLNK(parent_before.st_mode)
+            or not stat.S_ISDIR(parent_before.st_mode)
+            or is_reparse(parent_before)
+        ):
+            raise ValueError(f"{where} parent must be a real directory")
+        candidate = parent / source.name
+        before = candidate.lstat()
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or is_reparse(before)
+        ):
+            raise ValueError(f"{where} must be a regular file, not a link or special file")
+        if before.st_size > max_bytes:
+            raise ValueError(f"{where} exceeds the {max_bytes}-byte input limit")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOINHERIT", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(candidate, flags)
+        opened = os.fstat(descriptor)
+        after_open_path = candidate.lstat()
+        parent_after_open = parent.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or is_reparse(opened)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (after_open_path.st_dev, after_open_path.st_ino)
+            != (opened.st_dev, opened.st_ino)
+            or stat.S_ISLNK(after_open_path.st_mode)
+            or not stat.S_ISREG(after_open_path.st_mode)
+            or is_reparse(after_open_path)
+            or (parent_before.st_dev, parent_before.st_ino)
+            != (parent_after_open.st_dev, parent_after_open.st_ino)
+            or not stat.S_ISDIR(parent_after_open.st_mode)
+            or is_reparse(parent_after_open)
+        ):
+            raise ValueError(f"{where} changed while it was being opened")
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := os.read(descriptor, 1024 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{where} exceeds the {max_bytes}-byte input limit")
+            chunks.append(chunk)
+        after_read = os.fstat(descriptor)
+        after_path = candidate.lstat()
+        parent_after = parent.lstat()
+    except ValueError:
+        raise
+    except (NotImplementedError, OSError, RuntimeError) as exc:
+        raise ValueError(f"cannot safely read {where}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if (
+        any(
+            getattr(opened, field) != getattr(after_read, field)
+            or getattr(after_read, field) != getattr(after_path, field)
+            for field in stable
+        )
+        or (parent_before.st_dev, parent_before.st_ino)
+        != (parent_after.st_dev, parent_after.st_ino)
+        or not stat.S_ISDIR(parent_after.st_mode)
+        or is_reparse(parent_after)
+        or stat.S_ISLNK(after_path.st_mode)
+        or not stat.S_ISREG(after_path.st_mode)
+        or is_reparse(after_path)
+    ):
+        raise ValueError(f"{where} changed while it was being read")
+    data = b"".join(chunks)
+    if len(data) != after_read.st_size:
+        raise ValueError(f"{where} length changed while it was being read")
+    return data
+
+
+class _PinnedCliOutput:
+    """One held output parent proven outside an exact public-export inode."""
+
+    def __init__(
+        self,
+        *,
+        parent: Path,
+        parent_fd: int,
+        name: str,
+        forbidden_identity: tuple[int, int],
+        ancestry: tuple[tuple[int, int], ...],
+        where: str,
+    ) -> None:
+        self.parent = parent
+        self.parent_fd = parent_fd
+        self.name = name
+        self.forbidden_identity = forbidden_identity
+        self.ancestry = ancestry
+        self.where = where
+
+    def require_stable(self) -> None:
+        """Recheck containment, ancestry and pathname binding through held descriptors."""
+        try:
+            current = directory_ancestry_snapshot(self.parent_fd)
+        except InventoryError as exc:
+            raise ValueError(
+                f"cannot recheck {self.where} parent ancestry safely: {exc}"
+            ) from exc
+        if self.forbidden_identity in current:
+            raise ValueError(
+                f"{self.where} output must be outside the public export "
+                "validated by its held directory inode"
+            )
+        if current != self.ancestry:
+            raise ValueError(f"{self.where} parent ancestry changed during the operation")
+        if not directory_path_matches_descriptor(self.parent, self.parent_fd):
+            raise ValueError(f"{self.where} parent path changed during the operation")
+
+
+@contextmanager
+def _pinned_public_output(
+    public_root: str | os.PathLike[str],
+    output: str | os.PathLike[str],
+    where: str,
+):
+    """Pin the export and an output parent, then enforce their inode disjointness."""
+    destination = Path(output)
+    if not destination.name or destination.name in {".", ".."}:
+        raise ValueError(f"{where} must have one non-empty final component")
+    public_fd = parent_fd = -1
+    try:
+        try:
+            public_fd = open_real_directory(public_root)
+            parent = destination.parent.resolve(strict=True)
+            parent_fd = open_real_directory(parent)
+            public_state = os.fstat(public_fd)
+            ancestry = directory_ancestry_snapshot(parent_fd)
+            boundary = _PinnedCliOutput(
+                parent=parent,
+                parent_fd=parent_fd,
+                name=destination.name,
+                forbidden_identity=(public_state.st_dev, public_state.st_ino),
+                ancestry=ancestry,
+                where=where,
+            )
+            boundary.require_stable()
+        except InventoryError as exc:
+            raise ValueError(
+                f"cannot establish safe {where} output boundary: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise ValueError(f"{where} parent must be a real directory: {exc}") from exc
+        yield public_fd, boundary
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if public_fd >= 0:
+            os.close(public_fd)
+
+
+def _publish_private_cli_file(
+    boundary: _PinnedCliOutput, payload: bytes, where: str
+) -> None:
+    """Publish below a held parent only while its export boundary remains unchanged."""
+    boundary.require_stable()
+    try:
+        write_regular_file_at(boundary.parent_fd, boundary.name, payload, mode=0o600)
+        published = os.stat(
+            boundary.name,
+            dir_fd=boundary.parent_fd,
+            follow_symlinks=False,
+        )
+    except InventoryError as exc:
+        raise ValueError(f"cannot publish {where} safely: {exc}") from exc
+    except (NotImplementedError, OSError) as exc:
+        raise ValueError(f"cannot inspect published {where} safely: {exc}") from exc
+    try:
+        boundary.require_stable()
+    except ValueError as boundary_error:
+        cleanup_succeeded = False
+        try:
+            current = os.stat(
+                boundary.name,
+                dir_fd=boundary.parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                (current.st_dev, current.st_ino) == (published.st_dev, published.st_ino)
+                and current.st_size == published.st_size
+            ):
+                os.unlink(boundary.name, dir_fd=boundary.parent_fd)
+                cleanup_succeeded = True
+        except (NotImplementedError, OSError):
+            pass
+        if not cleanup_succeeded:
+            raise ValueError(
+                f"{where} output boundary changed after publication and exact cleanup "
+                "could not be confirmed"
+            ) from boundary_error
+        raise
+
+
+def _require_disjoint_roots(
+    evaluator: str | os.PathLike[str], other: str | os.PathLike[str], *, other_exists: bool
+) -> None:
+    """Reject an attempt/reveal path nested in the exact private evaluator root."""
+    evaluator_root = Path(evaluator).resolve(strict=True)
+    candidate = Path(other)
+    if other_exists:
+        other_path = candidate.resolve(strict=True)
+    else:
+        other_path = candidate.parent.resolve(strict=True) / candidate.name
+    try:
+        other_path.relative_to(evaluator_root)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("attempt state and reveal files must be outside the evaluator root")
+    if other_exists:
+        try:
+            evaluator_root.relative_to(other_path)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("attempt state must not contain the evaluator root")
+
+
 def _merge(gate: int, name: str, question: str, reports) -> GateReport:
-    """Fold per-scenario reports into one. Metrics sum; reasons are deduped, order kept."""
+    """Fold per-scenario reports into one. Numeric leaves sum at any declared depth."""
+
+    def merge_metrics(target: dict, source: dict, prefix: str = "metrics") -> None:
+        for key, value in source.items():
+            where = f"{prefix}.{key}"
+            if isinstance(value, (int, float)):
+                existing = target.get(key, 0)
+                if not isinstance(existing, (int, float)):
+                    raise TypeError(f"metric shape changed at {where}")
+                target[key] = existing + value
+            elif isinstance(value, dict):
+                existing = target.setdefault(key, {})
+                if not isinstance(existing, dict):
+                    raise TypeError(f"metric shape changed at {where}")
+                merge_metrics(existing, value, where)
+
     out = GateReport(gate, name, question)
     for r in reports:
         for f in r.fails:
             out.fail(f)
         for g in r.gaps:
             out.gap(g)
-        for k, v in r.metrics.items():
-            if isinstance(v, (int, float)):
-                out.metrics[k] = out.metrics.get(k, 0) + v
+        merge_metrics(out.metrics, r.metrics)
     return out
 
 
@@ -85,7 +390,7 @@ def _dev(args) -> list:
 
 
 def _holdout(args) -> list:
-    """A hold-out suite: a key the adversaries do not have, which is the whole test."""
+    """A private-key v2 corpus for local Gate 4 diagnostics, never performance reporting."""
     if not getattr(args, "_holdout", None):
         args._holdout = generate_suite(
             args.n, os.path.join(_workdir(args), "holdout"), key=suite.new_key(), kind="holdout"
@@ -332,6 +637,9 @@ def cmd_scorecard(args) -> int:
         measurement=suite.scorecard_measurement_provenance(args.n),
         source=source,
     )
+    require_pass_failed = bool(
+        getattr(args, "require_pass", False) and card.get("verdict") != "pass"
+    )
     try:
         rendered_card = validated_bytes(card)
     except (ScorecardError, TypeError) as exc:
@@ -351,7 +659,7 @@ def cmd_scorecard(args) -> int:
         print(render_measurement_compatibility(baseline, card))
         print(render_status_comparison(baseline, card))
         print(_scorecard_status_summary(card))
-        return 1 if rows or incompatible or status_rows else 0
+        return 1 if rows or incompatible or status_rows or require_pass_failed else 0
     if args.out:
         try:
             save(card, args.out)
@@ -364,7 +672,7 @@ def cmd_scorecard(args) -> int:
         )
     else:
         sys.stdout.write(rendered_card.decode("utf-8"))
-    return 0
+    return 1 if require_pass_failed else 0
 
 
 def _scorecard_status_summary(card: dict) -> str:
@@ -382,7 +690,7 @@ def _scorecard_status_summary(card: dict) -> str:
 def cmd_bench_new(args) -> int:
     key = suite.PUBLIC_DEV_KEY if args.kind == "dev" else suite.new_key()
     tasks = generate_suite(args.n, args.out, key=key, kind=args.kind)
-    print(f"wrote {len(tasks)} scenarios to {args.out} ({args.kind} suite)")
+    print(f"wrote {len(tasks)} scenarios to {args.out} ({args.kind} legacy v2 local suite)")
     if args.kind == "dev":
         print(
             "  NOTE: a dev suite is built with the key published in the source. Anyone can\n"
@@ -392,8 +700,23 @@ def cmd_bench_new(args) -> int:
         print(
             f"  key: {suite.suite_paths(args.out)['key']}\n"
             f"       Lose it and this suite can never be regenerated or audited. "
-            f"Never commit it."
+            "Never commit it. This v2 local suite is permanently non-reportable."
         )
+    return 0
+
+
+def cmd_bench_ceremony_create(args) -> int:
+    """Create one self-attested v3 evaluator root without accepting caller key material."""
+    from artifactforge.bench.ceremony import create_evaluator_ceremony
+
+    tasks = create_evaluator_ceremony(args.n, args.out)
+    document = suite.load_evaluator_public(args.out)
+    origin = document["origin"]
+    print(f"wrote {len(tasks)} scenarios to {args.out} (benchmark v3 evaluator ceremony)")
+    print(f"  ceremony_id: {origin['ceremony_id']}")
+    print(f"  suite_id: {document['suite_id']}")
+    print(f"  reportability: {origin['reportability']} (not itself a reportable result)")
+    print(f"  TRUST: {origin['trust']}")
     return 0
 
 
@@ -542,45 +865,125 @@ def cmd_bench_solve(args) -> int:
     """
     from artifactforge.bench.benchmark import frozen_public_tasks
     from artifactforge.bench.reference_solver import reference_solve
+    from artifactforge.bench.submission import canonical_submission_bytes
 
-    suite_root = Path(args.suite).resolve(strict=True)
-    submission = Path(args.out).resolve(strict=False)
-    try:
-        submission.relative_to(suite_root)
-    except ValueError:
-        pass
-    else:
-        raise ValueError("solver submission output must be outside the public export")
-
-    with frozen_public_tasks(args.suite) as (public, tasks):
-        rows = []
-        for task in tasks:
-            rows.append(
-                json.dumps(
-                    {
-                        "suite_id": public["suite_id"],
-                        "scenario_id": task.scenario_id,
-                        "answers": reference_solve(task),
-                    },
-                    allow_nan=False,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-            )
-    payload = ("\n".join(rows) + "\n").encode("utf-8")
-    try:
-        submission_parent = submission.parent.resolve(strict=True)
-        parent_fd = open_real_directory(submission_parent)
-    except (InventoryError, OSError) as exc:
-        raise ValueError(f"submission parent must be a real directory: {exc}") from exc
-    try:
-        write_regular_file_at(parent_fd, submission.name, payload, mode=0o600)
-    except InventoryError as exc:
-        raise ValueError(f"cannot publish solver submission safely: {exc}") from exc
-    finally:
-        os.close(parent_fd)
+    with _pinned_public_output(
+        args.suite,
+        args.out,
+        "solver submission",
+    ) as (public_fd, output):
+        with frozen_public_tasks(args.suite, pinned_root_fd=public_fd) as (public, tasks):
+            answers = {}
+            for task in tasks:
+                answers[task.scenario_id] = reference_solve(task)
+            payload = canonical_submission_bytes(public, answers)
+        _publish_private_cli_file(output, payload, "solver submission")
     print(f"wrote {len(tasks)} submissions to {args.out}")
+    return 0
+
+
+def cmd_bench_precommit(args) -> int:
+    """Bind canonical reveal bytes and solver-supplied provenance before evaluator receipt."""
+    from artifactforge.bench.submission import MAX_SUBMISSION_BYTES, build_precommit
+
+    with _pinned_public_output(
+        args.public,
+        args.out,
+        "benchmark precommitment",
+    ) as (public_fd, output):
+        public = suite.load_public_export(
+            args.public,
+            pinned_root_fd=public_fd,
+        )
+        reveal = _read_cli_regular(
+            args.submission,
+            "benchmark submission",
+            max_bytes=MAX_SUBMISSION_BYTES,
+        )
+        document = build_precommit(
+            public,
+            reveal,
+            implementation_sha256=args.implementation_sha256,
+            configuration_sha256=args.configuration_sha256,
+            source_sha256=args.source_sha256,
+        )
+        _publish_private_cli_file(
+            output,
+            suite.canonical_public_bytes(document),
+            "benchmark precommitment",
+        )
+    print(f"wrote precommitment {document['commitment_id']} to {args.out}")
+    print(f"  suite_id: {document['suite_id']}")
+    print("  LIMITATION: solver provenance digests are caller assertions, not attestations.")
+    return 0
+
+
+def cmd_bench_attempt_accept(args) -> int:
+    from artifactforge.bench.attempt import accept_precommit
+    from artifactforge.bench.submission import MAX_PRECOMMIT_BYTES
+
+    _require_disjoint_roots(args.evaluator, args.ledger, other_exists=False)
+    precommit = _read_cli_regular(
+        args.precommit,
+        "benchmark precommitment",
+        max_bytes=MAX_PRECOMMIT_BYTES,
+    )
+    acceptance = accept_precommit(args.ledger, args.evaluator, precommit)
+    sys.stdout.buffer.write(suite.canonical_public_bytes(acceptance))
+    return 0
+
+
+def cmd_bench_attempt_consume(args) -> int:
+    from artifactforge.bench.attempt import consume_attempt
+
+    _require_disjoint_roots(args.evaluator, args.ledger, other_exists=True)
+    receipt = consume_attempt(
+        args.ledger,
+        args.evaluator,
+        args.submission,
+    )
+    sys.stdout.buffer.write(suite.canonical_public_bytes(receipt))
+    return 0
+
+
+def cmd_bench_attempt_retire(args) -> int:
+    from artifactforge.bench.attempt import retire_attempt
+
+    retirement = retire_attempt(args.ledger)
+    sys.stdout.buffer.write(suite.canonical_public_bytes(retirement))
+    return 0
+
+
+def cmd_bench_attempt_report(args) -> int:
+    from artifactforge.bench.attempt import retired_report
+
+    report = retired_report(args.ledger)
+    sys.stdout.buffer.write(suite.canonical_public_bytes(report))
+    return 0
+
+
+def cmd_bench_attempt_verify(args) -> int:
+    """Verify one detached retired report without opening or mutating a live ledger."""
+    from artifactforge.bench.attempt import verify_retired_report
+    from artifactforge.bench.submission import MAX_SUBMISSION_BYTES
+
+    report_bytes = _read_detached_cli_regular(
+        args.report,
+        "detached retired report",
+        max_bytes=_MAX_RETIRED_REPORT_BYTES,
+    )
+    report = suite._strict_public_document(report_bytes, "detached retired report")
+    if report_bytes != suite.canonical_public_bytes(report):
+        raise ValueError("detached retired report must use canonical JSON")
+    reveal = None
+    if args.reveal is not None:
+        reveal = _read_detached_cli_regular(
+            args.reveal,
+            "detached benchmark reveal",
+            max_bytes=MAX_SUBMISSION_BYTES,
+        )
+    summary = verify_retired_report(report, reveal=reveal)
+    sys.stdout.buffer.write(suite.canonical_public_bytes(summary))
     return 0
 
 
@@ -588,6 +991,11 @@ def cmd_bench_grade(args) -> int:
     from artifactforge.bench.benchmark import normalize
 
     public, tasks, private_answers = _load_suite(args.suite, role="evaluator", include_private=True)
+    if suite.benchmark_reportability(public) != suite.REPORTABILITY_PERMANENTLY_INELIGIBLE:
+        raise ValueError(
+            "Benchmark v3 disables repeat grade feedback; use bench precommit and "
+            "bench attempt accept/consume/retire/report"
+        )
     expected_suite_id = public["suite_id"]
     expected_scenarios = {
         entry["scenario_id"]: {question["id"] for question in entry["questions"]}
@@ -680,10 +1088,13 @@ def cmd_bench_grade(args) -> int:
     label = str(suite_kind).upper().replace("-", " ")
     population = len(public["scenarios"])
     rendered_score = f"{correct}/{total} = {correct / total:.1%}" if total else "no questions"
+    reportability = suite.benchmark_reportability(public)
     if suite_kind in suite.NON_REPORTABLE_SUITE_KINDS:
         # Publicly keyed suites are reproducible by anyone. Printing a bare accuracy for one
         # would produce a number someone will eventually quote, and it would mean nothing.
         reason = "PUBLIC REPRODUCIBLE KEY"
+    elif reportability == suite.REPORTABILITY_PERMANENTLY_INELIGIBLE:
+        reason = "LEGACY V2 LOCAL PROTOCOL"
     else:
         # The local grader can validate a fresh key and exact suite identity, but cannot
         # observe whether an untrusted solver was OS-isolated from the evaluator root or
@@ -693,7 +1104,9 @@ def cmd_bench_grade(args) -> int:
     print(f"  RAW SCORE ({label} - {reason}; NOT REPORTABLE): {rendered_score}")
     print(f"  suite_id: {expected_suite_id}")
     print(f"  population: {population} scenarios / {total} questions")
-    if suite_kind in suite.NON_REPORTABLE_SUITE_KINDS:
+    if reportability == suite.REPORTABILITY_PERMANENTLY_INELIGIBLE:
+        print("  This protocol classification is permanent; later attestation cannot promote it.")
+    elif suite_kind in suite.NON_REPORTABLE_SUITE_KINDS:
         print("  A freshly keyed holdout is necessary, but not sufficient, for reporting.")
     else:
         print(
@@ -746,7 +1159,18 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("scorecard", help="run every gate and emit the fidelity scorecard")
     s.add_argument("--out", help="write the scorecard to this FILE")
-    s.add_argument("--check", help="compare against this baseline; exit 1 on regression")
+    s.add_argument(
+        "--check",
+        help=(
+            "compare against an identical-measurement baseline; exit 1 on regression "
+            "or incompatibility"
+        ),
+    )
+    s.add_argument(
+        "--require-pass",
+        action="store_true",
+        help="exit 1 unless the freshly generated all-gates verdict is pass",
+    )
     s.add_argument(
         "--n",
         type=_positive_count,
@@ -772,7 +1196,7 @@ def main(argv=None) -> int:
     )
     fsub = f.add_subparsers(dest="fixture_cmd", required=True)
 
-    fb = fsub.add_parser("build", help="build a fixture from a strict v1 JSON recipe")
+    fb = fsub.add_parser("build", help="build a fixture from a strict supported JSON recipe")
     fb.add_argument("spec", help="fixture recipe JSON")
     fb.add_argument("output", help="new fixture directory (must not already exist)")
     fb.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
@@ -788,7 +1212,10 @@ def main(argv=None) -> int:
     fv.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
     fv.set_defaults(func=fixture_commands.cmd_fixture_verify)
 
-    fi = fsub.add_parser("inspect", help="verify and summarize a fixture")
+    fi = fsub.add_parser(
+        "inspect",
+        help="validate stored integrity and summarize a fixture without reproduction",
+    )
     fi.add_argument("fixture", help="fixture directory")
     fi.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
     fi.set_defaults(func=fixture_commands.cmd_fixture_inspect)
@@ -810,25 +1237,103 @@ def main(argv=None) -> int:
     fr.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
     fr.set_defaults(func=fixture_commands.cmd_fixture_release)
 
-    b = sub.add_parser("bench", help="build a benchmark suite")
+    b = sub.add_parser(
+        "bench", help="manage legacy diagnostics and Benchmark v3 one-shot evaluation"
+    )
     bsub = b.add_subparsers(dest="bench_cmd", required=True)
-    bn = bsub.add_parser("new", help="generate a suite")
+    bn = bsub.add_parser("new", help="generate a permanently non-reportable legacy v2 suite")
     bn.add_argument("out", help="suite directory")
     bn.add_argument("--n", type=_positive_count, default=40)
     bn.add_argument(
         "--kind",
         choices=("dev", "holdout"),
         default="dev",
-        help="dev uses the published key and is not reportable; holdout mints one",
+        help="legacy v2 only: dev uses the public key; holdout mints a local diagnostic key",
     )
     bn.set_defaults(func=cmd_bench_new)
+
+    bc = bsub.add_parser(
+        "ceremony",
+        help="manage self-attested Benchmark v3 evaluator ceremonies",
+    )
+    bcsub = bc.add_subparsers(dest="ceremony_cmd", required=True)
+    bcc = bcsub.add_parser(
+        "create",
+        help="mint a private v3 evaluator suite (destination must not exist)",
+    )
+    bcc.add_argument("out", help="new private evaluator directory")
+    bcc.add_argument(
+        "--n",
+        type=_benchmark_v3_count,
+        default=suite.BENCHMARK_V3_MIN_SCENARIOS,
+        help="balanced even population from 120 through 200 (default 120)",
+    )
+    bcc.set_defaults(func=cmd_bench_ceremony_create)
 
     bs = bsub.add_parser("solve", help="run the reference solver and write a submission")
     bs.add_argument("suite", help="exact public export created by 'bench export'")
     bs.add_argument("--out", default="answers.jsonl")
     bs.set_defaults(func=cmd_bench_solve)
 
-    bg = bsub.add_parser("grade", help="score a submission against a suite")
+    bp = bsub.add_parser(
+        "precommit",
+        help="bind a canonical submission and solver provenance before evaluator receipt",
+    )
+    bp.add_argument("public", help="exact public export used by the solver")
+    bp.add_argument("submission", help="canonical JSONL reveal to commit")
+    bp.add_argument("--out", default="precommit.json", help="new precommitment path")
+    bp.add_argument("--implementation-sha256", type=_labelled_sha256, required=True)
+    bp.add_argument("--configuration-sha256", type=_labelled_sha256, required=True)
+    bp.add_argument("--source-sha256", type=_labelled_sha256, required=True)
+    bp.set_defaults(func=cmd_bench_precommit)
+
+    ba = bsub.add_parser(
+        "attempt",
+        help="manage one designated one-shot evaluator ledger",
+    )
+    basub = ba.add_subparsers(dest="attempt_cmd", required=True)
+    baa = basub.add_parser("accept", help="accept the first precommit into a new ledger")
+    baa.add_argument("evaluator", help="private Benchmark v3 evaluator root")
+    baa.add_argument("precommit", help="solver precommitment created before reveal transfer")
+    baa.add_argument("ledger", help="new evaluator-private ledger outside the suite")
+    baa.set_defaults(func=cmd_bench_attempt_accept)
+
+    bac = basub.add_parser(
+        "consume",
+        help="claim once, then read a reveal and emit only a feedback-withholding receipt",
+    )
+    bac.add_argument("evaluator", help="private Benchmark v3 evaluator root")
+    bac.add_argument("ledger", help="accepted evaluator-private ledger")
+    bac.add_argument("submission", help="reveal file; unreadable or malformed still consumes")
+    bac.set_defaults(func=cmd_bench_attempt_consume)
+
+    bar = basub.add_parser(
+        "retire", help="irreversibly retire this designated local-ledger state"
+    )
+    bar.add_argument("ledger", help="evaluator-private attempt ledger")
+    bar.set_defaults(func=cmd_bench_attempt_retire)
+
+    bap = basub.add_parser(
+        "report",
+        help="show detailed private feedback only after retirement",
+    )
+    bap.add_argument("ledger", help="retired evaluator-private attempt ledger")
+    bap.set_defaults(func=cmd_bench_attempt_report)
+
+    bav = basub.add_parser(
+        "verify",
+        help="verify a detached retired report without accessing a live ledger",
+    )
+    bav.add_argument("report", help="canonical detached retired-report JSON")
+    bav.add_argument(
+        "--reveal",
+        help="optional exact reveal bytes whose digest and size must match the report",
+    )
+    bav.set_defaults(func=cmd_bench_attempt_verify)
+
+    bg = bsub.add_parser(
+        "grade", help="legacy-v2 local diagnostics only; Benchmark v3 refuses repeat grading"
+    )
     bg.add_argument("suite", help="private evaluator root, never a public export")
     bg.add_argument("--submission", default="answers.jsonl")
     bg.set_defaults(func=cmd_bench_grade)

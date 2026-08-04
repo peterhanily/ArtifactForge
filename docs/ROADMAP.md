@@ -1,146 +1,145 @@
 # Roadmap
 
-What is not built, and why. Ordered by what would change the most if it existed.
+This document lists open work. Completed hardening phases are recorded in
+[`IMPROVEMENT-PLAN.md`](IMPROVEMENT-PLAN.md), and released history belongs in
+[`CHANGELOG.md`](../CHANGELOG.md).
 
-## Benchmark v2 needs an isolated hold-out result, not another public score
+## 1. Hosted evidence and release controls
 
-Benchmark v1 is withdrawn. Completing its shortcut implementations exposed perfect footprint
-and stored-order recovery, the co-located task path exposed evaluator answers, a disclosed-key
-corpus was reproducible without reading its target artifacts, candidate-aware chance was about
-one in five, and the claimed join count was not a parser-derived dependency trace. Changing a
-threshold cannot repair those failures.
+The local release machinery is complete, but a repository workflow definition is not proof
+that a protected release ran. The next external steps are:
 
-V2 replaces root-object questions with five scalar closed-rule questions per scene. Windows
-resolves an Amcache `FileId` SHA-1 against five resident PE byte strings; macOS resolves a
-strict xattr UUID against five `QuarantineEventsV2` rows. Each family forms a five-answer
-bijection with exact 20% chance. Exact public export and `suite_id` binding separate solver
-bytes from evaluator state. Gate 4 derives actual artifact dependencies, checks complete
-selection attacks in aggregate and per class with exact permutation inference, enforces at
-least 20 scenes per class and an exact power contract, and requires parser-valid local-effect
-counterfactuals.
+1. Configure reviewers and protection for the `release-attestation` environment and exact
+   annotated version tags.
+2. Run the manual exact-tag workflow and retain its GitHub and Sigstore attestations for the
+   wheel, source archive, and SBOM subjects.
+3. Obtain the first successful fixed-runner Windows-native result for the current source.
+4. Keep CPython 3.14 core-only until the complete locked oracle set installs, imports, and
+   passes its controls. `dissect-target==3.25.1` and `yara-python==4.5.4` are the current
+   promotion blockers.
 
-The v0.5 portable release matrix, packaging/install checks, available native macOS attestation
-and source-bound scorecard are complete locally. Hosted CI must independently replay the exact
-tagged commit after it is pushed; no hosted result is claimed before that happens. The remaining
-benchmark work is operational and evidentiary:
+Publishing to PyPI, creating a GitHub release, and creating or pushing a tag remain separate
+approval-gated actions. See [`releasing.md`](releasing.md).
 
-1. **Execute a real hold-out boundary.** Mint a fresh key on the evaluator, transfer only the
-   exact public export into a separate OS-enforced account/container/VM/machine with no
-   evaluator mount, return only `suite_id`-bound submissions, and grade on the evaluator.
-2. **Preserve the hostile controls.** Disclosed-key blind reconstruction and co-located parent
-   traversal must remain positive controls; public development and scorecard corpora remain
-   non-reportable even when every gate is green.
-3. **Audit before quoting.** Preserve corpus/source/export/submission provenance and review the
-   per-family/rule randomization and counterfactual results. Until that workflow is complete,
-   no v2 performance score is reportable.
+Scanner evidence is also separate from generator and benchmark gates. The latest Phase 6C
+checkpoint remains red overall, while the older Phase 6B checkpoint applies only to its
+historical corpus. [`SECURITY.md`](../SECURITY.md#scanner-claims-require-an-attestation) owns
+the exact records and limitations.
 
-No fresh scanner attestation exists for the v2 corpus. Scanner evidence is a separate dated
-claim about exact bytes and cannot be inferred from benchmark or generator gates. The full
-contract is [`benchmark-v2.md`](benchmark-v2.md).
+## 2. Benchmark v3 needs an external witness
 
-## Closed measuring-apparatus gaps
+Benchmark v1 is withdrawn. Its answer layout, caller-visible evaluator state, disclosed key,
+and incorrect chance model allowed shortcut recovery without the intended artifact joins.
 
-The v0.2.0 work closed the former SQLite and binary-plist second-reader gaps. Deliberately
-narrow first-party byte readers now pair with `sqlite3` and `plistlib` over one bounded
-snapshot, require type-exact consensus, and then apply named macOS semantic profiles. This is
-independent implementation, not outside governance or general-format coverage: interior or
-overflow SQLite b-trees and binary-plist values outside the emitted subset remain rejected.
-The serialized quarantine xattr is now parser-classified. Its artifact parser and an
-independently implemented byte reader require type-exact agreement and the exact bounded
-four-field profile; Gate 3 grants only strict-valid non-executable values its narrow marker
-exemption.
+V2 replaces root-object questions with five scalar closed-rule questions per scene. It adds a
+separate public export, suite binding, parser-valid counterfactuals, exact inference, registered
+attacks with positive controls, and representative all-mapping proofs. V2 is still permanently
+non-reportable because the caller supplies the raw key.
 
-Any future expansion of either writer must expand both the raw reader and its parser-valid
-mutation controls in the same change. Apple's `plutil` remains useful native attestation, not
-the portable CI oracle.
+V3 creates a separate internally keyed ceremony, canonical precommitment, one-shot POSIX
+ledger, feedback-withholding receipt, and detached retired report. Those controls close repeat
+feedback through one intact local ledger. They cannot prove that the evaluator was hidden from
+the solver, that only one ledger existed, or that the ledger owner did not inspect the result.
 
-The first Linux loose profile is now closed on the same terms: LIEF/pyelftools for ELF,
-PyXDG/raw for desktop entries, and dissect.target/raw for Bash history, with independent
-meaning and inertness mutations. It is generator assurance and Fixture Core material only;
-Gate 4 remains the Windows/macOS benchmark population.
+The remaining work is external:
 
-## Digest-evidence graph deferred after consumer audit
+1. Transfer only the public export to an OS-enforced solver account, container, VM, or machine
+   with no evaluator mount.
+2. Bind the solver source, configuration, and execution image before the reveal is transferred.
+3. Have an independent witness attest the trust boundary, unique designated attempt, accepted
+   precommitment, and retired evidence bundle.
+4. Preserve the disclosed-key and parent-traversal positive controls.
 
-No current consumer needs a new graph. Fixture Core already publishes the complete
-path/size/SHA-256 integrity relation; Gate 2 consumes private family-specific scene truth; and
-benchmark joins/answers must not cross into served artifacts. EvidenceForge's proposed
-role-specific logical-content reference can represent content without materialized bytes and
-therefore belongs in its own scenario schema, not in an ArtifactForge byte graph.
+The v3 ceremony also binds a theoretical population and power contract, but construction does
+not run that contract on the realized suite. A future versioned gate should execute and record
+the per-suite checks. The standalone feature-conditioned audit should enter a protocol only
+after the comparison family and power analysis are recalculated.
 
-The decision and reconsideration trigger are in
-[`identity-boundaries.md`](identity-boundaries.md). If a named external caller later needs
-additional whole-file digest aliases, the maximum justified first step is an ephemeral view
-computed inside Fixture Core's held verified snapshot. It must expose equality observations,
-not roles, match edges, provenance, authenticity or causality.
+Longer-term benchmark work includes broader control calibration, more question shapes, and a
+server-side grading service. Any network service must preserve exact suite identity, keep keys
+and answers server-side, reject cross-suite submissions, and define authentication, rate, and
+retention policy.
 
-## Not built
+## 3. Windows coverage
 
-- **Windows 10 prefetch.** The current uncompressed SCCA v17 writer and XP path hash agree
-  with each other, but legacy benchmark/gallery scenes still model a Windows 10 host. Fixture
-  Core avoids that overclaim with the explicit `windows-loose-v1` profile. A
-  version-consistent replacement
-  requires a v30 layout plus deterministic MAM/LZXPRESS compression, with independent parser
-  and semantic mutation controls retained.
-- **Broader or activation-ready Linux.** The first profile is deliberately just five minimal
-  glibc/x86-64 ELF files, three XDG autostart records and one Bash history. There is no
-  compiler-shaped ELF, package metadata, systemd unit, cron, auditd, journald, login/session
-  state or alternate shell history. Fixture ABI v1 does not bind POSIX modes, so modeling a
-  runnable filesystem or successful autostart would require an explicit ABI v2 rather than a
-  quiet reinterpretation of v1.
-- **More Windows artifacts.** EVTX, ShimCache, LNK, SRUM, USN journal. EVTX is the valuable
-  one and also the hardest: the binary XML template model is substantially more work than
-  everything currently in `artifacts/` put together.
-- **More macOS artifacts.** FSEvents, unified logs, `Spotlight-V100`. Unified logs are
-  effectively out of reach — the `tracev3` format is undocumented and its open-source readers
-  disagree with each other, so there would be no oracle worth the name.
-- **Disk images.** Deliberately excluded. The tier here is loose files a responder's tools
-  read directly, and a filesystem writer that no deterministic implementation exists for would
-  be a research project rather than a feature. NTFS would be the one to attempt first, being
-  the best documented and having the most lenient parsers.
-- **Memory.** Not attempted, and not planned. Synthesizing a memory image that Volatility
-  believes is a different discipline from synthesizing a file that a file parser believes.
+Portable phases 6A through 6C are complete:
 
-## Benchmark
+- Chromium completed-download history joined to one logical Zone.Identifier and resident PE
+- disabled Task Scheduler XML and a standalone local-file Shell Link, both joined to distinct
+  non-persistence resident PEs
+- deterministic MAM algorithm-4 compressed SCCA v30 variant-1 Prefetch with an expected-size
+  framing reader and pyscca/Dissect semantic agreement
 
-- **Broader detector calibration.** The current ten mandatory controls use one independently
-  derived development scene per family for each registered complete attack and the two
-  production ensemble wrappers. A later protocol revision should calibrate across multiple
-  independently derived scenes per family, so success cannot depend on one fixture, and add a
-  feature-conditioned development-trained attack to probe selector/name/content correlations
-  beyond fixed ranks and slot unions. Any added detector expands the predeclared comparison
-  family and must carry its own vulnerable-world control and power analysis.
-- **Portable hold-out execution receipts.** The local grader correctly refuses to mint a
-  reportable result because it cannot attest the solver trust domain. A future runner should
-  produce a signed or independently witnessed receipt binding evaluator source, fresh-key
-  identity, exact public tree commitment, solver image/configuration, isolation policy,
-  submission digest and grader output. The receipt must not disclose the key or answers and
-  must remain separate from the reproducible public scorecard.
-- **A scoring service.** Evaluator-side local grading is sufficient for the current protocol;
-  `_answers/` never enters the public export and every JSONL row carries the exact `suite_id`.
-  A future network wrapper must preserve that identity, keep keys/answers server-side, reject
-  cross-suite rows and add authentication/rate/retention policy without weakening the existing
-  filesystem boundary.
-- **More question shapes.** Everything asked today has one exact string answer. Questions with
-  a set-valued answer, or asking for an ordering, would measure something the current shapes
-  cannot — and would need a grader that can score partial credit without becoming generous.
-- **Difficulty as a dial.** The decoy counts are fixed constants in `compose/scene.py`. Making
-  them a parameter is easy; deciding what "harder" should mean, and showing that the harder
-  setting is harder for a reason other than more files, is not.
+The current v30 Prefetch writer deliberately covers one metric, one volume, one trace entry,
+two strings, and a single compression chunk. Open extensions include version 31, alternate v30
+layouts, multiple volumes, directory strings, MFT references, and broader XPRESS-Huffman
+encodings. The Windows `RtlDecompressBufferEx` canary is implemented, but its first hosted
+observation is still pending.
 
-## EvidenceForge
+TaskCache and Jump Lists remain deferred. TaskCache requires defended writers and independent
+readers for its Actions, Triggers, DynamicInfo, Hash, and security-descriptor blobs. Automatic
+Jump Lists require a defended Compound File Binary container in addition to the existing Shell
+Link profile.
 
-- **The upstream contribution.** A controlled scenario, output-tree-bound measurement,
-  mutation-tested verifier, issue draft, role-specific content-identity RFC and two validated
-  review patches now live in
-  [`integration/evidenceforge/`](../integration/evidenceforge/). Nothing has been posted or
-  pushed upstream. The remaining external step is maintainer feedback on whether an explicit,
-  opt-in logical-content relationship belongs in EvidenceForge at all.
-- **Zeek-side reconciliation.** The unmodified v1.13.1 branch-office run established the
-  population boundary:
-  `files.json` has 722 rows, 525 certificate and 197 non-certificate. No non-certificate row
-  carries SHA256; 21 carry SHA1, representing 16 distinct values. The same-algorithm Sysmon
-  and Zeek sets are disjoint, but their basenames are also disjoint. The controlled witness now
-  supplies the positive transfer-to-execution pair: exact ground-truth path equality, dual
-  Zeek UID/FUID correlation, Sysmon PID/ProcessGuid correlation, timeline ordering and three
-  negative controls all pass before its unequal SHA1 values are compared. It proves a modeled
-  logical-file nonjoin, not disagreement over common materialized bytes.
+Later candidates are EVTX, ShimCache, SRUM, and the USN journal. EVTX has the highest value and
+the largest implementation cost because its binary XML template model needs its own writer,
+reader, profile, and mutation suite.
+
+## 4. Linux and macOS coverage
+
+The current Linux profile contains five minimal glibc/x86-64 ELF files, three XDG autostart
+records, and one timestamped Bash history. Useful extensions include compiler-shaped ELF,
+package metadata, systemd, cron, auditd, journald, session state, and alternate shell history.
+A claim that autostart succeeded would require a separate native materialization and activation
+profile. The loose carrier does not provide that evidence.
+
+Potential macOS additions include FSEvents and Spotlight. Unified logs are deferred because
+the `tracev3` format is undocumented and available readers do not provide a stable independent
+oracle. A bundle-shaped `.app` profile is also required before Gatekeeper can have a meaningful
+target and positive control.
+
+Any new writer must arrive with two read paths, a named semantic profile, inertness and marker
+handling, resource bounds, and mutations that turn each new claim red.
+
+## 5. Identity and format infrastructure
+
+Fixture Core already publishes the complete path, size, and SHA-256 integrity relation. Gate 2
+uses private family-specific truth, and benchmark answers must not enter served artifacts. No
+current consumer needs another digest graph.
+
+If a named external consumer later needs additional whole-file digest aliases, the smallest
+acceptable design is an ephemeral view computed inside Fixture Core's held verified snapshot.
+It should expose equality observations only, not inferred roles, provenance, causality, or
+authenticity. See [`identity-boundaries.md`](identity-boundaries.md).
+
+The owned SQLite and binary-plist readers intentionally cover their emitted subsets. Broader
+writers must extend both readers and add parser-valid negative controls in the same change.
+Native tools can add observations, but they do not replace the portable oracle contract.
+
+## 6. EvidenceForge
+
+The unmodified v1.13.1 branch-office `files.json` has 722 rows, 525 certificate and 197 non-certificate.
+No non-certificate row carries SHA256; 21 carry SHA1, representing 16 distinct values. Its
+same-algorithm Sysmon and Zeek sets are disjoint, but their basenames are also disjoint, so the
+stock run is not a same-file defect witness.
+
+The controlled scenario supplies the missing transfer-to-execution relation and its negative
+controls. It demonstrates a modeled logical-file nonjoin. EvidenceForge does not materialize
+common executable bytes, so the proposal is an explicit opt-in content identity rather than a
+claim about byte-digest corruption.
+
+The witness, measurement, issue draft, RFC, and two review patches live under
+[`integration/evidenceforge/`](../integration/evidenceforge/). ArtifactForge has already been
+mentioned in a
+[public EvidenceForge #332 follow-up](https://github.com/Cisco-Talos/EvidenceForge/issues/332#issuecomment-5152265897).
+The formal issue and patches remain local. The next step is maintainer feedback on whether this
+relationship belongs in EvidenceForge.
+
+## 7. Out of scope
+
+- **Disk images:** a deterministic filesystem writer with adequate independent validation is a
+  separate research project. NTFS would be the first candidate.
+- **Memory images:** making Volatility accept a synthetic memory image is a different discipline
+  from creating loose file artifacts and is not planned.
+- **Threat intelligence:** ArtifactForge values are synthetic fixtures. They are never
+  indicators to publish or block.

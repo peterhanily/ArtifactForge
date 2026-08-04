@@ -3,12 +3,14 @@
 """Public macOS builders fail closed at the raw-oracle and semantic-profile boundary."""
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from artifactforge.artifacts import macos
-from artifactforge.gates.oracles import loads_binary_plist, loads_sqlite
+from artifactforge.gates.oracles import (
+    SQLiteWireProfile,
+    loads_binary_plist,
+    loads_sqlite,
+)
 
 
 KNOWLEDGE = [
@@ -61,7 +63,9 @@ def test_sqlite_builders_materialize_one_shot_inputs_once_and_stay_in_raw_subset
     data = builder(one_shot)
     assert one_shot.iterations == 1
     assert data == builder(rows)
-    assert loads_sqlite(data).tables
+    assert loads_sqlite(
+        data, wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1
+    ).tables
 
 
 @pytest.mark.parametrize(
@@ -104,13 +108,20 @@ def test_row_bound_stops_an_unending_iterator_after_the_ninth_pull():
         [("com.example.one", float("nan"), 2.0)],
         [("com.example.one", 2.0, float("inf"))],
         [("com.example.one", 2.0, 1.0)],
-        [("com.example.one", 1.0, 2.0), ("com.example.one", 3.0, 4.0)],
         [("com.example.\N{LATIN SMALL LETTER E WITH ACUTE}", 1.0, 2.0)],
     ],
 )
 def test_knowledge_builder_rejects_values_outside_its_leaf_profile(rows):
     with pytest.raises(ValueError):
         macos.build_knowledgec(rows)
+
+
+def test_knowledge_builder_allows_repeated_bundle_for_distinct_intervals():
+    rows = [("com.example.one", 1.0, 2.0), ("com.example.one", 3.0, 4.0)]
+    assert loads_sqlite(
+        macos.build_knowledgec(rows),
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ).tables
 
 
 @pytest.mark.parametrize(
@@ -120,15 +131,22 @@ def test_knowledge_builder_rejects_values_outside_its_leaf_profile(rows):
         [("com.example.one", "kTCCServiceCamera", 1, 1)],
         [("com.example.one", "kTCCServiceCamera", 2, True)],
         [("com.example.one", "kTCCServiceCamera", 2, 0)],
-        [
-            ("com.example.one", "kTCCServiceCamera", 2, 1),
-            ("com.example.one", "kTCCServiceMicrophone", 0, 1),
-        ],
     ],
 )
-def test_tcc_builder_rejects_ambiguous_types_values_and_duplicate_clients(rows):
+def test_tcc_builder_rejects_ambiguous_types_and_values(rows):
     with pytest.raises(ValueError):
         macos.build_tcc(rows)
+
+
+def test_tcc_builder_allows_one_client_to_hold_distinct_services():
+    rows = [
+        ("com.example.one", "kTCCServiceCamera", 2, 1),
+        ("com.example.one", "kTCCServiceMicrophone", 0, 1),
+    ]
+    assert loads_sqlite(
+        macos.build_tcc(rows),
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ).tables
 
 
 @pytest.mark.parametrize(
@@ -181,16 +199,10 @@ def test_launchagent_builder_stays_in_the_raw_binary_plist_subset():
     assert parsed["StartInterval"] == 3600
 
 
-def test_sqlite_writer_fails_closed_if_its_path_is_replaced_before_connect(monkeypatch):
-    real_connect = macos.sqlite3.connect
+def test_sqlite_writer_is_pure_and_does_not_depend_on_a_filesystem_path(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("owned SQLite writer attempted filesystem access")
 
-    def replace_then_connect(path):
-        replacement = path + ".replacement"
-        replacement_fd = os.open(replacement, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-        os.close(replacement_fd)
-        os.replace(replacement, path)
-        return real_connect(path)
-
-    monkeypatch.setattr(macos.sqlite3, "connect", replace_then_connect)
-    with pytest.raises(ValueError, match="output size 0"):
-        macos.build_knowledgec(KNOWLEDGE)
+    monkeypatch.setattr("builtins.open", forbidden)
+    monkeypatch.setattr("os.open", forbidden)
+    assert macos.build_knowledgec(KNOWLEDGE) == macos.build_knowledgec(KNOWLEDGE)

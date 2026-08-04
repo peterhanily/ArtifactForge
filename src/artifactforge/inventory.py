@@ -671,6 +671,84 @@ def directory_entry_matches_descriptor(
     )
 
 
+def directory_path_matches_descriptor(
+    path: str | os.PathLike[str], directory_fd: int
+) -> bool:
+    """Return whether one path still names the exact held directory inode.
+
+    This is a binding check, not a path-normalisation check.  In particular it keeps working
+    when the caller reached the directory through a case-insensitive alias, while rejecting a
+    pathname whose final directory was replaced after it was opened.
+    """
+    try:
+        path_state = Path(path).lstat()
+        opened = os.fstat(directory_fd)
+    except (NotImplementedError, OSError):
+        return False
+    return (
+        stat.S_ISDIR(path_state.st_mode)
+        and stat.S_ISDIR(opened.st_mode)
+        and (path_state.st_dev, path_state.st_ino) == (opened.st_dev, opened.st_ino)
+    )
+
+
+def directory_ancestry_snapshot(
+    directory_fd: int, *, max_depth: int = 1024
+) -> tuple[tuple[int, int], ...]:
+    """Return actual ``..`` inode relationships from a held directory to its root.
+
+    The result is independent of path spelling and therefore suitable for containment checks
+    on case-insensitive filesystems.  A caller can compare two snapshots to notice that a held
+    output parent moved while an operation was computing the bytes it intended to publish.
+    """
+    if type(max_depth) is not int or max_depth < 1:
+        raise InventoryError("directory ancestry max_depth must be a positive integer")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    current = -1
+    ancestry: list[tuple[int, int]] = []
+    try:
+        current = os.dup(directory_fd)
+        for _depth in range(max_depth):
+            state = os.fstat(current)
+            if not stat.S_ISDIR(state.st_mode):
+                raise InventoryError("directory ancestry descriptor is not a directory")
+            identity = state.st_dev, state.st_ino
+            if identity in ancestry:
+                raise InventoryError("directory ancestry contains an unexpected inode cycle")
+            ancestry.append(identity)
+            parent = -1
+            try:
+                parent = os.open("..", flags, dir_fd=current)
+                parent_state = os.fstat(parent)
+            except (NotImplementedError, OSError):
+                if parent >= 0:
+                    os.close(parent)
+                raise
+            if not stat.S_ISDIR(parent_state.st_mode):
+                os.close(parent)
+                raise InventoryError("directory ancestry parent is not a directory")
+            parent_identity = parent_state.st_dev, parent_state.st_ino
+            os.close(current)
+            current = parent
+            if parent_identity == identity:
+                return tuple(ancestry)
+        raise InventoryError(
+            f"directory ancestry exceeds the {max_depth}-component safety bound"
+        )
+    except InventoryError:
+        raise
+    except (NotImplementedError, OSError) as exc:
+        raise InventoryError(f"cannot traverse held directory ancestry: {exc}") from exc
+    finally:
+        if current >= 0:
+            os.close(current)
+
+
 def remove_pinned_directory_at(parent_fd: int, name: str, directory_fd: int) -> bool:
     """Remove only the held directory if the pinned parent still names that exact inode."""
     if not directory_entry_matches_descriptor(parent_fd, name, directory_fd):
@@ -692,6 +770,10 @@ def captured_regular_tree(
     """Yield a private, frozen pathname tree backed by one stable byte capture."""
     source = inventory_regular_files(root, capture_bytes=True)
     temporary = Path(tempfile.mkdtemp(prefix="artifactforge-scene-snapshot-"))
+    try:
+        temporary.chmod(0o700, follow_symlinks=False)
+    except (NotImplementedError, OSError) as exc:
+        raise InventoryError(f"cannot set private scene snapshot mode: {exc}") from exc
     root_fd = -1
     root_identity: tuple[int, int] | None = None
     try:
@@ -730,8 +812,9 @@ def open_real_directory(path: str | os.PathLike[str], *, create: bool = False) -
         if not create:
             raise InventoryError(f"artifact directory does not exist: {directory}")
         try:
-            directory.mkdir(parents=True)
-        except OSError as exc:
+            directory.mkdir(mode=0o700, parents=True)
+            directory.chmod(0o700, follow_symlinks=False)
+        except (NotImplementedError, OSError) as exc:
             raise InventoryError(f"cannot create artifact directory {directory}: {exc}") from exc
     try:
         before = directory.lstat()
@@ -794,7 +877,7 @@ def open_real_directory_at(parent_fd: int, name: str) -> int:
 
 
 def write_regular_file_at(
-    root_fd: int, relative: str, data: bytes, *, mode: int = 0o666
+    root_fd: int, relative: str, data: bytes, *, mode: int = 0o600
 ) -> None:
     """Exclusively create a file through descriptor-anchored, non-link parents."""
     relative = validate_relative_path(relative)
@@ -814,10 +897,24 @@ def write_regular_file_at(
     try:
         for component in components[:-1]:
             parent_fd = descriptors[-1]
+            created = False
             try:
-                os.mkdir(component, dir_fd=parent_fd)
+                os.mkdir(component, mode=0o700, dir_fd=parent_fd)
+                created = True
             except FileExistsError:
                 pass
+            if created:
+                try:
+                    os.chmod(
+                        component,
+                        0o700,
+                        dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except (NotImplementedError, OSError) as exc:
+                    raise InventoryError(
+                        f"cannot set private artifact parent mode: {relative!r}: {exc}"
+                    ) from exc
             before = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
             if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
                 raise InventoryError(f"artifact parent is not a real directory: {relative!r}")
@@ -853,6 +950,11 @@ def write_regular_file_at(
             after_write = os.fstat(file_fd)
             if after_write.st_size != len(data):
                 raise InventoryError(f"artifact target has the wrong size: {relative!r}")
+            os.fchmod(file_fd, mode)
+            if os.name != "nt" and stat.S_IMODE(os.fstat(file_fd).st_mode) != mode:
+                raise InventoryError(
+                    f"artifact target mode does not equal {mode:#o}: {relative!r}"
+                )
         finally:
             os.close(file_fd)
 

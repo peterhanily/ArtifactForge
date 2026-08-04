@@ -13,7 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from artifactforge.fixture import FixtureSpec, ProfileSpec, VerificationResult, build_fixture
+from artifactforge.fixture import (
+    FixtureSpecV2,
+    ProfileSpecV2,
+    VerificationResult,
+    build_fixture,
+    parse_fixture_manifest,
+)
 from artifactforge.fixture.operations import verify_fixture
 from artifactforge.gates import GateReport
 
@@ -75,11 +81,11 @@ def _linux_scene(root: Path) -> Path:
 @pytest.fixture(scope="module")
 def linux_fixture(tmp_path_factory) -> Path:
     root = tmp_path_factory.mktemp("native-linux-fixture") / "fixture"
-    spec = FixtureSpec(
+    spec = FixtureSpecV2.create(
         fixture_id="native-linux-attestation-test",
         family="linux",
-        profile=ProfileSpec(
-            id="linux-glibc-x86_64-loose-v1",
+        profile=ProfileSpecV2(
+            id="linux-glibc-x86_64-loose-v2",
             hostname="ws-lnx-17",
             username="v",
         ),
@@ -241,22 +247,34 @@ def test_fixture_core_verification_is_embedded_and_byte_bound(linux_fixture):
         (linux_fixture / "fixture.json").read_bytes()
     ).hexdigest()
     assert manifest["generator"]["name"] == "artifactforge"
-    assert manifest["generator"]["abi"] == "artifactforge-fixture-generator-v1"
+    assert manifest["generator"]["abi"] == "artifactforge-fixture-generator-v2"
+    assert manifest["generator"]["producer_profile"] == (
+        "artifactforge-fixture-producer-v2"
+    )
     assert manifest["recipe"]["family"] == "linux"
     assert manifest["recipe"]["profile"] == {
         "hostname": "ws-lnx-17",
-        "id": "linux-glibc-x86_64-loose-v1",
+        "id": "linux-glibc-x86_64-loose-v2",
         "username": "v",
     }
     assert manifest["payload"]["file_count"] == 9
-    assert manifest["payload"]["files"] == [
+    assert manifest["payload"]["directory_count"] == 6
+    assert manifest["payload"]["regular_file_bytes"] == state["scene"]["total_bytes"]
+    assert manifest["payload"]["metadata_blob_count"] == 0
+    assert manifest["payload"]["metadata_blob_bytes"] == 0
+    assert manifest["payload"]["total_bound_bytes"] == state["scene"]["total_bytes"]
+    assert [
         {
-            "path": item["path"],
-            "sha256": f"sha256:{item['sha256']}",
+            "path": item["served_path"],
+            "sha256": item["sha256"].removeprefix("sha256:"),
             "size": item["size"],
         }
-        for item in state["scene"]["files"]
-    ]
+        for item in manifest["payload"]["files"]
+    ] == state["scene"]["files"]
+    assert all(
+        item["guest_path"] == f"/{item['served_path']}"
+        for item in manifest["payload"]["files"]
+    )
     assert portable["verdict"] == "pass"
     assert portable["failures"] == []
     assert portable["environment"]["python"]["implementation"] == "CPython"
@@ -276,7 +294,64 @@ def test_fixture_core_verification_is_embedded_and_byte_bound(linux_fixture):
         (1, "validity", "pass"),
         (3, "inertness", "pass"),
     ]
-    assert "exact recipe byte reproduction" in portable["contract"]
+    assert portable["checks"] == {
+        "assurance": "pass",
+        "integrity": "pass",
+        "reproduction": "pass",
+    }
+    assert "complete v2 logical manifest" in portable["contract"]
+    assert portable["payload"] == {
+        "directory_count": 6,
+        "file_count": 9,
+        "metadata_blob_bytes": 0,
+        "metadata_blob_count": 0,
+        "regular_file_bytes": state["scene"]["total_bytes"],
+        "total_bound_bytes": state["scene"]["total_bytes"],
+    }
+    compatibility = portable["producer_compatibility"]
+    assert compatibility["generator_abi"] == "artifactforge-fixture-generator-v2"
+    assert compatibility["producer_profile"] == "artifactforge-fixture-producer-v2"
+    assert "package versions are provenance" in compatibility["basis"]
+
+
+def test_native_attestation_requires_v2_even_if_v1_result_is_presented_as_good(
+    tmp_path, linux_fixture
+):
+    golden = (
+        Path(__file__).parent
+        / "fixtures"
+        / "fixture-v1-goldens"
+        / "linux-v0.5.0.json"
+    )
+    historical = parse_fixture_manifest(golden.read_bytes(), require_canonical=True)
+    good = verify_fixture(linux_fixture, assurance=True)
+    forged = VerificationResult(
+        historical,
+        assurance_reports=good.assurance_reports,
+        reproduction_requested=True,
+    )
+    with pytest.raises(RuntimeError, match="historical v1 fixtures are inspection-only"):
+        _verified_fixture_evidence(tmp_path, verifier=lambda *_args, **_kwargs: forged)
+
+
+def test_generator_package_version_is_provenance_not_v2_compatibility_identity(
+    monkeypatch, linux_fixture
+):
+    environment = _portable_verifier_environment()
+    environment["distributions"] = dict(environment["distributions"])
+    environment["distributions"]["artifactforge"] = "different-package-version"
+    monkeypatch.setitem(
+        _verified_fixture_evidence.__globals__,
+        "_portable_verifier_environment",
+        lambda: environment,
+    )
+
+    evidence, _state = _verified_fixture_evidence(linux_fixture)
+    compatibility = evidence["portable_verification"]["producer_compatibility"]
+    assert compatibility["verifier_distribution_version"] == "different-package-version"
+    assert compatibility["manifest_generator_version"] != (
+        compatibility["verifier_distribution_version"]
+    )
 
 
 def test_missing_portable_distribution_version_is_a_hard_failure(monkeypatch):
@@ -293,15 +368,20 @@ def test_missing_portable_distribution_version_is_a_hard_failure(monkeypatch):
         _portable_verifier_environment()
 
 
-@pytest.mark.parametrize("failure_kind", ["fixture", "gate1", "gate3"])
+@pytest.mark.parametrize(
+    "failure_kind", ["fixture", "reproduction-not-run", "gate1", "gate3"]
+)
 def test_attest_cannot_reach_native_tools_when_portable_verification_fails(
     monkeypatch, linux_fixture, failure_kind
 ):
     good = verify_fixture(linux_fixture, assurance=True)
     reports = list(good.assurance_reports)
     failures: tuple[str, ...] = ()
+    reproduction_requested = True
     if failure_kind == "fixture":
         failures = ("payload bytes do not reproduce",)
+    elif failure_kind == "reproduction-not-run":
+        reproduction_requested = False
     else:
         index = 0 if failure_kind == "gate1" else 1
         source = reports[index]
@@ -315,7 +395,12 @@ def test_attest_cannot_reach_native_tools_when_portable_verification_fails(
             denominator=source.denominator,
         )
         reports[index] = failed
-    failed_result = VerificationResult(good.manifest, failures, tuple(reports))
+    failed_result = VerificationResult(
+        good.manifest,
+        failures,
+        tuple(reports),
+        reproduction_requested=reproduction_requested,
+    )
 
     monkeypatch.setattr(attest.__globals__["sys"], "platform", "linux")
     monkeypatch.setitem(

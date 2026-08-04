@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import os
 import plistlib
+import re
 import sqlite3
 import struct
 
@@ -33,6 +34,10 @@ from artifactforge.inventory import InventoryError, InventoryFile, captured_regu
 
 
 _LINUX_HISTORY_MARKER = ": 'ARTIFACTFORGE-SYNTHETIC-LINUX'"
+_CHROMIUM_CONTENT_URL = re.compile(
+    r"https://downloads\.artifactforge\.invalid/ARTIFACTFORGE/sha256/"
+    r"(?P<sha256>[0-9a-f]{64})/(?P<name>[^/?#]+)"
+)
 
 
 def _check(r: GateReport, spans: str, what: str, got, want):
@@ -65,7 +70,7 @@ def _named(
 def _relative(
     r: GateReport, files: tuple[InventoryFile, ...], relative_path: str, where: str
 ) -> InventoryFile | None:
-    """Resolve an exact recursive served path; Linux evidence never falls back to basename."""
+    """Resolve an exact recursive served path without falling back to a basename."""
     matches = [file for file in files if file.relative_path == relative_path]
     if len(matches) != 1:
         observed = "absent" if not matches else f"present {len(matches)} times"
@@ -110,7 +115,16 @@ def _windows(
 ):
     import pefile
     from regipy.registry import RegistryHive
-    from windowsprefetch import Prefetch
+
+    from artifactforge.artifacts.shell_link import parse_shell_link
+    from artifactforge.artifacts.windows_task import (
+        parse_scheduled_task_xml,
+        read_scheduled_task_xml_wire,
+        validate_scheduled_task_xml,
+    )
+    from artifactforge.gates.oracles.prefetch_profile import (
+        parse_mam_prefetch_v30_variant1,
+    )
 
     files = _resident(r, scene_files)
     p = join["persisted"]
@@ -207,13 +221,408 @@ def _windows(
         _check(r, "Run key->disk", "exactly one autostart names a resident program",
                named, [p["path"]])
 
-    # The execution pivot: the persisted program's run count, and exactly one orphan.
-    prefetches = {}
-    for file in scene_files:
-        if not file.name.endswith(".pf"):
+    # Chromium's completed-download hash BLOB is genuinely empty.  The byte relation is the
+    # explicitly synthetic, content-addressed final URL: its digest is recomputed from the
+    # only resident target, while two absent download rows remain ordinary noise.  Fixture v2
+    # separately projects this row's source/referrer pair into that PE's Zone.Identifier.
+    history = _named(r, scene_files, "History", "Chromium download history")
+    browser_truth = join.get("browser_download", {})
+    if history is not None:
+        browser_rows = _q(
+            history,
+            "SELECT d.target_path,d.received_bytes,d.total_bytes,d.hash,d.state,"
+            "d.opened,d.last_access_time,d.referrer,u.url FROM downloads AS d "
+            "JOIN downloads_url_chains AS u ON u.id=d.id "
+            "ORDER BY d.id,u.chain_index",
+        )
+        _check(r, "History", "three completed download rows", len(browser_rows), 3)
+        resident_downloads = []
+        rows_by_target = {}
+        for row in browser_rows:
+            target, received, total, stored_hash, state, _opened, _access, _referrer, url = row
+            rows_by_target[target] = row
+            match = _CHROMIUM_CONTENT_URL.fullmatch(url) if type(url) is str else None
+            if match is None:
+                r.fail(f"History: source URL for {target!r} has no content-addressed identity")
+                continue
+            target_name = str(target).rsplit("\\", 1)[-1].lower()
+            if match.group("name").lower() != target_name:
+                r.fail(f"History: source URL basename disagrees with target {target!r}")
+                continue
+            data = files.get(target_name)
+            if data is None:
+                continue
+            _check(
+                r,
+                "History URL->resident bytes",
+                "SHA256 agreement",
+                match.group("sha256"),
+                hashlib.sha256(data).hexdigest(),
+            )
+            _check(
+                r,
+                "History size->resident bytes",
+                "received/total size agreement",
+                (received, total),
+                (len(data), len(data)),
+            )
+            _check(r, "History completed row", "native-empty hash BLOB", stored_hash, b"")
+            _check(r, "History completed row", "complete state", state, 1)
+            resident_downloads.append(target)
+        _check(
+            r,
+            "History->disk",
+            "exactly one completed download names resident bytes",
+            sorted(resident_downloads),
+            [browser_truth.get("target_path")],
+        )
+        truth_row = rows_by_target.get(browser_truth.get("target_path"))
+        if truth_row is None:
+            r.fail("History: declared browser-download target matches no row")
+        else:
+            target, received, total, _stored_hash, _state, _opened, _access, referrer, url = (
+                truth_row
+            )
+            _check(r, "History->scene relation", "target path", target, p["path"])
+            _check(
+                r,
+                "History->scene relation",
+                "content-addressed source URL",
+                url,
+                browser_truth.get("source_url"),
+            )
+            _check(
+                r,
+                "History->scene relation",
+                "referrer URL",
+                referrer,
+                browser_truth.get("referrer_url"),
+            )
+            _check(
+                r,
+                "History->scene relation",
+                "recorded size",
+                (received, total),
+                (browser_truth.get("size"), browser_truth.get("size")),
+            )
+            match = _CHROMIUM_CONTENT_URL.fullmatch(url)
+            _check(
+                r,
+                "History URL->scene relation",
+                "declared SHA256",
+                match.group("sha256") if match else None,
+                browser_truth.get("sha256"),
+            )
+
+    # These are reference/configuration joins, not execution claims.  Each strict first-party
+    # reader resolves a path from the emitted bytes; only then do we map that exact path to one
+    # declared resident and re-hash the target bytes.  The Task is disabled and trigger-free,
+    # while the Shell Link has no arguments or activation data under its closed profile.
+    claims_by_path: dict[str, list[dict]] = {}
+    for claim in resident_claims:
+        if not isinstance(claim, dict) or not isinstance(claim.get("path"), str):
             continue
-        pf = Prefetch(os.fspath(file.path))
-        prefetches[pf.executableName.lower()] = pf.runCount
+        claims_by_path.setdefault(claim["path"].casefold(), []).append(claim)
+
+    scheduled_truth = join.get("scheduled_task", {})
+    scheduled_source = scheduled_truth.get("source")
+    task_inventory = sorted(
+        file.relative_path
+        for file in scene_files
+        if file.name.casefold().endswith(".task.xml")
+    )
+    _check(
+        r,
+        "scene inventory->scheduled task",
+        "exactly one declared Task XML",
+        task_inventory,
+        [scheduled_source] if isinstance(scheduled_source, str) else [],
+    )
+    task_file = (
+        _relative(r, scene_files, scheduled_source, "scheduled task")
+        if isinstance(scheduled_source, str)
+        else None
+    )
+    task_target_path = None
+    if task_file is not None and task_file.data is not None:
+        try:
+            task_value = parse_scheduled_task_xml(task_file.data)
+            task_wire = read_scheduled_task_xml_wire(task_file.data)
+        except ValueError as exc:
+            r.fail(f"scheduled task: strict first-party readers rejected it — {exc}")
+        else:
+            task_target_path = task_value.command
+            _check(
+                r,
+                "Task XML parser->wire reader",
+                "command",
+                task_value.command,
+                task_wire.command,
+            )
+            _check(
+                r,
+                "Task XML->scene relation",
+                "disabled trigger-free one-action profile",
+                (
+                    task_value.enabled,
+                    task_value.allow_start_on_demand,
+                    task_value.trigger_count,
+                    task_value.action_count,
+                ),
+                (False, False, 0, 1),
+            )
+            _check(
+                r,
+                "Task XML->scene relation",
+                "task name",
+                task_value.task_name,
+                scheduled_truth.get("task_name"),
+            )
+            _check(
+                r,
+                "Task XML->scene relation",
+                "native Task-store guest path",
+                scheduled_truth.get("guest_path"),
+                rf"C:\Windows\System32\Tasks\ArtifactForge\{task_value.task_name}",
+            )
+            _check(
+                r,
+                "Task XML->scene relation",
+                "target path",
+                task_value.command,
+                scheduled_truth.get("target_path"),
+            )
+            target_claims = claims_by_path.get(task_value.command.casefold(), [])
+            _check(
+                r,
+                "Task XML->resident truth",
+                "exactly one resident target",
+                len(target_claims),
+                1,
+            )
+            if len(target_claims) == 1:
+                claim = target_claims[0]
+                try:
+                    validate_scheduled_task_xml(
+                        task_file.data,
+                        resident_pe_paths=(claim["path"],),
+                    )
+                except ValueError as exc:
+                    r.fail(f"scheduled task: selected resident validation failed — {exc}")
+                target_data = files.get(str(claim.get("name", "")).lower())
+                if target_data is None:
+                    r.fail("scheduled task: resolved target has no unique resident PE bytes")
+                else:
+                    _check(
+                        r,
+                        "Task XML->resident bytes",
+                        "target filename",
+                        claim.get("name"),
+                        scheduled_truth.get("target_name"),
+                    )
+                    _check(
+                        r,
+                        "Task XML->resident truth",
+                        "target role",
+                        claim.get("role"),
+                        scheduled_truth.get("target_role"),
+                    )
+                    _check(
+                        r,
+                        "Task XML->resident bytes",
+                        "target size",
+                        len(target_data),
+                        scheduled_truth.get("target_size"),
+                    )
+                    _check(
+                        r,
+                        "Task XML->resident bytes",
+                        "target SHA256",
+                        hashlib.sha256(target_data).hexdigest(),
+                        scheduled_truth.get("target_sha256"),
+                    )
+
+    shell_truth = join.get("shell_link", {})
+    shell_source = shell_truth.get("source")
+    shell_inventory = sorted(
+        file.relative_path
+        for file in scene_files
+        if file.name.casefold().endswith(".lnk")
+    )
+    _check(
+        r,
+        "scene inventory->Shell Link",
+        "exactly one declared Shell Link",
+        shell_inventory,
+        [shell_source] if isinstance(shell_source, str) else [],
+    )
+    shell_file = (
+        _relative(r, scene_files, shell_source, "Shell Link")
+        if isinstance(shell_source, str)
+        else None
+    )
+    shell_target_path = None
+    if shell_file is not None and shell_file.data is not None:
+        try:
+            shell_value = parse_shell_link(shell_file.data)
+        except ValueError as exc:
+            r.fail(f"Shell Link: strict first-party reader rejected it — {exc}")
+        else:
+            shell_target_path = shell_value.target_path
+            _check(
+                r,
+                "Shell Link->scene relation",
+                "target path",
+                shell_value.target_path,
+                shell_truth.get("target_path"),
+            )
+            _check(
+                r,
+                "Shell Link->scene relation",
+                "Start Menu guest path",
+                shell_truth.get("guest_path"),
+                (
+                    f"C:\\Users\\{join.get('user')}\\AppData\\Roaming\\Microsoft\\"
+                    f"Windows\\Start Menu\\Programs\\{shell_file.name}"
+                ),
+            )
+            target_claims = claims_by_path.get(shell_value.target_path.casefold(), [])
+            _check(
+                r,
+                "Shell Link->resident truth",
+                "exactly one resident target",
+                len(target_claims),
+                1,
+            )
+            if len(target_claims) == 1:
+                claim = target_claims[0]
+                target_data = files.get(str(claim.get("name", "")).lower())
+                if target_data is None:
+                    r.fail("Shell Link: resolved target has no unique resident PE bytes")
+                else:
+                    _check(
+                        r,
+                        "Shell Link->resident bytes",
+                        "target filename",
+                        claim.get("name"),
+                        shell_truth.get("target_name"),
+                    )
+                    _check(
+                        r,
+                        "Shell Link->resident truth",
+                        "target role",
+                        claim.get("role"),
+                        shell_truth.get("target_role"),
+                    )
+                    _check(
+                        r,
+                        "Shell Link->resident bytes",
+                        "header target size",
+                        shell_value.target_size,
+                        len(target_data),
+                    )
+                    _check(
+                        r,
+                        "Shell Link->resident bytes",
+                        "declared target size",
+                        len(target_data),
+                        shell_truth.get("target_size"),
+                    )
+                    _check(
+                        r,
+                        "Shell Link->resident bytes",
+                        "target SHA256",
+                        hashlib.sha256(target_data).hexdigest(),
+                        shell_truth.get("target_sha256"),
+                    )
+            _check(
+                r,
+                "Shell Link->scene relation",
+                "target FILETIMEs",
+                (
+                    shell_value.creation_filetime,
+                    shell_value.access_filetime,
+                    shell_value.write_filetime,
+                ),
+                (
+                    shell_truth.get("creation_filetime"),
+                    shell_truth.get("access_filetime"),
+                    shell_truth.get("write_filetime"),
+                ),
+            )
+            _check(
+                r,
+                "Shell Link->scene relation",
+                "fixed-volume serial",
+                shell_value.volume_serial,
+                shell_truth.get("volume_serial"),
+            )
+    if task_target_path is not None and shell_target_path is not None:
+        _check(
+            r,
+            "Task XML<->Shell Link",
+            "distinct non-persistence resident targets",
+            task_target_path.casefold() != shell_target_path.casefold(),
+            True,
+        )
+        _check(
+            r,
+            "Task XML/Shell Link->Run relation",
+            "neither reference amplifies the persisted target",
+            {
+                task_target_path.casefold(),
+                shell_target_path.casefold(),
+            }.isdisjoint({str(p.get("path", "")).casefold()}),
+            True,
+        )
+
+    # The execution pivot: the exact declared Prefetch set, the persisted program's run
+    # count, and exactly one orphan.  Artifact count comes from the captured served tree and
+    # execution names come from decoding those bytes; neither is inferred from filenames.
+    prefetch_truth = join.get("prefetch")
+    if not isinstance(prefetch_truth, dict):
+        prefetch_truth = {}
+        r.fail("prefetch truth: declaration must be a mapping")
+    expected_prefetch_names = prefetch_truth.get("execution_names", [])
+    if not isinstance(expected_prefetch_names, list) or not all(
+        isinstance(name, str) for name in expected_prefetch_names
+    ):
+        expected_prefetch_names = []
+        r.fail("prefetch truth: execution_names must be a list of strings")
+    expected_prefetch_names = sorted(name.casefold() for name in expected_prefetch_names)
+    prefetch_files = [file for file in scene_files if file.name.casefold().endswith(".pf")]
+    _check(
+        r,
+        "prefetch truth->disk",
+        "exact Prefetch artifact count",
+        len(prefetch_files),
+        prefetch_truth.get("artifact_count"),
+    )
+    prefetches = {}
+    for file in prefetch_files:
+        if file.data is None:
+            r.fail(f"prefetch: {file.relative_path} has no captured bytes")
+            continue
+        try:
+            pf = parse_mam_prefetch_v30_variant1(file.data)
+        except (TypeError, ValueError) as exc:
+            r.fail(
+                f"prefetch: {file.relative_path} is outside the bounded v30 profile — "
+                f"{type(exc).__name__}: {str(exc)[:100]}"
+            )
+            continue
+        key = pf.executable_name.lower()
+        if key in prefetches:
+            r.fail(f"prefetch: executable name {pf.executable_name!r} is ambiguous")
+            continue
+        prefetches[key] = pf.run_count
+    _check(
+        r,
+        "prefetch bytes->scene truth",
+        "exact execution names",
+        sorted(prefetches),
+        expected_prefetch_names,
+    )
     if p["name"].lower() in prefetches:
         _check(r, "prefetch->persisted", "run count",
                prefetches[p["name"].lower()], p["run_count"])

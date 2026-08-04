@@ -64,15 +64,18 @@ def test_every_gate_has_all_six_bindings(name):
         f"gate '{name}' is not described in docs/DESIGN.md"
 
 
-def test_gate4_ci_uses_only_the_deterministic_source_bound_scorecard():
+def test_gate4_ci_requires_a_fresh_current_source_scorecard():
     workflow = _read(".github/workflows/ci.yml")
 
     assert workflow.count("- name: Gate 4 — solvability") == 1
     assert re.search(
-        r"- name: Gate 4 — solvability \(source-bound deterministic scorecard check\)\s+"
-        r"run: uv run artifactforge scorecard --n 40 --check fidelity-scorecard\.json",
+        r"- name: Gate 4 — solvability \(fresh current-source scorecard must pass\)\s+"
+        r"run: >-\s+uv run artifactforge scorecard --n 40\s+"
+        r"--out \"\$RUNNER_TEMP/artifactforge-current-scorecard\.json\" --require-pass",
         workflow,
     )
+    assert "--check fidelity-scorecard.json" not in workflow
+    assert "immutable v0.5 evidence" in workflow
     assert "artifactforge gate solvability" not in workflow
     assert "known red" not in workflow.lower()
     assert "Type-I rejection" in workflow

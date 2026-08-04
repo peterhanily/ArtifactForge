@@ -10,6 +10,7 @@ import dataclasses
 
 import pytest
 
+from artifactforge.fixture.abi import GENERATOR_ABI_V1
 from artifactforge.fixture import archive
 from artifactforge.fixture.archive import (
     ArchivePublicationUncertain,
@@ -18,19 +19,71 @@ from artifactforge.fixture.archive import (
     create_release_archive,
     verify_release_archive,
 )
-from artifactforge.fixture.model import ArtifactEntry, FixtureSpec
-from artifactforge.fixture.model import FixtureManifest, artifact_entries_from_tree
-from artifactforge.fixture.model import GeneratorIdentity
+from artifactforge.fixture.canonical import canonical_json_bytes
+from artifactforge.fixture.model_v2 import (
+    FileNodeV2,
+    FixtureManifestV2,
+    FixturePayloadV2,
+    FixtureSpecV2,
+    GeneratorIdentityV2,
+    LinuxMetadataV2,
+    ProfileSpecV2,
+)
 from artifactforge.fixture.operations import build_fixture
-from artifactforge import __version__
 
-ROOT = Path(__file__).parents[1]
-SPEC = ROOT / "examples" / "fixtures" / "windows-loose-v1.json"
-LINUX_SPEC = ROOT / "examples" / "fixtures" / "linux-glibc-x86_64-loose-v1.json"
+
+def _spec(family: str = "windows") -> FixtureSpecV2:
+    profiles = {
+        "windows": "windows-loose-v2",
+        "macos": "macos-14-loose-v2",
+        "linux": "linux-glibc-x86_64-loose-v2",
+    }
+    fixture_ids = {
+        "windows": "windows-dropper-001",
+        "macos": "macos-quarantined-app-001",
+        "linux": "linux-autostart-001",
+    }
+    return FixtureSpecV2.create(
+        fixture_id=fixture_ids[family],
+        family=family,
+        profile=ProfileSpecV2(
+            id=profiles[family],
+            hostname=f"{family}-01",
+            username="v",
+        ),
+        seed_hex="42" * 32,
+    )
 
 
 def _build(path: Path):
-    return build_fixture(FixtureSpec.from_json(SPEC.read_bytes()), path)
+    return build_fixture(_spec(), path)
+
+
+def _file_path(node: FileNodeV2) -> str:
+    return node.served_path
+
+
+def _manifest_for_carrier(
+    manifest: FixtureManifestV2, files: dict[str, bytes]
+) -> FixtureManifestV2:
+    nodes = tuple(
+        FileNodeV2.from_bytes(
+            guest_path=node.guest_path,
+            served_path=node.served_path,
+            data=files[node.served_path],
+            metadata=node.metadata,
+        )
+        for node in manifest.payload.files
+    )
+    return FixtureManifestV2.create(
+        generator_version=manifest.generator.version,
+        recipe=manifest.recipe,
+        payload=FixturePayloadV2.create(
+            family=manifest.payload.family,
+            directories=manifest.payload.directories,
+            files=nodes,
+        ),
+    )
 
 
 def test_release_is_byte_deterministic_and_rooted_by_fixture_id(tmp_path):
@@ -67,16 +120,30 @@ def test_release_uses_only_fixed_ustar_metadata_and_regular_members(tmp_path):
     assert verified.ok and verified.failures == ()
 
 
-def test_linux_release_keeps_every_elf_member_non_executable_under_fixture_abi_v1(tmp_path):
-    spec = FixtureSpec.from_json(LINUX_SPEC.read_bytes())
-    build_fixture(spec, tmp_path / "fixture")
+def test_linux_logical_executables_remain_non_executable_ustar_carriers(tmp_path):
+    manifest = build_fixture(_spec("linux"), tmp_path / "fixture")
     create_release_archive(tmp_path / "fixture", tmp_path / "linux.tar")
+
+    elf_nodes = [
+        node
+        for node in manifest.payload.files
+        if (tmp_path / "fixture" / "artifacts" / node.served_path)
+        .read_bytes()
+        .startswith(b"\x7fELF")
+    ]
+    assert len(elf_nodes) == 5
+    assert all(
+        isinstance(node.metadata, LinuxMetadataV2) and node.metadata.mode == 0o755
+        for node in elf_nodes
+    )
 
     with tarfile.open(tmp_path / "linux.tar", mode="r:") as bundle:
         elf_members = [
             member
             for member in bundle.getmembers()
-            if member.isreg() and "/artifacts/home/v/.local/bin/" in member.name
+            if member.isreg()
+            and member.name.removeprefix("linux-autostart-001/artifacts/")
+            in {node.served_path for node in elf_nodes}
         ]
 
     assert len(elf_members) == 5
@@ -109,7 +176,7 @@ def test_release_refuses_every_lexisting_output(tmp_path, existing):
 
 def test_mutated_fixture_is_rejected_before_archive_publication(tmp_path):
     manifest = _build(tmp_path / "fixture")
-    victim = tmp_path / "fixture" / "artifacts" / manifest.payload.files[0].path
+    victim = tmp_path / "fixture" / "artifacts" / _file_path(manifest.payload.files[0])
     victim.write_bytes(victim.read_bytes() + b"changed")
     with pytest.raises(FixtureArchiveMismatch, match="match manifest|reproduce"):
         create_release_archive(tmp_path / "fixture", tmp_path / "release.tar")
@@ -118,7 +185,7 @@ def test_mutated_fixture_is_rejected_before_archive_publication(tmp_path):
 
 def test_fixture_change_after_capture_cannot_change_archived_snapshot(tmp_path, monkeypatch):
     manifest = _build(tmp_path / "fixture")
-    victim = tmp_path / "fixture" / "artifacts" / manifest.payload.files[0].path
+    victim = tmp_path / "fixture" / "artifacts" / _file_path(manifest.payload.files[0])
     original = archive._write_archive
 
     def write_then_mutate(path, snapshot):
@@ -185,18 +252,53 @@ def test_nonzero_member_padding_is_rejected(tmp_path):
         verify_release_archive(output)
 
 
-def test_archive_rejects_unsupported_generator_version(tmp_path):
+def test_v2_generator_version_is_provenance_and_still_reproduces(tmp_path, monkeypatch):
     _build(tmp_path / "fixture")
     snapshot = archive._snapshot_fixture(tmp_path / "fixture")
-    unsupported = dataclasses.replace(
-        snapshot.manifest, generator=GeneratorIdentity(version="999.0.0"))
+    assert isinstance(snapshot.manifest, FixtureManifestV2)
+    foreign = dataclasses.replace(
+        snapshot.manifest, generator=GeneratorIdentityV2(version="999.0.0")
+    )
     files = dict(snapshot.files)
-    files[archive.MANIFEST_NAME] = unsupported.canonical_bytes()
+    files[archive.MANIFEST_NAME] = foreign.canonical_bytes()
     rewritten = dataclasses.replace(
-        snapshot, files=tuple(sorted(files.items())), manifest=unsupported)
-    output = tmp_path / "unsupported.tar"
+        snapshot, files=tuple(sorted(files.items())), manifest=foreign
+    )
+    output = tmp_path / "foreign-version.tar"
     output.write_bytes(archive._canonical_archive_bytes(rewritten))
-    with pytest.raises(FixtureArchiveError, match="unsupported fixture generator version"):
+    real_verify_snapshot = archive._verify_snapshot
+    reproduced: list[str] = []
+
+    def recording_verify(snapshot, *, assurance=False):
+        reproduced.append(snapshot.manifest.generator.version)
+        return real_verify_snapshot(snapshot, assurance=assurance)
+
+    monkeypatch.setattr(archive, "_verify_snapshot", recording_verify)
+    verified = verify_release_archive(output)
+
+    assert verified.ok
+    assert verified.manifest.generator.version == "999.0.0"
+    assert reproduced == ["999.0.0"]
+
+
+def test_archive_rejects_mixed_generator_abi_before_reproduction(tmp_path, monkeypatch):
+    _build(tmp_path / "fixture")
+    snapshot = archive._snapshot_fixture(tmp_path / "fixture")
+    mapping = snapshot.manifest.to_mapping()
+    generator = mapping["generator"]
+    assert isinstance(generator, dict)
+    generator["abi"] = GENERATOR_ABI_V1
+    files = dict(snapshot.files)
+    files[archive.MANIFEST_NAME] = canonical_json_bytes(mapping)
+    rewritten = dataclasses.replace(snapshot, files=tuple(sorted(files.items())))
+    output = tmp_path / "mixed-abi.tar"
+    output.write_bytes(archive._canonical_archive_bytes(rewritten))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("mixed ABI reached fixture reproduction")
+
+    monkeypatch.setattr(archive, "_verify_snapshot", forbidden)
+    with pytest.raises(FixtureArchiveError, match="manifest.generator.abi"):
         verify_release_archive(output)
 
 
@@ -228,26 +330,19 @@ def test_fixture_reads_request_no_follow_and_publication_fsyncs_parent(tmp_path,
 def test_parent_directory_symlink_swap_is_rejected(tmp_path, monkeypatch):
     manifest = _build(tmp_path / "fixture")
     artifacts = tmp_path / "fixture" / "artifacts"
-    source = artifacts / manifest.payload.files[0].path
-    nested = artifacts / "nested"
-    nested.mkdir()
-    source.rename(nested / source.name)
-    rewritten = FixtureManifest.create(
-        manifest.recipe,
-        generator_version=__version__,
-        entries=artifact_entries_from_tree(artifacts),
-    )
-    (tmp_path / "fixture" / "fixture.json").write_bytes(rewritten.canonical_bytes())
+    top_level = manifest.payload.directories[0].served_path.split("/", 1)[0]
+    nested = artifacts / top_level
+    assert nested.is_dir()
 
     real_open = archive.os.open
     swapped = False
 
     def swapping_open(path, flags, *args, **kwargs):
         nonlocal swapped
-        if path == "nested" and kwargs.get("dir_fd") is not None and not swapped:
+        if path == top_level and kwargs.get("dir_fd") is not None and not swapped:
             swapped = True
-            nested.rename(artifacts / "nested.real")
-            nested.symlink_to("nested.real", target_is_directory=True)
+            nested.rename(artifacts / f"{top_level}.real")
+            nested.symlink_to(f"{top_level}.real", target_is_directory=True)
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(archive.os, "open", swapping_open)
@@ -273,12 +368,14 @@ def test_atomic_publication_race_preserves_competing_output(tmp_path, monkeypatc
 def test_self_consistent_but_nonreproducible_fixture_is_not_released(tmp_path):
     manifest = _build(tmp_path / "fixture")
     artifacts = tmp_path / "fixture" / "artifacts"
-    victim = artifacts / manifest.payload.files[0].path
+    victim = artifacts / _file_path(manifest.payload.files[0])
     victim.write_bytes(victim.read_bytes() + b"self-consistent mutation")
-    rewritten = FixtureManifest.create(
-        manifest.recipe,
-        generator_version=__version__,
-        entries=artifact_entries_from_tree(artifacts),
+    rewritten = _manifest_for_carrier(
+        manifest,
+        {
+            node.served_path: (artifacts / node.served_path).read_bytes()
+            for node in manifest.payload.files
+        },
     )
     (tmp_path / "fixture" / "fixture.json").write_bytes(rewritten.canonical_bytes())
 
@@ -293,15 +390,14 @@ def test_archive_verifier_rejects_canonical_nonreproducible_payload(tmp_path):
     files = dict(snapshot.files)
     artifact_name = next(name for name in files if name.startswith("artifacts/"))
     files[artifact_name] += b"self-consistent mutation"
-    entries = tuple(
-        ArtifactEntry.from_bytes(name.removeprefix("artifacts/"), payload)
-        for name, payload in sorted(files.items())
-        if name.startswith("artifacts/")
-    )
-    manifest = FixtureManifest.create(
-        snapshot.manifest.recipe,
-        generator_version=__version__,
-        entries=entries,
+    assert isinstance(snapshot.manifest, FixtureManifestV2)
+    manifest = _manifest_for_carrier(
+        snapshot.manifest,
+        {
+            name.removeprefix("artifacts/"): payload
+            for name, payload in files.items()
+            if name.startswith("artifacts/")
+        },
     )
     files[archive.MANIFEST_NAME] = manifest.canonical_bytes()
     rewritten = dataclasses.replace(
@@ -322,29 +418,101 @@ def test_replaced_temporary_path_cannot_redirect_held_archive_fd(tmp_path, monke
     output = tmp_path / "release.tar"
     attacker = tmp_path / "attacker"
     attacker.write_bytes(b"keep me")
-    real_mkstemp = archive.tempfile.mkstemp
+    real_create = archive._create_private_staging_file
     real_publish = archive._publish_archive_inode
-    temporary = None
+    temporary_name = None
+    staging_descriptor = None
 
-    def record_path(*args, **kwargs):
-        nonlocal temporary
-        descriptor, name = real_mkstemp(*args, **kwargs)
-        temporary = Path(name)
-        return descriptor, name
+    def record_file(parent_descriptor):
+        nonlocal staging_descriptor, temporary_name
+        temporary_name, descriptor = real_create(parent_descriptor)
+        staging_descriptor = parent_descriptor
+        return temporary_name, descriptor
 
     def replace_then_publish(source_fd, parent_fd, output_name):
-        assert temporary is not None
-        held_path = temporary.with_name("held-original-inode")
-        temporary.rename(held_path)
-        temporary.write_bytes(attacker.read_bytes())
+        assert temporary_name is not None
+        assert staging_descriptor is not None
+        archive.os.rename(
+            temporary_name,
+            "held-original-inode",
+            src_dir_fd=staging_descriptor,
+            dst_dir_fd=staging_descriptor,
+        )
+        attacker_descriptor = archive.os.open(
+            temporary_name,
+            archive.os.O_WRONLY | archive.os.O_CREAT | archive.os.O_EXCL,
+            0o600,
+            dir_fd=staging_descriptor,
+        )
+        try:
+            archive.os.write(attacker_descriptor, attacker.read_bytes())
+        finally:
+            archive.os.close(attacker_descriptor)
         real_publish(source_fd, parent_fd, output_name)
 
-    monkeypatch.setattr(archive.tempfile, "mkstemp", record_path)
+    monkeypatch.setattr(archive, "_create_private_staging_file", record_file)
     monkeypatch.setattr(archive, "_publish_archive_inode", replace_then_publish)
     create_release_archive(tmp_path / "fixture", output)
     assert attacker.read_bytes() == b"keep me"
     assert output.read_bytes() != b"keep me"
     assert verify_release_archive(output).ok
+    staging_directories = list(tmp_path.glob(".artifactforge-release-*"))
+    assert len(staging_directories) == 1
+    for leftover in staging_directories[0].iterdir():
+        leftover.unlink()
+    staging_directories[0].rmdir()
+
+
+def test_staging_directory_setup_failure_removes_its_exact_private_residue(
+    tmp_path, monkeypatch
+):
+    parent_descriptor = archive.os.open(tmp_path, archive.os.O_RDONLY | archive.os.O_DIRECTORY)
+    real_chmod = archive.os.chmod
+
+    def fail_staging_chmod(path, mode, *args, **kwargs):
+        if (
+            isinstance(path, str)
+            and path.startswith(".artifactforge-release-")
+            and kwargs.get("dir_fd") == parent_descriptor
+        ):
+            raise OSError("injected staging directory chmod failure")
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(archive.os, "chmod", fail_staging_chmod)
+    try:
+        with pytest.raises(archive.FixtureArchiveError, match="cannot hold private"):
+            archive._create_private_staging_directory(
+                parent_descriptor,
+                forbidden_identities=frozenset(),
+            )
+    finally:
+        archive.os.close(parent_descriptor)
+
+    assert not list(tmp_path.glob(".artifactforge-release-*"))
+
+
+def test_staging_file_setup_failure_removes_its_exact_private_residue(
+    tmp_path, monkeypatch
+):
+    staging_descriptor = archive.os.open(
+        tmp_path,
+        archive.os.O_RDONLY | archive.os.O_DIRECTORY,
+    )
+    real_fchmod = archive.os.fchmod
+
+    def fail_staging_fchmod(descriptor, mode):
+        if mode == 0o600:
+            raise OSError("injected staging file fchmod failure")
+        return real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(archive.os, "fchmod", fail_staging_fchmod)
+    try:
+        with pytest.raises(archive.FixtureArchiveError, match="cannot secure private"):
+            archive._create_private_staging_file(staging_descriptor)
+    finally:
+        archive.os.close(staging_descriptor)
+
+    assert not list(tmp_path.glob("archive-*.tmp"))
 
 
 def test_archive_mode_is_set_before_final_file_sync(tmp_path, monkeypatch):

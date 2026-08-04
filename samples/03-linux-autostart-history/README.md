@@ -1,69 +1,54 @@
 # Linux: one resident named by XDG autostart and Bash history
 
-> **Synthetic.** Every byte here was generated. No hash, UUID, URL or path in this directory identifies anything real, and none should be submitted to a blocklist or a threat-intelligence platform. See [`../../SECURITY.md`](../../SECURITY.md).
+> **Synthetic sample.** Nothing here was collected from a real host or incident. Do not submit these values to a blocklist or threat-intelligence platform. See [`../../SECURITY.md`](../../SECURITY.md).
+
+## Scenario
 
 Five nested ELF files are resident. Three XDG autostart records name one set of three paths; a timestamped Bash history names another set of three. Their unique shared path identifies the subject, and that exact guest path maps to one recursive served path whose SHA-256 is computed from the committed ELF bytes.
 
-This is naming evidence, not an activation claim: parser acceptance does not prove that a desktop session launched an entry, and shell history is not proof that a command ran. Fixture Core v1 does not bind executable modes, so the released files are normalized to 0644 and are not an activation-ready filesystem. The ELF declares the glibc loader and `libc.so.6`, while the main object imports and calls no libc function; external loader/dependency code is out of scope and on a real execution attempt the dynamic loader would run before its nine-byte direct-exit entry. The files are deliberately minimal, not compiler-shaped. Do not execute them, run `ldd`, launch the desktop entries, or source/evaluate the history.
+## Scope
 
-Regenerate with `scripts/make-samples.sh`. The bytes are deterministic, so a regeneration that differs is a change in the generator, not in the weather.
+This is naming evidence, not activation evidence. Fixture ABI v2 binds logical guest modes, but this gallery contains only the copied artifact bytes and is not an activation-ready filesystem. Each ELF declares the glibc loader and `libc.so.6`; the loader would run before the nine-byte direct-exit entry. Do not execute the files, run `ldd`, launch the desktop entries or evaluate the history.
 
-## What the declared readers see
+## Reproduce
 
-### LIEF — five ELF64 PIE files declare glibc but import no functions
+From the repository root, run `scripts/make-samples.sh`. A byte difference means the generator or its declared inputs changed.
 
-```
-home/v/.local/bin/font-index  type=DYN machine=X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 imports=0 sha256=fe7a74d61e0e9eaf...
-home/v/.local/bin/print-helper  type=DYN machine=X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 imports=0 sha256=174a38bb8c6f3f73...
-home/v/.local/bin/profile-agent  type=DYN machine=X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 imports=0 sha256=62c4d3d12540548f...
-home/v/.local/bin/session-check  type=DYN machine=X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 imports=0 sha256=64dec881b31c2130...
-home/v/.local/bin/theme-agent  type=DYN machine=X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 imports=0 sha256=ac05d4be788cca1d...
-```
+## Reader results
 
-### pyelftools — independently reads the same loader, dependency and nine-byte entry
+### ELF files: LIEF and pyelftools
 
-```
-home/v/.local/bin/font-index  type=ET_DYN machine=EM_X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 .text=31ffb83c0000000f05
-home/v/.local/bin/print-helper  type=ET_DYN machine=EM_X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 .text=31ffb83c0000000f05
-home/v/.local/bin/profile-agent  type=ET_DYN machine=EM_X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 .text=31ffb83c0000000f05
-home/v/.local/bin/session-check  type=ET_DYN machine=EM_X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 .text=31ffb83c0000000f05
-home/v/.local/bin/theme-agent  type=ET_DYN machine=EM_X86_64 interp=/lib64/ld-linux-x86-64.so.2 needed=libc.so.6 .text=31ffb83c0000000f05
-```
+Both readers report interpreter `/lib64/ld-linux-x86-64.so.2` and dependency `libc.so.6` for every file. LIEF reports 0 imported symbols; pyelftools reads the nine-byte entry as `31ffb83c0000000f05`.
 
-### PyXDG — three XDG desktop-entry records
+| File | SHA-256 | LIEF type | pyelftools type |
+| --- | --- | --- | --- |
+| `home/v/.local/bin/af-sync` | `2d70362529921fee...` | DYN | ET_DYN |
+| `home/v/.local/bin/backup-watch` | `c0cae50146ca7d52...` | DYN | ET_DYN |
+| `home/v/.local/bin/cache-helper` | `2b78817fa6b3241e...` | DYN | ET_DYN |
+| `home/v/.local/bin/network-watch` | `9de5e447ced20b61...` | DYN | ET_DYN |
+| `home/v/.local/bin/update-check` | `cd6f9cfc8da03941...` | DYN | ET_DYN |
 
-```
-home/v/.config/autostart/artifactforge-1-session-check.desktop  Type=Application Exec=/home/v/.local/bin/session-check Hidden=false
-home/v/.config/autostart/artifactforge-2-theme-agent.desktop  Type=Application Exec=/home/v/.local/bin/theme-agent Hidden=false
-home/v/.config/autostart/artifactforge-3-profile-agent.desktop  Type=Application Exec=/home/v/.local/bin/profile-agent Hidden=false
-```
+### XDG autostart: PyXDG and raw reader
 
-### bounded raw reader — the same XDG values and exact marker
+Both readers agree on Type, Exec and Hidden. The raw reader also checks the exact synthetic marker.
 
-```
-home/v/.config/autostart/artifactforge-1-session-check.desktop  Type=Application Exec=/home/v/.local/bin/session-check Hidden=false marker=ARTIFACTFORGE
-home/v/.config/autostart/artifactforge-2-theme-agent.desktop  Type=Application Exec=/home/v/.local/bin/theme-agent Hidden=false marker=ARTIFACTFORGE
-home/v/.config/autostart/artifactforge-3-profile-agent.desktop  Type=Application Exec=/home/v/.local/bin/profile-agent Hidden=false marker=ARTIFACTFORGE
-```
+| File | Exec | Hidden | Marker |
+| --- | --- | --- | --- |
+| `home/v/.config/autostart/artifactforge-1-update-check.desktop` | `/home/v/.local/bin/update-check` | false | `ARTIFACTFORGE` |
+| `home/v/.config/autostart/artifactforge-2-af-sync.desktop` | `/home/v/.local/bin/af-sync` | false | `ARTIFACTFORGE` |
+| `home/v/.config/autostart/artifactforge-3-backup-watch.desktop` | `/home/v/.local/bin/backup-watch` | false | `ARTIFACTFORGE` |
 
-### dissect.target — timestamped Bash-history records read as data
+### Bash history: dissect.target and raw reader
 
-```
-home/v/.bash_history  2024-01-15T05:00:00+00:00 order=0 command=: 'ARTIFACTFORGE-SYNTHETIC-LINUX'
-home/v/.bash_history  2024-01-15T05:00:01+00:00 order=1 command=/home/v/.local/bin/session-check
-home/v/.bash_history  2024-01-15T05:00:02+00:00 order=2 command=/home/v/.local/bin/print-helper
-home/v/.bash_history  2024-01-15T05:00:03+00:00 order=3 command=/home/v/.local/bin/font-index
-```
+Both readers agree on the records in `home/v/.bash_history`. They read history as data; neither executes a command.
 
-### bounded raw reader — the same Bash epochs and command strings
+| Order | UTC timestamp | Epoch | Command |
+| --- | --- | --- | --- |
+| 0 | 2025-05-29T16:16:27+00:00 | 1748535387 | `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` |
+| 1 | 2025-05-29T16:17:27+00:00 | 1748535447 | `/home/v/.local/bin/update-check` |
+| 2 | 2025-05-29T16:18:27+00:00 | 1748535507 | `/home/v/.local/bin/cache-helper` |
+| 3 | 2025-05-29T16:19:27+00:00 | 1748535567 | `/home/v/.local/bin/network-watch` |
 
-```
-home/v/.bash_history  epoch=1705294800 command=: 'ARTIFACTFORGE-SYNTHETIC-LINUX'
-home/v/.bash_history  epoch=1705294801 command=/home/v/.local/bin/session-check
-home/v/.bash_history  epoch=1705294802 command=/home/v/.local/bin/print-helper
-home/v/.bash_history  epoch=1705294803 command=/home/v/.local/bin/font-index
-```
+## Answer key
 
-## The answers
-
-In [`ARTIFACT_ANSWERS.json`](ARTIFACT_ANSWERS.json). Each one requires reading at least two of the files above together.
+Byte-derived answers are in [`ARTIFACT_ANSWERS.json`](ARTIFACT_ANSWERS.json). Each answer joins at least two artifacts.

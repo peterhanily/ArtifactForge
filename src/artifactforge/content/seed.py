@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Seed derivation shared by every content writer.
 
-Bytes are a pure function of a seed — no wall clock, no os.urandom, no PID — so the same
-scenario regenerates byte-identical forever. Every writer draws from here rather than
-rolling its own, because a single writer reaching for entropy would silently break the
-property the whole project rests on.
+Derived values are pure functions of a seed — no wall clock, no os.urandom, no PID — and remain
+stable for the same domain and declared derivation ABI. Whole-scene byte identity additionally
+depends on each artifact writer and its producer contract; this module does not promise
+cross-version or cross-runtime identity by itself. Content writers draw from here rather than
+rolling their own, because a writer reaching for entropy would silently break the scoped
+determinism contract.
 """
 from __future__ import annotations
 

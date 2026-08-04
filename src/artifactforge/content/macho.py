@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT
 """A hand-assembled, byte-deterministic arm64 Mach-O — the macOS half of the keystone.
 
-Same discipline as the PE writer next door: pure stdlib, every byte a function of the seed,
-so the same content identity regenerates identically forever. Nothing here calls a clock,
-reads entropy, or shells out to a toolchain.
+Same discipline as the PE writer next door: pure stdlib, every byte a function of the seed, so
+the same content identity regenerates identically under the declared Mach-O writer ABI. A
+byte-affecting implementation change requires an explicit ABI transition; this is not a
+cross-version promise. Nothing here calls a clock, reads entropy, or shells out to a toolchain.
 
 It is a real binary rather than a token file. It carries a genuine LC_SYMTAB whose undefined
 external symbols yield a real, seed-deterministic **symhash** — the Mach-O analogue of the

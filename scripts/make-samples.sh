@@ -5,8 +5,8 @@
 # reproduce these bytes exactly and check that the committed files are what this script
 # produces. That is the point of committing them at all.
 #
-# The SQLite version is recorded because it is embedded in the macOS database headers: a
-# different sqlite3 produces different bytes, and that is a disclosed tell rather than a bug.
+# macOS SQLite bytes come from ArtifactForge's owned writer; host sqlite3 is a consumer
+# oracle only and cannot change the regenerated sample bytes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,7 +16,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 "$AF" bench new "$WORK/suite" --n 2 --kind dev >/dev/null
-"$AF" fixture build examples/fixtures/linux-glibc-x86_64-loose-v1.json \
+"$AF" fixture build examples/fixtures/linux-glibc-x86_64-loose-v2.json \
   "$WORK/linux-fixture" >/dev/null
 
 WIN=$("$PY" -c "import json;print(next(s['scenario_id'] for s in json.load(open('$WORK/suite/public.json'))['scenarios'] if s['family']=='windows'))")
@@ -55,4 +55,4 @@ PY
   --suite "$WORK/suite" --windows "$WIN" --macos "$MAC" \
   --linux-fixture "$WORK/linux-fixture"
 
-echo "regenerated samples/ (sqlite3 $("$PY" -c 'import sqlite3;print(sqlite3.sqlite_version)'))"
+echo "regenerated samples/ with owned deterministic SQLite bytes"

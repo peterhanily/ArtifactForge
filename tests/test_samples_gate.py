@@ -13,6 +13,7 @@ one is inert, and every one discloses itself.
 
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,8 +26,17 @@ from artifactforge.inventory import inventory_regular_files
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLES = sorted(glob.glob(os.path.join(ROOT, "samples", "*", "")))
+SAMPLE_WRITER_PATH = Path(ROOT) / "scripts" / "write_sample_docs.py"
 
 pytestmark = pytest.mark.skipif(not SAMPLES, reason="no samples committed")
+
+
+def _load_sample_writer():
+    spec = importlib.util.spec_from_file_location("artifactforge_sample_writer", SAMPLE_WRITER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _ids(paths):
@@ -106,6 +116,80 @@ def test_the_samples_index_lists_what_is_actually_there():
         assert os.path.basename(sample.rstrip(os.sep)) in text
 
 
+def test_windows_gallery_refuses_same_basename_at_an_unproved_target_path(tmp_path):
+    """Gallery truth must not learn a resident path from the reference being checked."""
+    from artifactforge.artifacts.shell_link import (
+        ShellLinkTimestamps,
+        build_shell_link,
+        parse_shell_link,
+    )
+
+    source = Path(ROOT) / "samples" / "01-windows-dropper"
+    sample = tmp_path / "windows"
+    shutil.copytree(source, sample)
+    link_path = sample / "ArtifactForgeMaintenance.lnk"
+    observed = parse_shell_link(link_path.read_bytes())
+    basename = observed.target_path.rsplit("\\", 1)[-1]
+    link_path.write_bytes(
+        build_shell_link(
+            rf"C:\Unproved\{basename}",
+            observed.display_name,
+            observed.target_size,
+            timestamps=ShellLinkTimestamps(
+                observed.creation_filetime,
+                observed.access_filetime,
+                observed.write_filetime,
+            ),
+            volume_serial=observed.volume_serial,
+            volume_label=observed.volume_label,
+        )
+    )
+
+    with pytest.raises(ValueError, match="independent Prefetch path"):
+        _load_sample_writer()._windows_evidence(os.fspath(sample))
+
+
+def test_windows_gallery_refuses_task_same_basename_at_an_unproved_target_path(tmp_path):
+    """Task truth must not learn a resident path from the reference being checked."""
+    from artifactforge.artifacts.windows_task import (
+        build_scheduled_task_xml,
+        parse_scheduled_task_xml,
+    )
+
+    source = Path(ROOT) / "samples" / "01-windows-dropper"
+    sample = tmp_path / "windows"
+    shutil.copytree(source, sample)
+    task_path = sample / "ArtifactForgeMaintenance.task.xml"
+    observed = parse_scheduled_task_xml(task_path.read_bytes())
+    basename = observed.command.rsplit("\\", 1)[-1]
+    unproved = rf"C:\Unproved\{basename}"
+    task_path.write_bytes(
+        build_scheduled_task_xml(
+            observed.task_name,
+            unproved,
+            resident_pe_paths=(unproved,),
+            version=observed.version,
+        )
+    )
+
+    with pytest.raises(ValueError, match="independent Prefetch path"):
+        _load_sample_writer()._windows_evidence(os.fspath(sample))
+
+
+def test_windows_gallery_reports_missing_persisted_prefetch_as_a_profile_error(tmp_path):
+    source = Path(ROOT) / "samples" / "01-windows-dropper"
+    sample = tmp_path / "windows"
+    shutil.copytree(source, sample)
+    answers = json.loads((sample / "ARTIFACT_ANSWERS.json").read_bytes())
+    persisted_name = answers["derived_evidence"]["persisted"]["name"].upper()
+    matches = tuple(sample.glob(f"{persisted_name}-*.pf"))
+    assert len(matches) == 1
+    matches[0].unlink()
+
+    with pytest.raises(ValueError, match="persisted PE has no independent Prefetch path"):
+        _load_sample_writer()._windows_evidence(os.fspath(sample))
+
+
 @pytest.mark.parametrize("sample", SAMPLES, ids=_ids)
 def test_the_sample_readme_quotes_the_bytes_that_are_committed(sample):
     """The pasted parser output has to describe these files, not an earlier generation."""
@@ -118,6 +202,8 @@ def test_the_sample_readme_quotes_the_bytes_that_are_committed(sample):
         data = file.data
         assert data is not None
         head = data[:4]
+        if name.casefold().endswith((".task.xml", ".lnk")):
+            assert name in readme, f"{name} is committed but the README does not mention it"
         if head[:2] == b"MZ" or head == b"\xcf\xfa\xed\xfe":
             digest = hashlib.sha256(data).hexdigest()
             assert name in readme, f"{name} is committed but the README does not mention it"

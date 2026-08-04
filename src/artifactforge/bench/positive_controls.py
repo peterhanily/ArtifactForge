@@ -23,7 +23,9 @@ import json
 from pathlib import Path
 import tempfile
 
+from artifactforge import suite
 from artifactforge.artifacts.macos import parse_quarantine_xattr, quarantine_xattr
+import artifactforge.bench.feature_conditioned as feature_conditioned
 from artifactforge.bench.adversary import COMPLETE_ADVERSARIES
 from artifactforge.bench.benchmark import PublicTask, Question, Task, grade, normalize
 from artifactforge.bench.counterfactual import (
@@ -180,6 +182,35 @@ class RankUnionCalibration:
             and self.measurement_total > 0
             and self.measurement_correct == self.measurement_total
             and self.mapped_questions == self.measurement_total
+        )
+
+
+@dataclass(frozen=True)
+class FeatureConditionedCalibration:
+    """Four-fold public-key control for the feature-conditioned production attack."""
+
+    correct: int
+    covered: int
+    reference_correct: int
+    total: int
+    by_class: tuple[feature_conditioned.ExactEvaluationMetrics, ...]
+    selected_features: tuple[tuple[int, str, str, str], ...]
+    failures: tuple[str, ...] = ()
+
+    @property
+    def passed(self) -> bool:
+        return (
+            not self.failures
+            and self.total == 40
+            and self.correct == self.covered == self.reference_correct == self.total
+            and len(self.by_class) == 2
+            and all(
+                metric.correct == metric.covered == metric.total == 20
+                for metric in self.by_class
+            )
+            and all(metric.failures == 0 for metric in self.by_class)
+            and len(self.selected_features) == 8
+            and all(feature == "selector-rank" for *_prefix, feature in self.selected_features)
         )
 
 
@@ -561,11 +592,35 @@ def _selector_control(public: PublicTask):
         path = _artifact_path(public, "Amcache.hve")
         rows = _read_amcache(path)
         selected = _selected_amcache_rows(public, rows)
+        selectors = {}
         for question_id, index in selected.items():
             filename = _resident_path(resolutions[question_id]).rsplit("/", 1)[-1]
-            rows[index] = replace(rows[index], name=filename)
+            token = hashlib.sha256(
+                f"positive-control/selector/{public.scenario_id}/{question_id}".encode()
+            ).hexdigest()[:16]
+            lower_path = rf"c:\positive-control\selector\{token}\{filename.lower()}"
+            rows[index] = replace(
+                rows[index],
+                lower_path=lower_path,
+                name=filename,
+            )
+            selectors[question_id] = lower_path
         _write_amcache(path, rows)
-        return public, baseline, "selected-amcache-name-disclosure"
+        questions = []
+        for question in public.questions:
+            selector = {"lower_case_long_path": selectors[question.id]}
+            questions.append(
+                replace(
+                    question,
+                    selector=selector,
+                    prompt=suite.benchmark_question_prompt(question.rule, selector),
+                )
+            )
+        return (
+            replace(public, questions=questions),
+            baseline,
+            "selected-amcache-path-and-name-disclosure",
+        )
 
     path = _artifact_path(public, "QuarantineEventsV2")
     rows = _read_quarantine_rows(path)
@@ -1020,6 +1075,143 @@ def _partial_union_model_control() -> PartialUnionCalibration:
         )
 
 
+def calibrate_feature_conditioned_control(
+    public_corpora: tuple[feature_conditioned.PublicDevelopmentCorpus, ...],
+) -> FeatureConditionedCalibration:
+    """Build an independent lexical-rank vulnerability across all four public keys.
+
+    The oracle ranks selectors and candidates using the positive-control implementation,
+    rewrites the real FileId/UUID relation to that independently fixed bijection, and confirms
+    it with the closed-rule reference solver before the production feature model sees it.
+    Exactly one Windows and one macOS scene per key are used, so the four-fold control contains
+    40 questions while retaining true leave-one-key-out separation.
+    """
+    expected_total = feature_conditioned.PUBLIC_DEVELOPMENT_KEY_COUNT * 2 * QUESTION_COUNT
+    try:
+        corpora = tuple(public_corpora)
+        if len(corpora) != feature_conditioned.PUBLIC_DEVELOPMENT_KEY_COUNT:
+            raise ValueError("feature-conditioned control requires four public-key corpora")
+        if any(
+            not isinstance(corpus, feature_conditioned.PublicDevelopmentCorpus)
+            for corpus in corpora
+        ):
+            raise TypeError(
+                "feature-conditioned control requires PublicDevelopmentCorpus values"
+            )
+        if {corpus.key_index for corpus in corpora} != set(
+            range(feature_conditioned.PUBLIC_DEVELOPMENT_KEY_COUNT)
+        ):
+            raise ValueError("feature-conditioned control requires every public key once")
+
+        control_corpora = []
+        reference_correct = 0
+        with tempfile.TemporaryDirectory(
+            prefix="artifactforge-positive-feature-conditioned-"
+        ) as directory:
+            root = Path(directory)
+            for corpus in sorted(corpora, key=lambda item: item.key_index):
+                selected = {}
+                for task in corpus.tasks:
+                    selected.setdefault(task.family, task)
+                if set(selected) != {"windows", "macos"}:
+                    raise ValueError(
+                        f"public key {corpus.key_index} lacks both benchmark families"
+                    )
+                controls = []
+                labels = {}
+                for family in ("windows", "macos"):
+                    source = selected[family]
+                    copied = _temporary_task(
+                        source,
+                        _source_bytes(source),
+                        root / f"key-{corpus.key_index}-{family}",
+                    )
+                    _baseline_expected, resolutions, _candidates = _baseline(copied)
+                    oracle = _independent_rank_oracle(copied, "lexical")
+                    _align_relation(copied, oracle.expected, resolutions)
+                    _require_expected_contract(copied, oracle.expected)
+                    reference_answers = _answers(
+                        copied,
+                        reference_solve,
+                        where=f"feature-conditioned/{family} reference solver",
+                    )
+                    correct, coverage = _score(
+                        copied,
+                        oracle.expected,
+                        reference_answers,
+                    )
+                    if correct != QUESTION_COUNT or coverage != QUESTION_COUNT:
+                        raise ValueError(
+                            f"feature-conditioned {family} reference recovered "
+                            f"{correct}/{coverage}/{QUESTION_COUNT}"
+                        )
+                    reference_correct += correct
+                    controls.append(copied)
+                    labels[copied.scenario_id] = oracle.expected
+                control_corpora.append(
+                    feature_conditioned.labeled_public_corpus(
+                        corpus.key_index,
+                        controls,
+                        labels,
+                        provenance=feature_conditioned.POSITIVE_CONTROL_PROVENANCE,
+                    )
+                )
+
+            report = feature_conditioned.leave_one_key_out(control_corpora)
+            selected_features = tuple(
+                (
+                    fold.held_out_key_index,
+                    model.family,
+                    model.rule,
+                    model.feature,
+                )
+                for fold in report.folds
+                for model in fold.model.classes
+            )
+            failures = []
+            if report.aggregate.correct != expected_total:
+                failures.append(
+                    "feature-conditioned attack recovered "
+                    f"{report.aggregate.correct}/{expected_total} vulnerable answers"
+                )
+            if report.aggregate.covered != expected_total:
+                failures.append(
+                    "feature-conditioned attack covered "
+                    f"{report.aggregate.covered}/{expected_total} vulnerable answers"
+                )
+            if report.aggregate.failures:
+                failures.append(
+                    "feature-conditioned attack returned "
+                    f"{report.aggregate.failures} malformed or missing answers"
+                )
+            if any(feature != "selector-rank" for *_prefix, feature in selected_features):
+                failures.append(
+                    "feature-conditioned control did not select selector-rank in every fold"
+                )
+            return FeatureConditionedCalibration(
+                correct=report.aggregate.correct,
+                covered=report.aggregate.covered,
+                reference_correct=reference_correct,
+                total=report.aggregate.total,
+                by_class=report.by_class,
+                selected_features=selected_features,
+                failures=tuple(failures),
+            )
+    except Exception as exc:  # noqa: BLE001 - calibration failures must remain inspectable
+        return FeatureConditionedCalibration(
+            correct=0,
+            covered=0,
+            reference_correct=0,
+            total=expected_total,
+            by_class=(),
+            selected_features=(),
+            failures=(
+                "production feature-conditioned control failed: "
+                f"{type(exc).__name__}: {exc}",
+            ),
+        )
+
+
 def calibrate_positive_controls(
     windows: PublicTask,
     macos: PublicTask,
@@ -1058,8 +1250,10 @@ __all__ = [
     "AttackCalibration",
     "EXCLUDED_LOW_CONTROLS",
     "FamilyCalibration",
+    "FeatureConditionedCalibration",
     "PartialUnionCalibration",
     "PositiveControlReport",
     "RankUnionCalibration",
+    "calibrate_feature_conditioned_control",
     "calibrate_positive_controls",
 ]

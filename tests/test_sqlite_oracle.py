@@ -10,10 +10,16 @@ import struct
 
 import pytest
 
+from artifactforge.artifacts.sqlite_owned import (
+    ColumnSpec,
+    TableSpec,
+    build_sqlite,
+)
 from artifactforge.gates.oracles.sqlite_subset import (
     SQLiteDatabase,
     SQLiteLimits,
     SQLiteSubsetError,
+    SQLiteWireProfile,
     decode_record,
     decode_varint,
     load_sqlite,
@@ -117,9 +123,83 @@ def _assert_type_exact(left: object, right: object) -> None:
     assert left == right
 
 
+def _owned_blob_database() -> bytes:
+    return build_sqlite(
+        (
+            TableSpec(
+                "payloads",
+                (
+                    ColumnSpec("id", "INTEGER", primary_key=True),
+                    ColumnSpec("payload", "BLOB"),
+                    ColumnSpec("label", "TEXT"),
+                ),
+                (
+                    (3, b"", "empty"),
+                    (1, b"\x00\xff", "binary"),
+                    (2, None, "missing"),
+                ),
+            ),
+        )
+    )
+
+
+@pytest.fixture
+def runtime_quarantine_database(tmp_path: Path) -> bytes:
+    """Build the one runtime-writer layout needed by the freeblock hostile vectors."""
+    path = tmp_path / "runtime-quarantine.db"
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA page_size=4096")
+        connection.execute("PRAGMA auto_vacuum=NONE")
+        connection.execute(
+            "CREATE TABLE LSQuarantineEvent ("
+            "LSQuarantineEventIdentifier TEXT PRIMARY KEY, "
+            "LSQuarantineTimeStamp REAL, "
+            "LSQuarantineAgentName TEXT, "
+            "LSQuarantineDataURLString TEXT, "
+            "LSQuarantineOriginURLString TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE ARTIFACTFORGE_MARKER (marker TEXT, notice TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO LSQuarantineEvent VALUES (?, ?, ?, ?, ?)",
+            tuple(
+                (
+                    f"00000000-0000-4000-8000-{rowid:012X}",
+                    100.0 + rowid,
+                    "Browser",
+                    f"https://example.invalid/{rowid}",
+                    f"https://example.invalid/origin/{rowid}",
+                )
+                for rowid in range(1, 4)
+            ),
+        )
+        connection.execute(
+            "INSERT INTO ARTIFACTFORGE_MARKER VALUES (?, ?)",
+            ("ARTIFACTFORGE_SYNTHETIC", "bounded runtime-profile test fixture"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    raw = path.read_bytes()
+    assert len(raw) == 4 * PAGE_SIZE
+    parsed = loads_sqlite(
+        raw,
+        wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+    )
+    assert parsed.header.page_count == 4
+    assert parsed.table("LSQuarantineEvent").rows
+    return raw
+
+
 @pytest.mark.parametrize("path", DATABASES, ids=lambda path: path.name)
 def test_committed_databases_match_sqlite3_row_for_row_and_type_for_type(path):
-    database = load_sqlite(path)
+    database = load_sqlite(
+        path,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    )
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         schema_rows = connection.execute(
@@ -164,20 +244,102 @@ def test_committed_databases_match_sqlite3_row_for_row_and_type_for_type(path):
 
 
 def test_integer_primary_key_is_recovered_from_rowid_but_serial_type_is_retained():
-    table = load_sqlite(KNOWLEDGE).table("ZOBJECT")
+    table = load_sqlite(
+        KNOWLEDGE,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ).table("ZOBJECT")
     assert [row.values[0] for row in table.rows] == [row.rowid for row in table.rows]
     assert [row.serial_types[0] for row in table.rows] == [0, 0, 0]
     assert table.columns[0].rowid_alias
 
 
-def test_real_affinity_normalizes_compact_integer_serials_to_float():
-    table = load_sqlite(KNOWLEDGE).table("ZOBJECT")
-    assert {row.serial_types[3:5] for row in table.rows} == {(4, 4)}
-    assert all(type(value) is float for row in table.rows for value in row.values[3:5])
+def test_owned_blob_table_is_parsed_through_the_full_schema_and_affinity_oracle():
+    raw = _owned_blob_database()
+    database = loads_sqlite(
+        raw,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    )
+    table = database.table("payloads")
+
+    assert tuple(
+        (column.name, column.declared_type, column.primary_key, column.rowid_alias)
+        for column in table.columns
+    ) == (
+        ("id", "INTEGER", True, True),
+        ("payload", "BLOB", False, False),
+        ("label", "TEXT", False, False),
+    )
+    assert tuple((row.rowid, row.values) for row in table.rows) == (
+        (1, (1, b"\x00\xff", "binary")),
+        (2, (2, None, "missing")),
+        (3, (3, b"", "empty")),
+    )
+    assert tuple(row.serial_types for row in table.rows) == (
+        (0, 16, 25),
+        (0, 0, 27),
+        (0, 12, 23),
+    )
+    assert type(table.rows[0].values[1]) is bytes
+    assert type(table.rows[2].values[1]) is bytes
+    assert tuple(dict(row) for row in table.dictionaries()) == (
+        {"id": 1, "payload": b"\x00\xff", "label": "binary"},
+        {"id": 2, "payload": None, "label": "missing"},
+        {"id": 3, "payload": b"", "label": "empty"},
+    )
+
+
+def test_blob_affinity_and_primary_key_misuse_fail_closed():
+    text_value = build_sqlite(
+        (
+            TableSpec(
+                "payloads",
+                (ColumnSpec("payload", "TEXT"),),
+                (("wire-text",),),
+            ),
+        )
+    )
+    declaration = text_value.find(b"payload TEXT")
+    assert declaration >= 0
+    with pytest.raises(SQLiteSubsetError, match="payloads.payload is not stored as BLOB"):
+        loads_sqlite(
+            _replace(text_value, declaration + len(b"payload "), b"BLOB"),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
+
+    text_primary_key = build_sqlite(
+        (
+            TableSpec(
+                "payloads",
+                (ColumnSpec("payload", "TEXT", primary_key=True),),
+                (("key",),),
+            ),
+        )
+    )
+    declaration = text_primary_key.find(b"payload TEXT PRIMARY KEY")
+    assert declaration >= 0
+    with pytest.raises(SQLiteSubsetError, match="unsupported BLOB PRIMARY KEY"):
+        loads_sqlite(
+            _replace(text_primary_key, declaration + len(b"payload "), b"BLOB"),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
+
+
+def test_runtime_real_affinity_normalizes_compact_integer_serials_to_float(
+    runtime_quarantine_database,
+):
+    table = loads_sqlite(
+        runtime_quarantine_database,
+        wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+    ).table("LSQuarantineEvent")
+    assert {row.serial_types[1] for row in table.rows} == {1}
+    assert all(type(row.values[1]) is float for row in table.rows)
 
 
 def test_quarantine_uuid_autoindex_is_discovered_owned_and_complete():
-    database = load_sqlite(QUARANTINE)
+    database = load_sqlite(
+        QUARANTINE,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    )
     table = database.table("LSQuarantineEvent")
     index = database.index("sqlite_autoindex_LSQuarantineEvent_1")
     assert index.table_name == table.name
@@ -360,42 +522,103 @@ def test_record_rejects_wrong_input_type():
         (68, b"\x00\x00\x00\x01", "application id"),
         (72, b"\x01", "reserved header"),
         (92, b"\x00\x00\x00\x00", "version-valid-for"),
-        (96, (2_999_999).to_bytes(4, "big"), "SQLite 3 release"),
+        (96, (2_999_999).to_bytes(4, "big"), "sentinel"),
     ],
 )
 def test_database_header_contract_rejects_every_out_of_profile_field(
     offset, replacement, match
 ):
     with pytest.raises(SQLiteSubsetError, match=match):
-        loads_sqlite(_replace(KNOWLEDGE.read_bytes(), offset, replacement))
+        loads_sqlite(
+            _replace(KNOWLEDGE.read_bytes(), offset, replacement),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
+
+
+def test_wire_profile_is_closed_and_header_writer_identity_is_not_interchangeable(
+    runtime_quarantine_database,
+):
+    owned = KNOWLEDGE.read_bytes()
+    assert loads_sqlite(
+        owned,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ).header.sqlite_version_number == 0
+    with pytest.raises(SQLiteSubsetError, match="SQLite 3 release"):
+        loads_sqlite(
+            owned,
+            wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+        )
+
+    runtime = runtime_quarantine_database
+    assert loads_sqlite(
+        runtime,
+        wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+    ).header.sqlite_version_number >= 3_000_000
+    with pytest.raises(SQLiteSubsetError, match="sentinel"):
+        loads_sqlite(
+            runtime,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
+    with pytest.raises(TypeError, match="wire_profile"):
+        loads_sqlite(runtime, wire_profile="owned")  # type: ignore[arg-type]
 
 
 def test_database_header_rejects_short_partial_and_trailing_pages():
     with pytest.raises(SQLiteSubsetError, match="shorter"):
-        loads_sqlite(b"SQLite")
+        loads_sqlite(
+            b"SQLite",
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
     with pytest.raises(SQLiteSubsetError, match="inside a page"):
-        loads_sqlite(KNOWLEDGE.read_bytes()[:-1])
+        loads_sqlite(
+            KNOWLEDGE.read_bytes()[:-1],
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
     with pytest.raises(SQLiteSubsetError, match="inside a page"):
-        loads_sqlite(KNOWLEDGE.read_bytes() + b"\x00")
+        loads_sqlite(
+            KNOWLEDGE.read_bytes() + b"\x00",
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_interior_table_and_wrong_leaf_page_types_are_rejected():
     raw = KNOWLEDGE.read_bytes()
     with pytest.raises(SQLiteSubsetError, match="interior b-tree"):
-        loads_sqlite(_replace(raw, _page_start(2), b"\x05"))
+        loads_sqlite(
+            _replace(raw, _page_start(2), b"\x05"),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
     quarantine = QUARANTINE.read_bytes()
     with pytest.raises(SQLiteSubsetError, match="expected 0xa"):
-        loads_sqlite(_replace(quarantine, _page_start(3), b"\x0d"))
+        loads_sqlite(
+            _replace(quarantine, _page_start(3), b"\x0d"),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_table_and_index_overflow_payload_claims_are_rejected_before_reading():
     raw = bytearray(KNOWLEDGE.read_bytes())
-    table_pointer = _page_start(3) + _cell_pointers(raw, 3)[0]
+    table_pointer = None
+    for page in range(1, len(raw) // PAGE_SIZE + 1):
+        if raw[_btree_header(raw, page)] != 0x0D:
+            continue
+        for pointer in _cell_pointers(raw, page):
+            absolute = _page_start(page) + pointer
+            _size, after = _test_decode_varint(raw, absolute)
+            if after - absolute == 2:
+                table_pointer = absolute
+                break
+        if table_pointer is not None:
+            break
+    assert table_pointer is not None
     old_size, after = _test_decode_varint(raw, table_pointer)
     assert old_size < 4062 and after - table_pointer == 2
     raw[table_pointer:after] = _varint(4062)
     with pytest.raises(SQLiteSubsetError, match="overflow"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
     raw = bytearray(QUARANTINE.read_bytes())
     index_pointer = _page_start(3) + _cell_pointers(raw, 3)[0]
@@ -406,7 +629,10 @@ def test_table_and_index_overflow_payload_claims_are_rejected_before_reading():
     # before any payload offset is consumed.
     raw[index_pointer:index_pointer + 2] = _varint(1003)
     with pytest.raises(SQLiteSubsetError, match="overflow"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_duplicate_and_out_of_content_cell_pointers_are_rejected():
@@ -415,42 +641,64 @@ def test_duplicate_and_out_of_content_cell_pointers_are_rejected():
     pointers = _cell_pointers(raw, 2)
     raw[header + 10:header + 12] = pointers[0].to_bytes(2, "big")
     with pytest.raises(SQLiteSubsetError, match="duplicate cell pointers"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
     raw = bytearray(KNOWLEDGE.read_bytes())
     raw[header + 8:header + 10] = b"\x00\x01"
     with pytest.raises(SQLiteSubsetError, match="outside content"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
-def test_fragment_count_freeblock_cycle_gap_and_tail_are_rejected():
-    raw = QUARANTINE.read_bytes()
+def test_fragment_count_freeblock_cycle_gap_and_tail_are_rejected(
+    runtime_quarantine_database,
+):
+    raw = runtime_quarantine_database
     header = _btree_header(raw, 1)
     first_freeblock = int.from_bytes(raw[header + 1:header + 3], "big")
     assert first_freeblock == 4088
 
     with pytest.raises(SQLiteSubsetError, match="fragmented"):
-        loads_sqlite(_replace(raw, header + 7, b"\x01"))
+        loads_sqlite(
+            _replace(raw, header + 7, b"\x01"),
+            wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+        )
 
     cycle = bytearray(raw)
     cycle[first_freeblock:first_freeblock + 2] = first_freeblock.to_bytes(2, "big")
     with pytest.raises(SQLiteSubsetError, match="strictly increasing"):
-        loads_sqlite(cycle)
+        loads_sqlite(
+            cycle,
+            wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+        )
 
     gap = bytearray(raw)
     shifted = first_freeblock + 1
     gap[header + 1:header + 3] = shifted.to_bytes(2, "big")
     gap[shifted:shifted + 4] = b"\x00\x00" + (PAGE_SIZE - shifted).to_bytes(2, "big")
     with pytest.raises(SQLiteSubsetError, match="unclaimed cell-content gap"):
-        loads_sqlite(gap)
+        loads_sqlite(
+            gap,
+            wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+        )
 
     tail = bytearray(raw)
     tail[first_freeblock + 2:first_freeblock + 4] = (7).to_bytes(2, "big")
     with pytest.raises(SQLiteSubsetError, match="unclaimed cell-content tail"):
-        loads_sqlite(tail)
+        loads_sqlite(
+            tail,
+            wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+        )
 
 
-def test_every_unparsed_gap_and_freeblock_body_byte_must_remain_zero():
+def test_every_unparsed_gap_and_freeblock_body_byte_must_remain_zero(
+    runtime_quarantine_database,
+):
     raw = bytearray(KNOWLEDGE.read_bytes())
     header = _btree_header(raw, 2)
     cell_count = int.from_bytes(raw[header + 3:header + 5], "big")
@@ -460,28 +708,43 @@ def test_every_unparsed_gap_and_freeblock_body_byte_must_remain_zero():
     payload = b"PAYLOAD-UNALLOCATED-NOT-PARSED"
     raw[pointer_end:pointer_end + len(payload)] = payload
     with pytest.raises(SQLiteSubsetError, match="non-zero bytes in unallocated space"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
-    raw = bytearray(QUARANTINE.read_bytes())
+    raw = bytearray(runtime_quarantine_database)
     header = _btree_header(raw, 1)
     freeblock = int.from_bytes(raw[header + 1:header + 3], "big")
     size = int.from_bytes(raw[freeblock + 2:freeblock + 4], "big")
     assert size == 8
     raw[freeblock + 4:freeblock + size] = b"HIDE"
     with pytest.raises(SQLiteSubsetError, match="non-zero unparsed bytes"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.SQLITE_RUNTIME_V1,
+        )
 
 
 def test_table_rowid_and_index_key_pointer_order_are_logically_bound():
     with pytest.raises(SQLiteSubsetError, match="rowids are not strictly increasing"):
-        loads_sqlite(_swap_pointers(KNOWLEDGE.read_bytes(), 2, 0, 1))
+        loads_sqlite(
+            _swap_pointers(KNOWLEDGE.read_bytes(), 2, 0, 1),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
     with pytest.raises(SQLiteSubsetError, match="strict SQLite key order"):
-        loads_sqlite(_swap_pointers(QUARANTINE.read_bytes(), 3, 0, 1))
+        loads_sqlite(
+            _swap_pointers(QUARANTINE.read_bytes(), 3, 0, 1),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_index_bytes_must_correspond_to_their_owning_table_rows():
     raw = bytearray(QUARANTINE.read_bytes())
-    index = load_sqlite(QUARANTINE).index("sqlite_autoindex_LSQuarantineEvent_1")
+    index = load_sqlite(
+        QUARANTINE,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ).index("sqlite_autoindex_LSQuarantineEvent_1")
     first_uuid = index.entries[0].key[0]
     assert isinstance(first_uuid, str) and first_uuid
     start = _page_start(3)
@@ -491,14 +754,20 @@ def test_index_bytes_must_correspond_to_their_owning_table_rows():
     # deterministic sample UUID is not itself part of this raw-reader invariant.
     raw[offset] = ord("/") if first_uuid.startswith("0") else ord("0")
     with pytest.raises(SQLiteSubsetError, match="own every table PRIMARY KEY row"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_every_nonheader_page_must_have_one_schema_owner():
     raw = bytearray(KNOWLEDGE.read_bytes() + b"\x00" * PAGE_SIZE)
-    raw[28:32] = (4).to_bytes(4, "big")
+    raw[28:32] = (len(raw) // PAGE_SIZE).to_bytes(4, "big")
     with pytest.raises(SQLiteSubsetError, match="unowned or absent"):
-        loads_sqlite(raw)
+        loads_sqlite(
+            raw,
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_schema_is_discovered_from_page_one_and_sql_grammar_is_bounded():
@@ -506,29 +775,59 @@ def test_schema_is_discovered_from_page_one_and_sql_grammar_is_bounded():
     create = raw.find(b"CREATE TABLE ZOBJECT")
     assert create >= 0
     with pytest.raises(SQLiteSubsetError, match="outside the emitted grammar"):
-        loads_sqlite(_replace(raw, create, b"X"))
+        loads_sqlite(
+            _replace(raw, create, b"X"),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 def test_bytes_bytearray_memoryview_classmethod_and_path_apis_are_equivalent():
     raw = KNOWLEDGE.read_bytes()
-    expected = loads_sqlite(raw)
-    assert loads_sqlite(bytearray(raw)) == expected
-    assert loads_sqlite(memoryview(raw)) == expected
-    assert SQLiteDatabase.from_bytes(raw) == expected
-    assert load_sqlite(KNOWLEDGE) == expected
+    expected = loads_sqlite(
+        raw,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    )
+    assert loads_sqlite(
+        bytearray(raw),
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ) == expected
+    assert loads_sqlite(
+        memoryview(raw),
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ) == expected
+    assert SQLiteDatabase.from_bytes(
+        raw,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ) == expected
+    assert load_sqlite(
+        KNOWLEDGE,
+        wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+    ) == expected
 
 
 def test_byte_page_and_path_resource_limits_fail_closed(tmp_path):
     raw = KNOWLEDGE.read_bytes()
     with pytest.raises(SQLiteSubsetError, match="byte limit"):
-        loads_sqlite(raw, limits=SQLiteLimits(max_bytes=len(raw) - 1))
+        loads_sqlite(
+            raw,
+            limits=SQLiteLimits(max_bytes=len(raw) - 1),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
     with pytest.raises(SQLiteSubsetError, match="page limit"):
-        loads_sqlite(raw, limits=SQLiteLimits(max_pages=2))
+        loads_sqlite(
+            raw,
+            limits=SQLiteLimits(max_pages=2),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
     oversized = tmp_path / "oversized.db"
     oversized.write_bytes(raw + b"x")
     with pytest.raises(SQLiteSubsetError, match="byte limit"):
-        load_sqlite(oversized, limits=SQLiteLimits(max_bytes=len(raw)))
+        load_sqlite(
+            oversized,
+            limits=SQLiteLimits(max_bytes=len(raw)),
+            wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+        )
 
 
 @pytest.mark.parametrize("field", ["max_bytes", "max_pages"])

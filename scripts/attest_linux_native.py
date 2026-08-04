@@ -10,9 +10,10 @@ entry, or sources/evaluates a history file.  Bash receives history only through
 ``history -r`` and writes it back with ``history -w`` in an isolated temporary home.
 
 The input is a complete Fixture Core root, not a detached scene.  Before native tools
-are discovered, ArtifactForge verifies its canonical manifest, exact byte reproduction,
-and assurance-equivalent Gates 1 and 3 in-process.  The canonical JSON result binds that
-exact verification report and fixture manifest to the recursive scene, validation-tool
+are discovered, ArtifactForge verifies its canonical manifest, complete Fixture ABI v2
+logical reproduction, and assurance-equivalent Gates 1 and 3 in-process.  The canonical
+JSON result binds that exact verification report and fixture manifest to the recursive scene,
+validation-tool
 binaries and versions, Ubuntu package evidence, Git source state, normalized ELF
 disassembly, and a byte-identical Bash-history round trip.  The fixture, scene, and source
 are inventoried again after validation, as are all native/support tool binaries.  Native
@@ -37,6 +38,12 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Mapping
 
+from artifactforge.fixture.abi import (
+    GENERATOR_ABI_V2,
+    MANIFEST_SCHEMA_V2,
+    PRODUCER_PROFILE_V2,
+)
+from artifactforge.fixture.model_v2 import FixtureManifestV2
 from artifactforge.fixture.operations import VerificationResult, verify_fixture
 from artifactforge.inventory import (
     InventoryFile,
@@ -394,7 +401,20 @@ def _verified_fixture_evidence(
         raise RuntimeError(
             "Fixture Core assurance did not return exactly Gate 1 validity and Gate 3 inertness"
         )
-    if not verification.ok:
+    checks = {
+        "integrity": "pass" if verification.integrity_ok else "fail",
+        "reproduction": (
+            "not-run"
+            if verification.reproduction_ok is None
+            else "pass" if verification.reproduction_ok else "fail"
+        ),
+        "assurance": (
+            "not-run"
+            if verification.assurance_ok is None
+            else "pass" if verification.assurance_ok else "fail"
+        ),
+    }
+    if not verification.ok or set(checks.values()) != {"pass"}:
         details = list(verification.failures)
         details.extend(
             f"Gate {report.gate} ({report.name}): " + "; ".join(report.fails)
@@ -407,18 +427,21 @@ def _verified_fixture_evidence(
         )
 
     manifest = verification.manifest
-    if environment["distributions"]["artifactforge"] != manifest.generator.version:
+    if type(manifest) is not FixtureManifestV2:
         raise RuntimeError(
-            "installed artifactforge distribution version does not match fixture generator: "
-            f"{environment['distributions']['artifactforge']!r} != "
-            f"{manifest.generator.version!r}"
+            "native Linux attestation requires a reproducible Fixture ABI v2 manifest; "
+            "historical v1 fixtures are inspection-only"
         )
     if (
-        manifest.recipe.family != "linux"
-        or manifest.recipe.profile.id != "linux-glibc-x86_64-loose-v1"
+        manifest.schema != MANIFEST_SCHEMA_V2
+        or manifest.generator.abi != GENERATOR_ABI_V2
+        or manifest.generator.producer_profile != PRODUCER_PROFILE_V2
+        or manifest.recipe.family != "linux"
+        or manifest.recipe.profile.id != "linux-glibc-x86_64-loose-v2"
     ):
         raise RuntimeError(
-            "native Linux attestation requires profile linux-glibc-x86_64-loose-v1"
+            "native Linux attestation requires the complete "
+            "linux-glibc-x86_64-loose-v2 producer contract"
         )
 
     state = _fixture_state(fixture)
@@ -432,7 +455,7 @@ def _verified_fixture_evidence(
 
     expected_files = [
         {
-            "path": entry.path,
+            "path": entry.served_path,
             "sha256": entry.sha256.removeprefix("sha256:"),
             "size": entry.size,
         }
@@ -443,17 +466,64 @@ def _verified_fixture_evidence(
             "fixture artifacts changed or disagree with the verified payload manifest"
         )
 
+    expected_directories = [entry.served_path for entry in manifest.payload.directories]
+    observed_directories = sorted(
+        {
+            "/".join(parts[:index])
+            for entry in expected_files
+            for parts in (entry["path"].split("/"),)
+            for index in range(1, len(parts))
+        }
+    )
+    if observed_directories != expected_directories:
+        raise RuntimeError(
+            "fixture carrier directories disagree with the verified logical manifest"
+        )
+    payload = manifest.payload
+    if (
+        payload.file_count != state["scene"]["file_count"]
+        or payload.regular_file_bytes != state["scene"]["total_bytes"]
+        or payload.directory_count != len(observed_directories)
+        or payload.total_bound_bytes
+        != payload.regular_file_bytes + payload.metadata_blob_bytes
+    ):
+        raise RuntimeError(
+            "fixture v2 payload counters disagree with the verified carrier inventory"
+        )
+
     return {
         "manifest": manifest.to_mapping(),
         "manifest_file": state["manifest_file"],
         "portable_verification": {
+            "checks": checks,
             "contract": (
                 "verify_fixture(fixture, assurance=True): canonical manifest and payload "
-                "integrity, exact recipe byte reproduction, then Gate 1 validity and Gate 3 "
-                "inertness over byte-bound bounded captures"
+                "integrity, exact recipe reproduction of the complete v2 logical manifest "
+                "and default-stream bytes, then Gate 1 validity and Gate 3 inertness over "
+                "byte-bound bounded captures"
             ),
             "environment": environment,
             "failures": list(verification.failures),
+            "payload": {
+                "directory_count": payload.directory_count,
+                "file_count": payload.file_count,
+                "metadata_blob_bytes": payload.metadata_blob_bytes,
+                "metadata_blob_count": payload.metadata_blob_count,
+                "regular_file_bytes": payload.regular_file_bytes,
+                "total_bound_bytes": payload.total_bound_bytes,
+            },
+            "producer_compatibility": {
+                "basis": (
+                    "exact generator ABI and producer profile plus successful complete "
+                    "logical reproduction; package versions are provenance, not ABI identity"
+                ),
+                "generator_abi": manifest.generator.abi,
+                "manifest_generator_version": manifest.generator.version,
+                "producer_profile": manifest.generator.producer_profile,
+                "verifier_distribution_version": environment["distributions"][
+                    "artifactforge"
+                ],
+            },
             "reports": [_gate_report_evidence(report) for report in reports],
             "verdict": "pass",
         },
@@ -940,8 +1010,9 @@ def _observe_native_snapshot(
         },
         "canonicalization": CANONICALIZATION,
         "claim_scope": (
-            "Fixture Core first proves canonical integrity, exact recipe byte reproduction, "
-            "Gate 1 validity, and Gate 3 inertness. Native results are complementary "
+            "Fixture Core first proves canonical integrity, exact recipe reproduction of "
+            "the complete v2 logical manifest and default-stream bytes, Gate 1 validity, "
+            "and Gate 3 inertness. Native results are complementary "
             "presence, recognition, syntax-acceptance, disassembly, and Bash read/write "
             "observations over a frozen private snapshot that byte-matches the verified "
             "payload manifest. No emitted ELF is executed; ldd is never invoked; desktop "

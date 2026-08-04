@@ -1,0 +1,16 @@
+{
+  "schema": "artifactforge-fixture-spec-v2",
+  "purpose": "public-reproducible-fixture",
+  "fixture_id": "macos-quarantined-app-001",
+  "family": "macos",
+  "profile": {
+    "id": "macos-14-loose-v2",
+    "hostname": "mac-01",
+    "username": "v"
+  },
+  "seed_hex": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "causal_clock": {
+    "profile": "artifactforge-causal-clock-v1",
+    "anchor_unix_ns": 1763944593000000000
+  }
+}

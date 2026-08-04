@@ -19,7 +19,9 @@ import collections
 import datetime as dt
 import hashlib
 import json
+import math
 import sys
+import time
 from pathlib import Path
 
 XPROTECT = ("/Library/Apple/System/Library/CoreServices/XProtect.bundle"
@@ -27,6 +29,15 @@ XPROTECT = ("/Library/Apple/System/Library/CoreServices/XProtect.bundle"
 RULE_MANIFEST_CANONICALIZATION = "artifactforge-yara-rule-manifest-v1"
 ENGINE_CONTROL_RULE = "ArtifactForge_YARA_Engine_Control_v1"
 ENGINE_CONTROL_BYTES = b"AF\x00ARTIFACTFORGE-YARA-ENGINE-CONTROL-v1\x00"
+YARA_WORK_BUDGET = 250_000
+YARA_MATCH_TIMEOUT_SECONDS = 10
+YARA_MATCH_TOTAL_TIMEOUT_SECONDS = 600
+MAX_YARA_ERRORS = 256
+MAX_YARA_MATCHES = 20_000
+MAX_YARA_MATCHED_RULES = 1_024
+MAX_YARA_RULES_LOADED = 100_000
+MAX_ERROR_TEXT = 2_048
+
 
 def _timestamp() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace(
@@ -68,6 +79,38 @@ def _rule_metadata(paths: list[Path], root: Path, *, version: str | None = None)
     }
 
 
+def _bounded_text(value: object, limit: int = MAX_ERROR_TEXT) -> str:
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 32] + "... [bounded output truncated]"
+
+
+def _append_error(errors: list[dict], where: object, message: object) -> bool:
+    """Append one bounded error; return false once evidence collection is exhausted."""
+    if len(errors) < MAX_YARA_ERRORS - 1:
+        errors.append({
+            "where": _bounded_text(where),
+            "message": _bounded_text(message),
+        })
+        return True
+    if len(errors) == MAX_YARA_ERRORS - 1:
+        errors.append({
+            "where": "YARA error collection",
+            "message": f"error evidence exceeded the {MAX_YARA_ERRORS}-entry limit",
+        })
+    return False
+
+
+def _merge_errors(*groups: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    for group in groups:
+        for error in group:
+            if not _append_error(merged, error.get("where"), error.get("message")):
+                return merged
+    return merged
+
+
 def _load(paths: list[Path], externals: dict[str, str]) -> tuple[dict[Path, object], list[dict]]:
     import yara
 
@@ -81,11 +124,59 @@ def _load(paths: list[Path], externals: dict[str, str]) -> tuple[dict[Path, obje
                 filepath=str(path), externals=externals, includes=False
             )
         except Exception as exc:  # noqa: BLE001 — unsupported module/syntax is evidence
-            errors.append({
-                "where": path.name,
-                "message": f"{type(exc).__name__}: {exc}",
-            })
+            if not _append_error(errors, path.name, f"{type(exc).__name__}: {exc}"):
+                break
     return compiled, errors
+
+
+def _loaded_rule_count(compiled: dict[Path, object]) -> tuple[int, dict | None]:
+    count = 0
+    try:
+        for rules in compiled.values():
+            for _rule in rules:
+                count += 1
+                if count > MAX_YARA_RULES_LOADED:
+                    return MAX_YARA_RULES_LOADED, {
+                        "where": "YARA rule accounting",
+                        "message": (
+                            "loaded rule count exceeds the explicit "
+                            f"{MAX_YARA_RULES_LOADED}-rule limit"
+                        ),
+                    }
+    except Exception as exc:  # noqa: BLE001 - malformed engine object is red evidence
+        return count, {
+            "where": "YARA rule accounting",
+            "message": _bounded_text(f"{type(exc).__name__}: {exc}"),
+        }
+    return count, None
+
+
+def _bounded_control_names(rules: object, data: bytes) -> list[str]:
+    """Return bounded control matches using the same engine timeout as corpus scans."""
+    import yara
+
+    names: list[str] = []
+    exhausted = False
+
+    def callback(details: dict) -> int:
+        nonlocal exhausted
+        if len(names) >= MAX_YARA_MATCHED_RULES:
+            exhausted = True
+            return yara.CALLBACK_ABORT
+        names.append(_bounded_text(details.get("rule", "<unnamed>"), 1_024))
+        return yara.CALLBACK_CONTINUE
+
+    rules.match(
+        data=data,
+        callback=callback,
+        which_callbacks=yara.CALLBACK_MATCHES,
+        timeout=YARA_MATCH_TIMEOUT_SECONDS,
+    )
+    if exhausted:
+        raise RuntimeError(
+            f"control matches exceed the {MAX_YARA_MATCHED_RULES}-rule collection limit"
+        )
+    return sorted(names)
 
 
 def _engine_control() -> dict:
@@ -101,8 +192,8 @@ def _engine_control() -> dict:
     near = ENGINE_CONTROL_BYTES.replace(b"ENGINE-CONTROL", b"ENGINE-NEAR-MISS")
     try:
         rules = yara.compile(source=source)
-        hit_names = sorted(m.rule for m in rules.match(data=ENGINE_CONTROL_BYTES))
-        miss_names = sorted(m.rule for m in rules.match(data=near))
+        hit_names = _bounded_control_names(rules, ENGINE_CONTROL_BYTES)
+        miss_names = _bounded_control_names(rules, near)
     except Exception as exc:  # noqa: BLE001 — returned as attestation evidence
         return {
             "kind": "synthetic-yara-engine-rule-v1",
@@ -112,7 +203,7 @@ def _engine_control() -> dict:
             "input_digest_method": "sha256-in-memory-bytes-v1",
             "near_miss_sha256": _sha256(near),
             "expected": f"{ENGINE_CONTROL_RULE} matches only the positive input",
-            "observed": f"{type(exc).__name__}: {exc}",
+            "observed": _bounded_text(f"{type(exc).__name__}: {exc}"),
             "demonstrates": "nothing; the YARA engine control could not run",
         }
     passed = ENGINE_CONTROL_RULE in hit_names and ENGINE_CONTROL_RULE not in miss_names
@@ -138,12 +229,16 @@ def _xprotect_control(compiled: dict[Path, object]) -> dict:
     body = ("#!" + "/bin/zsh\n" + "\\U00000" * 16 + "${" * 101 + "rev)").encode()
     near = body.replace(("${" * 101).encode(), ("${" * 100).encode())
     try:
-        hit_names = sorted({m.rule for rules in compiled.values() for m in rules.match(data=body)})
-        miss_names = sorted({m.rule for rules in compiled.values() for m in rules.match(data=near)})
+        hit_names = sorted({
+            name for rules in compiled.values() for name in _bounded_control_names(rules, body)
+        })
+        miss_names = sorted({
+            name for rules in compiled.values() for name in _bounded_control_names(rules, near)
+        })
         observed = f"positive={hit_names}; near_miss={miss_names}"
     except Exception as exc:  # noqa: BLE001 — returned as attestation evidence
         hit_names, miss_names = [], []
-        observed = f"{type(exc).__name__}: {exc}"
+        observed = _bounded_text(f"{type(exc).__name__}: {exc}")
     passed = target in hit_names and target not in miss_names
     return {
         "kind": "xprotect-rule-specific-hit-and-near-miss-v1",
@@ -163,16 +258,46 @@ def _xprotect_control(compiled: dict[Path, object]) -> dict:
 
 def _scan_corpus(
     compiled: dict[Path, object], corpus_paths: list[Path], corpus_root: Path
-) -> tuple[collections.Counter[str], list[dict]]:
+) -> tuple[collections.Counter[str], list[dict], int]:
     """Match exact bytes with per-file externals; every rule match remains a finding.
 
     Rule names are not a trustworthy severity policy. A caller can supply an arbitrary rule
     named ``domain`` or ``keylogger``, so no global name allowlist may turn its match green.
     """
+    import yara
+
     matched: collections.Counter[str] = collections.Counter()
     errors = []
+    total_matches = 0
+    completed_files = 0
+    deadline = time.monotonic() + YARA_MATCH_TOTAL_TIMEOUT_SECONDS
     for path in corpus_paths:
-        data = path.read_bytes()
+        if time.monotonic() >= deadline:
+            _append_error(
+                errors,
+                "YARA corpus-match runtime",
+                "corpus reads/matching exceeded the explicit "
+                f"{YARA_MATCH_TOTAL_TIMEOUT_SECONDS}-second deadline",
+            )
+            return matched, errors, completed_files
+        try:
+            data = path.read_bytes()
+        except Exception as exc:  # noqa: BLE001 - every unread input invalidates coverage
+            if not _append_error(
+                errors,
+                path,
+                f"{type(exc).__name__}: {exc}",
+            ):
+                break
+            continue
+        if time.monotonic() >= deadline:
+            _append_error(
+                errors,
+                "YARA corpus-match runtime",
+                "a corpus read exhausted the explicit "
+                f"{YARA_MATCH_TOTAL_TIMEOUT_SECONDS}-second deadline",
+            )
+            return matched, errors, completed_files
         relative = path.relative_to(corpus_root).as_posix()
         extension = path.suffix.removeprefix(".").lower()
         externals = {
@@ -182,18 +307,82 @@ def _scan_corpus(
             "filetype": extension,
             "md5": hashlib.md5(data, usedforsecurity=False).hexdigest(),
         }
+        file_complete = True
         for rule_path, rules in compiled.items():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _append_error(
+                    errors,
+                    "YARA corpus-match runtime",
+                    "corpus matching exceeded the explicit "
+                    f"{YARA_MATCH_TOTAL_TIMEOUT_SECONDS}-second deadline",
+                )
+                return matched, errors, completed_files
+            operation_exhausted = False
+            callback_error: str | None = None
+
+            def callback(details: dict) -> int:
+                nonlocal operation_exhausted, callback_error, total_matches
+                name = details.get("rule")
+                if not isinstance(name, str) or not name or len(name) > 1_024:
+                    callback_error = "engine returned an invalid or oversized rule identifier"
+                    return yara.CALLBACK_ABORT
+                if total_matches >= MAX_YARA_MATCHES or (
+                    name not in matched and len(matched) >= MAX_YARA_MATCHED_RULES
+                ):
+                    operation_exhausted = True
+                    return yara.CALLBACK_ABORT
+                matched[name] += 1
+                total_matches += 1
+                return yara.CALLBACK_CONTINUE
+
             try:
-                matches = rules.match(data=data, externals=externals)
+                rules.match(
+                    data=data,
+                    externals=externals,
+                    callback=callback,
+                    which_callbacks=yara.CALLBACK_MATCHES,
+                    timeout=max(
+                        1,
+                        min(YARA_MATCH_TIMEOUT_SECONDS, math.ceil(remaining)),
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001 — scan failures invalidate a clean claim
-                errors.append({
-                    "where": f"{rule_path.name} -> {relative}",
-                    "message": f"{type(exc).__name__}: {exc}",
-                })
+                file_complete = False
+                if not _append_error(
+                    errors,
+                    f"{rule_path.name} -> {relative}",
+                    f"{type(exc).__name__}: {exc}",
+                ):
+                    return matched, errors, completed_files
                 continue
-            for match in matches:
-                matched[match.rule] += 1
-    return matched, errors
+            if time.monotonic() >= deadline:
+                _append_error(
+                    errors,
+                    "YARA corpus-match runtime",
+                    "one rule-file match exhausted the explicit "
+                    f"{YARA_MATCH_TOTAL_TIMEOUT_SECONDS}-second deadline",
+                )
+                return matched, errors, completed_files
+            if callback_error is not None:
+                file_complete = False
+                if not _append_error(
+                    errors,
+                    f"{rule_path.name} -> {relative}",
+                    callback_error,
+                ):
+                    return matched, errors, completed_files
+            if operation_exhausted:
+                _append_error(
+                    errors,
+                    "YARA match collection",
+                    "match evidence exceeds the explicit "
+                    f"{MAX_YARA_MATCHES}-match/{MAX_YARA_MATCHED_RULES}-rule limits",
+                )
+                return matched, errors, completed_files
+        if file_complete:
+            completed_files += 1
+    return matched, errors, completed_files
 
 
 def _result(
@@ -275,8 +464,41 @@ def scan_xprotect(
             method_command or [sys.executable, "scripts/scan_yara.py", "--xprotect"],
             engine_version=engine_version,
         )
+    corpus_paths = sorted(p for p in corpus.rglob("*") if p.is_file() and not p.is_symlink())
+    selected_file_work_items = len(corpus_paths)
+    load_errors: list[dict] = []
+    if len(corpus_paths) != corpus_binding["file_count"]:
+        _append_error(
+            load_errors,
+            "XProtect corpus accounting",
+            f"selected {len(corpus_paths)} files; bound manifest has "
+            f"{corpus_binding['file_count']}",
+        )
+    if selected_file_work_items > YARA_WORK_BUDGET:
+        _append_error(
+            load_errors,
+            "XProtect work budget",
+            f"{selected_file_work_items} rule-file/file operations exceed the "
+            f"{YARA_WORK_BUDGET} limit",
+        )
     externals = {"filename": "", "filepath": "", "extension": "", "filetype": "", "md5": ""}
-    compiled, load_errors = _load([rules_path], externals)
+    compiled: dict[Path, object] = {}
+    if selected_file_work_items <= YARA_WORK_BUDGET:
+        compiled, compile_errors = _load([rules_path], externals)
+        for error in compile_errors:
+            if not _append_error(load_errors, error["where"], error["message"]):
+                break
+    rules_loaded, rule_count_error = _loaded_rule_count(compiled)
+    if rule_count_error is not None:
+        _append_error(load_errors, rule_count_error["where"], rule_count_error["message"])
+    match_work_items = rules_loaded * len(corpus_paths)
+    if match_work_items > YARA_WORK_BUDGET:
+        _append_error(
+            load_errors,
+            "XProtect rule-evaluation budget",
+            f"{match_work_items} loaded-rule/file evaluations exceed the "
+            f"{YARA_WORK_BUDGET} limit",
+        )
     control = _xprotect_control(compiled) if compiled else {
         "kind": "xprotect-rule-specific-hit-and-near-miss-v1",
         "scope": "engine-and-selected-rules",
@@ -288,17 +510,29 @@ def scan_xprotect(
         "observed": "the selected rule file did not compile",
         "demonstrates": "nothing; no selected XProtect rule was loaded",
     }
-    corpus_paths = sorted(p for p in corpus.rglob("*") if p.is_file() and not p.is_symlink())
-    matched, scan_errors = _scan_corpus(compiled, corpus_paths, corpus)
+    if (
+        compiled
+        and rule_count_error is None
+        and selected_file_work_items <= YARA_WORK_BUDGET
+        and match_work_items <= YARA_WORK_BUDGET
+    ):
+        matched, scan_errors, scanned_files = _scan_corpus(compiled, corpus_paths, corpus)
+    else:
+        matched, scan_errors, scanned_files = collections.Counter(), [], 0
     rules = _rule_metadata([rules_path], rules_path.parent)
     coverage = {
         "kind": "rule-and-file-accounting",
         "selected_rule_files": 1,
         "loaded_rule_files": len(compiled),
-        "failed_rule_files": len(load_errors),
-        "rules_loaded": sum(sum(1 for _ in item) for item in compiled.values()),
+        "failed_rule_files": 1 - len(compiled),
+        "rules_loaded": rules_loaded,
         "selected_corpus_files": corpus_binding["file_count"],
-        "scanned_corpus_files": len(corpus_paths),
+        "scanned_corpus_files": scanned_files,
+        "selected_file_work_items": selected_file_work_items,
+        "match_work_items": match_work_items,
+        "match_work_budget": YARA_WORK_BUDGET,
+        "match_timeout_seconds": YARA_MATCH_TIMEOUT_SECONDS,
+        "match_total_timeout_seconds": YARA_MATCH_TOTAL_TIMEOUT_SECONDS,
         "control_scope_note": "the rule-specific control exercises the selected XProtect file",
     }
     return _result(
@@ -314,7 +548,7 @@ def scan_xprotect(
         control=control,
         coverage=coverage,
         exclusions=[],
-        errors=load_errors + scan_errors,
+        errors=_merge_errors(load_errors, scan_errors),
         matched=matched,
     )
 
@@ -359,24 +593,73 @@ def scan_community(
             engine_version=engine_version,
         )
     discovered, selected, exclusions = _community_paths(rules_root)
-    externals = {"filename": "", "filepath": "", "extension": "", "filetype": "", "md5": ""}
-    compiled, load_errors = _load(selected, externals)
-    control = _engine_control()
     corpus_paths = sorted(p for p in corpus.rglob("*") if p.is_file() and not p.is_symlink())
-    matched, scan_errors = _scan_corpus(compiled, corpus_paths, corpus)
+    selected_file_work_items = len(selected) * len(corpus_paths)
+    load_errors: list[dict] = []
+    if len(corpus_paths) != corpus_binding["file_count"]:
+        _append_error(
+            load_errors,
+            "community-YARA corpus accounting",
+            f"selected {len(corpus_paths)} files; bound manifest has "
+            f"{corpus_binding['file_count']}",
+        )
+    if selected_file_work_items > YARA_WORK_BUDGET:
+        _append_error(
+            load_errors,
+            "community-YARA work budget",
+            f"{selected_file_work_items} selected-rule-file/file operations exceed the "
+            f"{YARA_WORK_BUDGET} limit",
+        )
+    externals = {"filename": "", "filepath": "", "extension": "", "filetype": "", "md5": ""}
+    compiled: dict[Path, object] = {}
+    if selected_file_work_items <= YARA_WORK_BUDGET:
+        compiled, compile_errors = _load(selected, externals)
+        for error in compile_errors:
+            if not _append_error(load_errors, error["where"], error["message"]):
+                break
+    rules_loaded, rule_count_error = _loaded_rule_count(compiled)
+    if rule_count_error is not None:
+        _append_error(load_errors, rule_count_error["where"], rule_count_error["message"])
+    match_work_items = rules_loaded * len(corpus_paths)
+    if match_work_items > YARA_WORK_BUDGET:
+        _append_error(
+            load_errors,
+            "community-YARA rule-evaluation budget",
+            f"{match_work_items} loaded-rule/file evaluations exceed the "
+            f"{YARA_WORK_BUDGET} limit",
+        )
+    control = _engine_control()
+    if (
+        compiled
+        and rule_count_error is None
+        and selected_file_work_items <= YARA_WORK_BUDGET
+        and match_work_items <= YARA_WORK_BUDGET
+    ):
+        matched, scan_errors, scanned_files = _scan_corpus(compiled, corpus_paths, corpus)
+    else:
+        matched, scan_errors, scanned_files = collections.Counter(), [], 0
     if not selected:
-        load_errors.append({"where": str(rules_root), "message": "no selected .yar/.yara files"})
-    rules = _rule_metadata(selected, rules_root)
+        _append_error(load_errors, rules_root, "no selected .yar/.yara files")
+    rules = (
+        _rule_metadata(selected, rules_root)
+        if selected
+        else {"version": "no-selected-rules", "fingerprint_sha256": None, "manifest": None}
+    )
     coverage = {
         "kind": "rule-and-file-accounting",
         "discovered_rule_files": len(discovered),
         "excluded_rule_files": len(exclusions),
         "selected_rule_files": len(selected),
         "loaded_rule_files": len(compiled),
-        "failed_rule_files": len(load_errors),
-        "rules_loaded": sum(sum(1 for _ in item) for item in compiled.values()),
+        "failed_rule_files": len(selected) - len(compiled),
+        "rules_loaded": rules_loaded,
         "selected_corpus_files": corpus_binding["file_count"],
-        "scanned_corpus_files": len(corpus_paths),
+        "scanned_corpus_files": scanned_files,
+        "selected_file_work_items": selected_file_work_items,
+        "match_work_items": match_work_items,
+        "match_work_budget": YARA_WORK_BUDGET,
+        "match_timeout_seconds": YARA_MATCH_TIMEOUT_SECONDS,
+        "match_total_timeout_seconds": YARA_MATCH_TOTAL_TIMEOUT_SECONDS,
         "control_scope_note": (
             "the synthetic control exercises only the YARA engine; selected rule coverage is "
             "the manifest fingerprint plus selected/loaded/failed accounting"
@@ -399,7 +682,7 @@ def scan_community(
         control=control,
         coverage=coverage,
         exclusions=exclusions,
-        errors=load_errors + scan_errors,
+        errors=_merge_errors(load_errors, scan_errors),
         matched=matched,
     )
 
@@ -414,6 +697,11 @@ def unavailable_result(
     engine_version: str = "unavailable",
 ) -> dict:
     """Represent an unavailable scanner without turning it into a green skip."""
+    message = _bounded_text(message)
+    engine_version = _bounded_text(engine_version, 1_024)
+    control_scope = "engine-only" if scanner_id == "community-yara" else (
+        "engine-and-selected-rules"
+    )
     return {
         "scanner": {
             "id": scanner_id,
@@ -431,7 +719,7 @@ def unavailable_result(
         "method": {"command": method_command, "description": "scanner unavailable"},
         "control": {
             "kind": f"{scanner_id}-required-control",
-            "scope": "engine-and-selected-rules",
+            "scope": control_scope,
             "status": "failed",
             "command": method_command,
             "input_sha256": "0" * 64,

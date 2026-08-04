@@ -1,5 +1,169 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+Benchmark v3 introduces an evaluator-created local freshness ceremony with an internally
+minted CSPRNG suite key and ceremony identifier. Its exact public origin/reportability block
+and domain-separated key commitment are bound into `suite_id`; the matching canonical private
+record is retained evaluator-side. `artifactforge bench ceremony create` exposes no raw-key or
+caller-origin parameter and never prints key material.
+The bound v3 protocol identity requires an even 120–200 scenarios, giving at least 60 scenes
+per family under the alternating schedule. Its `population_power_contract` serializes the
+exact theoretical 39-comparison calculation, both named alternatives and their rational
+60-scene powers; construction does not execute Gate 4 or create per-suite attack evidence.
+The ceremony CLI defaults to 120 without changing legacy v2 limits.
+
+V3 submissions now use canonical scenario-ordered JSONL plus a precommitment binding the exact
+reveal, suite and caller-asserted solver provenance. A designated POSIX attempt ledger accepts
+that precommit, claims before reveal access, and serializes consume/retire transitions. Its
+private result is plaintext to the ledger owner; a random blinding nonce withholds detail from
+the returned receipt until local-ledger retirement, when a self-bound evidence bundle opens it.
+The detached verifier checks only internally decidable schema/arithmetic/hash-chain properties
+and can bind supplied reveal bytes; it does not authenticate the ceremony or regrade against an
+evaluator. Every retired report remains explicitly not reportable pending an independent
+witness.
+
+The counterfactual gate now exercises all ten pair swaps per scene and all 120 parser-valid
+mapping worlds on one deterministic representative for each of the three mutable identity
+mechanisms. Exact sparse-signal power and the four-key leave-one-out feature-conditioned audit
+are published qualifications without changing frozen-v2 multiplicity.
+
+Phase 5 adds a conservative CPython 3.14 core lane that binds the real interpreter, builds and
+installs the zero-runtime-dependency wheel without dependencies, compiles it, and builds and
+verifies all three Fixture ABI v2 families. The full parser-oracle profile remains explicitly
+known-blocked by the reproduced `dissect-target==3.25.1` runtime-import failure and the absence
+of a reviewed CPython 3.14 binary distribution for `yara-python==4.5.4`.
+
+Windows scenes now include an owned-SQLite Chromium completed-download query surface with the
+bounded `downloads` and `downloads_url_chains` tables and a responder-facing join. The three
+completed rows preserve Chromium's empty `hash` BLOB and carry their modeled SHA-256 values in
+explicitly synthetic content-addressed reserved final URLs. Exactly one row names a resident
+PE. Gate 1 requires dual-reader typed consensus, the exact reduced profile and syntactically
+valid digest components; Gate 2 independently re-hashes the resident bytes and binds path and
+size. The artifact is explicitly not a full, native or Chromium-migratable History database.
+
+Fixture ABI v2 now gives exactly that downloaded PE, rather than every resident PE, one logical
+`Zone.Identifier` stream. Its `ReferrerUrl` is the marked browser referrer and its distinct
+`HostUrl` is the History final URL. Assurance pairs the `ConfigParser` and raw readers, then
+independently joins History, the logical stream, guest path, byte counts, manifest digest and
+re-hashed PE bytes. No native ADS is created or claimed.
+
+Phase 6B adds one disabled, trigger-free Task Scheduler 1.2/1.3 XML definition and one
+standalone local-file Shell Link to every Windows scene. The task is canonical UTF-16LE,
+contains exactly one argument-free `Exec` action and is validated through type-exact
+ElementTree/raw-reader consensus plus a separately reported dissect.target consumer. The link
+is a bounded fixed-volume local-file profile with no arguments, working directory, network
+target or ExtraData. Exact-pinned liblnk and LnkParse3 agree on their reliable typed
+intersection while a strict first-party reader owns exact offsets, suffix extents, terminal
+position and trailing-data rejection. LnkParse3 1.6.0's defective Unicode common-suffix
+accessor is excluded from consensus rather than accommodated in emitted bytes.
+
+Gate 2 and Fixture Core bind both parsed references to distinct non-persistence resident PEs,
+including target size and SHA-256; the Shell Link additionally binds its three FILETIMEs and
+volume serial. The task projects to an extensionless Task Store guest path and the link to the
+modeled user's Start Menu. These are configuration/reference relations, not activation or
+execution claims. Current source therefore emits 14 artifact files per Windows scene and 16
+per macOS scene, for a maximum 3,001-file public export at 200 alternating scenarios including
+`public.json`. Historical release and scorecard counts are unchanged.
+
+Phase 6C switches current generated Windows scenes to deterministic MAM algorithm-4 compressed
+Prefetch v30 variant 1. The record carries a Vista path hash, one metric and one volume; its
+recorded executable, marker and device strings share a volume token derived from the exact
+volume-creation FILETIME and explicit nonzero serial. A bounded expected-size reader owns the
+closed XPRESS-Huffman and v30 wire profile, `pyscca` must accept it, and `pyscca` plus Dissect
+must agree on their typed semantic view. Dissect is semantic-only because its EOF-driven
+decompression can expose fewer or more bytes than MAM declares. The Windows-native
+`RtlDecompressBufferEx` canary and corruption control are implemented, but remain conditional
+until a hosted Windows run succeeds; they make no claim about consuming or rejecting bits
+after the declared output size.
+
+Gate 2 now counts captured `.pf` files, decodes each executable name from its bytes, and
+requires the exact scene-declared artifact count and name set before evaluating the persisted
+and orphan execution joins. Deleting or substituting a non-pivot Prefetch record therefore
+turns the gate red.
+
+The public `build_prefetch` and `prefetch_name_hash` APIs remain byte-stable v17/XP
+compatibility surfaces, while current scene generation calls `build_prefetch_v30` explicitly.
+Because `windows-loose-v2` is still unreleased, this is a deliberate in-place compatibility
+reset rather than a profile rename: earlier v2 outputs remain source-bound and must be
+regenerated with current source.
+
+A closed local release-evidence command now binds two inode-distinct byte-identical wheel/sdist
+builds, exact raw archive profiles, the current-source-to-sdist-to-wheel byte/mode/metadata
+chain, deterministic normalized runtime/development CycloneDX 1.5 documents, checksums and an
+exact no-replace output inventory. A separate validator accepts the complete official
+CycloneDX schema closure only at one immutable upstream commit and three reviewed SHA-256
+digests. A fixed publish rehearsal snapshots uv and the exact subjects, drops ambient
+credentials/configuration, and exercises only a loopback dry run.
+
+CI now pins third-party actions by immutable commit, bootstraps uv 0.11.17 from exact hosted-
+platform wheel hashes, fixes runner generations and configures Dependabot to propose action
+updates for review.
+The separate manual exact-tag `release-evidence` workflow can produce GitHub/Sigstore
+provenance and SBOM attestations after repository protection and explicit approval; it contains
+no tag push, GitHub release or package-publication step. The settled-tree local runtime chain
+passed hostile-environment byte comparison, source-pre/post-guarded evidence creation,
+closed/offline and repository-refreshed verification, official validation of all three SBOMs,
+the real private-copy uv loopback, and exact no-dependency wheel install/version/compile. Its
+dirty-source override makes it source-bound non-release evidence. The first protected hosted
+attestation remains pending for the current source revision.
+
+### Changed
+
+The public documentation now has one clear entry point and one source of truth for each claim.
+The root README starts with installation and fixture verification, uses compact platform and
+gate tables, and links to a new documentation index for the detailed contracts. The design and
+roadmap no longer repeat benchmark, scanner, and release histories that belong elsewhere.
+Two accessible, repository-native SVG diagrams replace the old ASCII sketch and add a concise
+generation and assurance overview without raster images, filters, or blur effects.
+
+Generated sample documentation now uses compact reader-result tables and shared profile notes.
+It correctly describes Fixture ABI v2 logical modes, macOS records as modeled evidence, and
+Task/Shell-Link records as references rather than activation. The EvidenceForge review drafts
+and all active technical guides received the same claim-boundary and plain-language pass.
+
+### Security
+
+Benchmark v2 is frozen as permanently non-reportable, including suites carrying its historical
+`holdout` label. V3 ceremony publication is private-mode, no-replace and no-follow; it rejects
+pre-existing destinations, symlink/special-file ceremony state, unknown or mutated model
+fields, commitment/ID mismatches, same-byte inode replacement, hostile-`umask` mode drift and
+concurrent reuse. Its in-band wording is local self-attestation eligible only pending external
+evidence; it does not externally attest unique ledger designation, evaluator independence or
+solver isolation.
+
+Attempt records are complete-before-publication, no-replace, single-link private files. A
+crash-released lock prevents consume/retire races; torn stages recover without replaying a
+published claim; inode ancestry rejects evaluator/output containment through case aliases or
+parent moves; and semantic chain validation rejects self-rehashed invented states, outcomes,
+counts, nonces, notices or trust claims. Live ledger mutation fails closed outside POSIX because
+Python does not provide the required directory-descriptor contract on Windows; detached report
+verification remains cross-platform.
+
+Release evidence is deliberately classified as unsigned local self-attestation: its digests do
+not authenticate a producer or build host, and the command reports signing, package publishing
+and reportable-security-result fields as false. Repository-bound SBOM refresh uses uv's locked,
+offline, no-source path but cannot prove host-wide network inactivity. Evidence publication's
+descriptor/no-replace/durability contract is POSIX-scoped; the release workflow runs on Ubuntu.
+Source cleanliness is independently reconstructed from HEAD, index and raw tracked bytes/modes
+under a stripped Git environment with replacement objects disabled, rather than trusting
+caller-routed Git configuration or one porcelain status line.
+The Windows-native observer does not execute emitted PEs and still requires its first hosted
+Windows result before supporting a hosted native claim. Its Task canary uses only an
+unregistered in-memory definition through `TaskService.Connect`, `NewTask(0)` and
+`TaskDefinition.XmlText`; its Shell Link canary uses `WScript.Shell.CreateShortcut` without
+`Save`, `Resolve` or `Run`. Neither canary registers, activates or executes the artifact it
+observes.
+
+Scanner checkpoints are now separated by corpus revision. The 2026-08-03 Phase 6B record is
+historical and does not cover v30/MAM Prefetch. The latest 2026-08-04 Phase 6C record remains
+red overall: its ClamAV and XProtect slots are complete, while Gatekeeper is inapplicable and
+community YARA did not establish complete coverage. Exact records and limitations are
+maintained in [`SECURITY.md`](SECURITY.md#scanner-claims-require-an-attestation); neither
+checkpoint supports an overall clean or zero-detection claim.
+
 ## 0.5.0 - 2026-08-02
 
 ### Added
@@ -60,8 +224,8 @@ dependency trace. Its published numbers are withdrawn, not v2 baselines.
 
 Public development and scorecard-measurement corpora remain deliberately non-reportable. No
 v2 performance score is reportable until a fresh-key hold-out is exported, run in a separate
-trust domain, graded and audited end to end. No fresh scanner attestation exists for the v2
-corpus; earlier scanner prose cannot be carried forward.
+trust domain, graded and audited end to end. At the time of the 0.5.0 release, no fresh scanner
+attestation existed for the v2 corpus; earlier scanner prose could not be carried forward.
 
 ### Changed
 
@@ -145,9 +309,10 @@ arguments, field codes or shell syntax. History accepts only strictly timestampe
 resident paths and one quoted no-op disclosure record, rejecting operators, substitution,
 interpreters, network clients and destructive verbs.
 
-Benchmark staging now rejects known answer/evaluation basenames—`ARTIFACT_ANSWERS.json`,
-`GROUND_TRUTH.json`, `JOIN_MANIFEST.json` and `fixture.json`—case-insensitively at any depth,
-as well as Fixture Core's schema marker under any filename.
+Benchmark staging now rejects these known answer/evaluation basenames:
+`ARTIFACT_ANSWERS.json`, `GROUND_TRUTH.json`, `JOIN_MANIFEST.json` and `fixture.json`. The check
+is case-insensitive at any depth. It also rejects Fixture Core's schema marker under any
+filename.
 
 ### Changed
 
@@ -276,8 +441,9 @@ Fixture outputs are explicitly ineligible for benchmark use because their public
 publish content hashes and their seed is reproducible by design.
 
 The initial named profiles are `windows-loose-v1` and `macos-14-loose-v1`. The Windows name is
-deliberately version-neutral: current loose artifacts combine NT6-era paths with XP-family
-SCCA v17 prefetch, so calling the fixture a Windows 10 image would overstate consistency.
+deliberately version-neutral: at 0.1.0 those loose artifacts combined NT6-era paths with
+XP-family SCCA v17 prefetch, so calling the fixture a Windows 10 image would have overstated
+consistency.
 
 ### Security
 
@@ -304,7 +470,7 @@ have scanner-specific success rules; missing tools, stale records, partial rule 
 incomplete coverage are failures rather than skips. The community-YARA control is explicitly
 engine-only, with selected-rule coverage proven separately. Per-file externals are populated,
 transitive includes are refused unless their bytes can be manifested, and every rule match is
-red—there is no unbound rule-name allowlist that can relabel a hit as merely descriptive.
+red. There is no unbound rule-name allowlist that can relabel a hit as merely descriptive.
 
 A native macOS CI lane validates all committed Mach-O signatures and cdhashes with `codesign`,
 all LaunchAgent property lists with `plutil`, and plain plus quarantined Gatekeeper outcomes.
@@ -345,13 +511,13 @@ loading and Mach-O initializer-table substitution.
 ### Added
 
 The four gates, and the discipline behind them. A gate is a numbered question wired into six
-places at once — a module whose docstring is the question, a CLI subcommand that exits
+places at once: a module whose docstring is the question, a CLI subcommand that exits
 non-zero, a pytest file, a block in the committed `fidelity-scorecard.json`, a row in the
 regression table with a direction and a tolerance, a named CI step, and a registered mutation
 that must turn it red. `tests/test_gates.py` enforces those bindings mechanically, so a gate
 cannot quietly become decoration. The sixth binding is the one that matters: a gate never
-observed to fail proves nothing, and `tests/test_gate_mutations.py` breaks each one on purpose
-— truncating a hive, appending a byte to a binary, rewriting an Amcache `FileId`, stripping a
+observed to fail proves nothing. `tests/test_gate_mutations.py` breaks each one on purpose by
+truncating a hive, appending a byte to a binary, rewriting an Amcache `FileId`, stripping a
 synthetic marker, writing instructions past the `ret`, pointing a URL at a routable domain.
 
 A real arm64 Mach-O, hand-assembled from pure stdlib on the same terms as the PE writer. It
@@ -359,15 +525,15 @@ carries a genuine `LC_SYMTAB` whose undefined external symbols yield the symhash
 threatstream/symhash and yara-x compute, and an ad-hoc code signature whose cdhash is what
 `codesign -d` reports. LIEF and macholib parse it; on macOS `codesign -v` certifies it. The
 signature is computed in-process because an unsigned arm64 binary is not loadable at all and
-signing afterwards would rewrite the bytes — which also makes the signing identifier part of
+signing afterwards would rewrite the bytes. This also makes the signing identifier part of
 the file's identity, so it is encoded in the content id rather than passed alongside it.
 
 A benchmark that measures investigation. Every answer hangs off a 32-byte suite key; the
 public scenario identifier is an HMAC of it, domain-separated from content seeds and from each
 variable selection. Suites come in two kinds: a dev suite built with the key published in the
 source, cheatable on purpose and never reportable, and a hold-out suite whose key never leaves
-the evaluator. Scenes carry decoys and the signals deliberately disagree — persistence launches
-one binary while Amcache's recorded hashes match a different one — and every question spans at
+the evaluator. Scenes carry decoys and the signals deliberately disagree: persistence launches
+one binary while Amcache's recorded hashes match a different one. Every question spans at
 least two artifacts.
 
 A companion adapter that reads an EvidenceForge run's output tree without importing
@@ -389,7 +555,7 @@ remaining boundary explicitly: serialized output does not itself encode its prod
 
 ### Fixed
 
-libyal's `libscca` — which plaso and log2timeline are built on — rejected every prefetch file
+libyal's `libscca` (used by plaso and log2timeline) rejected every prefetch file
 this project had ever written. The volumes-information block was sized to end exactly at the
 last counted character of the volume device path, but SCCA character counts exclude the
 end-of-string character while the terminator must still lie inside the block, so the file was

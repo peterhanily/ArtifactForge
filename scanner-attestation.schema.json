@@ -16,20 +16,20 @@
   "properties": {
     "schema": { "const": "artifactforge-scanner-attestation-v1" },
     "schema_version": { "const": 1 },
-    "generated_at": { "type": "string", "format": "date-time" },
+    "generated_at": { "type": "string", "format": "date-time", "maxLength": 32 },
     "producer": {
       "type": "object",
       "required": ["name", "version", "command", "host"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "$ref": "#/$defs/text" },
         "version": { "const": 1 },
         "command": { "$ref": "#/$defs/command" },
         "host": {
           "type": "object",
           "required": ["platform", "python"],
           "properties": {
-            "platform": { "type": "string", "minLength": 1 },
-            "python": { "type": "string", "minLength": 1 }
+            "platform": { "$ref": "#/$defs/text" },
+            "python": { "$ref": "#/$defs/text" }
           },
           "additionalProperties": false
         }
@@ -44,7 +44,7 @@
           "const": ["clamav", "community-yara", "gatekeeper", "xprotect"]
         },
         "maximum_age_days": { "const": 30 },
-        "success_rule": { "type": "string", "minLength": 1 }
+        "success_rule": { "$ref": "#/$defs/text" }
       },
       "additionalProperties": false
     },
@@ -55,14 +55,25 @@
       "maxItems": 4,
       "items": { "$ref": "#/$defs/result" }
     },
-    "overall_non_proof": { "type": "string", "minLength": 1 }
+    "overall_non_proof": { "$ref": "#/$defs/text" }
   },
   "additionalProperties": false,
   "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
     "command": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "minLength": 1 }
+      "maxItems": 128,
+      "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
     },
     "sha256": {
       "type": "string",
@@ -72,9 +83,9 @@
       "type": "object",
       "required": ["path", "sha256", "size"],
       "properties": {
-        "path": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "#/$defs/path" },
         "sha256": { "$ref": "#/$defs/sha256" },
-        "size": { "type": "integer", "minimum": 0 }
+        "size": { "type": "integer", "minimum": 0, "maximum": 134217728 }
       },
       "additionalProperties": false
     },
@@ -90,11 +101,34 @@
       "properties": {
         "canonicalization": { "const": "artifactforge-scanner-corpus-v1" },
         "tree_sha256": { "$ref": "#/$defs/sha256" },
-        "file_count": { "type": "integer", "minimum": 1 },
-        "total_bytes": { "type": "integer", "minimum": 0 },
+        "file_count": { "type": "integer", "minimum": 1, "maximum": 20000 },
+        "total_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
         "files": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 20000,
+          "items": { "$ref": "#/$defs/manifest_file" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "rule_manifest": {
+      "type": "object",
+      "required": ["canonicalization", "tree_sha256", "file_count", "files"],
+      "properties": {
+        "canonicalization": {
+          "enum": [
+            "artifactforge-yara-rule-manifest-v1",
+            "artifactforge-clam-database-manifest-v1"
+          ]
+        },
+        "tree_sha256": { "$ref": "#/$defs/sha256" },
+        "file_count": { "type": "integer", "minimum": 1, "maximum": 20000 },
+        "total_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20000,
           "items": { "$ref": "#/$defs/manifest_file" }
         }
       },
@@ -106,8 +140,8 @@
       "properties": {
         "canonicalization": { "const": "artifactforge-scanner-corpus-v1" },
         "tree_sha256": { "$ref": "#/$defs/sha256" },
-        "file_count": { "type": "integer", "minimum": 1 },
-        "total_bytes": { "type": "integer", "minimum": 0 }
+        "file_count": { "type": "integer", "minimum": 1, "maximum": 20000 },
+        "total_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 }
       },
       "additionalProperties": false
     },
@@ -115,21 +149,148 @@
       "type": "object",
       "required": ["version", "fingerprint_sha256", "manifest"],
       "properties": {
-        "version": { "type": ["string", "null"] },
+        "version": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 1024 },
+            { "type": "null" }
+          ]
+        },
         "fingerprint_sha256": {
           "anyOf": [
             { "$ref": "#/$defs/sha256" },
             { "type": "null" }
           ]
         },
-        "manifest": { "type": ["object", "null"] }
+        "manifest": {
+          "anyOf": [
+            { "$ref": "#/$defs/rule_manifest" },
+            { "type": "null" }
+          ]
+        }
       },
       "additionalProperties": false
     },
-    "entry": {
+    "exclusion": {
       "type": "object",
-      "minProperties": 2,
-      "additionalProperties": { "type": ["string", "integer", "boolean", "null"] }
+      "required": ["path", "reason"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "reason": { "$ref": "#/$defs/text" }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "required": ["where", "message"],
+      "properties": {
+        "where": { "$ref": "#/$defs/text" },
+        "message": { "$ref": "#/$defs/text" }
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "kind",
+        "selected_corpus_files",
+        "scanned_corpus_files",
+        "control_scope_note"
+      ],
+      "properties": {
+        "kind": { "$ref": "#/$defs/text" },
+        "selected_corpus_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20000
+        },
+        "scanned_corpus_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "control_scope_note": { "$ref": "#/$defs/text" },
+        "selected_rule_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "loaded_rule_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "failed_rule_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "rules_loaded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "selected_file_work_items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 400000000
+        },
+        "match_work_items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000000
+        },
+        "match_work_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 400000000
+        },
+        "match_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "match_total_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "discovered_rule_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "excluded_rule_files": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "target": { "$ref": "#/$defs/path" },
+        "target_sha256": { "$ref": "#/$defs/sha256" },
+        "target_signature_command": { "$ref": "#/$defs/command" },
+        "target_signature_valid": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "matched_rules": {
+      "type": "object",
+      "maxProperties": 20000,
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 1024 },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100000000
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["files_scanned", "matches", "matched_rules"],
+      "properties": {
+        "files_scanned": { "type": "integer", "minimum": 0, "maximum": 20000 },
+        "matches": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "matched_rules": { "$ref": "#/$defs/matched_rules" },
+        "outcome": { "enum": ["rejected", "not-explicitly-rejected"] }
+      },
+      "additionalProperties": false
     },
     "result": {
       "type": "object",
@@ -154,13 +315,13 @@
             "id": {
               "enum": ["clamav", "community-yara", "gatekeeper", "xprotect"]
             },
-            "name": { "type": "string", "minLength": 1 },
-            "engine_version": { "type": "string", "minLength": 1 },
+            "name": { "$ref": "#/$defs/text" },
+            "engine_version": { "$ref": "#/$defs/text" },
             "rules": { "$ref": "#/$defs/rules" }
           },
           "additionalProperties": false
         },
-        "timestamp": { "type": "string", "format": "date-time" },
+        "timestamp": { "type": "string", "format": "date-time", "maxLength": 32 },
         "status": { "enum": ["clean", "finding", "observation", "error"] },
         "corpus_binding": { "$ref": "#/$defs/corpus_binding" },
         "method": {
@@ -168,7 +329,7 @@
           "required": ["command", "description"],
           "properties": {
             "command": { "$ref": "#/$defs/command" },
-            "description": { "type": "string", "minLength": 1 }
+            "description": { "$ref": "#/$defs/text" }
           },
           "additionalProperties": false
         },
@@ -186,31 +347,39 @@
             "demonstrates"
           ],
           "properties": {
-            "kind": { "type": "string", "minLength": 1 },
+            "kind": { "$ref": "#/$defs/text" },
             "scope": {
               "enum": ["engine-only", "engine-and-selected-rules", "engine-and-host-policy"]
             },
             "status": { "enum": ["passed", "failed"] },
             "command": { "$ref": "#/$defs/command" },
             "input_sha256": { "$ref": "#/$defs/sha256" },
-            "input_digest_method": { "type": "string", "minLength": 1 },
+            "input_digest_method": { "$ref": "#/$defs/text" },
             "near_miss_sha256": { "$ref": "#/$defs/sha256" },
-            "expected": { "type": "string", "minLength": 1 },
-            "observed": { "type": "string", "minLength": 1 },
-            "demonstrates": { "type": "string", "minLength": 1 }
+            "expected": { "$ref": "#/$defs/text" },
+            "observed": { "$ref": "#/$defs/text" },
+            "demonstrates": { "$ref": "#/$defs/text" }
           },
           "additionalProperties": false
         },
-        "coverage": { "type": "object", "minProperties": 4 },
-        "exclusions": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
-        "errors": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
-        "summary": { "type": "object", "minProperties": 3 },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "exclusions": {
+          "type": "array",
+          "maxItems": 20000,
+          "items": { "$ref": "#/$defs/exclusion" }
+        },
+        "errors": {
+          "type": "array",
+          "maxItems": 20000,
+          "items": { "$ref": "#/$defs/error" }
+        },
+        "summary": { "$ref": "#/$defs/summary" },
         "non_proof": {
           "type": "object",
           "required": ["boundary_id", "statement"],
           "properties": {
-            "boundary_id": { "type": "string", "minLength": 1 },
-            "statement": { "type": "string", "minLength": 1 }
+            "boundary_id": { "$ref": "#/$defs/text" },
+            "statement": { "$ref": "#/$defs/text" }
           },
           "additionalProperties": false
         }

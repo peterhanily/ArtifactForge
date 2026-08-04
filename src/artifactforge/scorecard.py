@@ -78,6 +78,25 @@ _GENERATOR_METRICS = [
         0,
         "validity: semantic checks declared",
     ),
+    *(
+        (
+            f"gates.validity.claim_scopes.{scope}.{counter}",
+            "higher_better",
+            0,
+            f"validity: {scope_label} checks {counter_label}",
+        )
+        for scope, scope_label in (
+            ("container_acceptance", "container acceptance"),
+            ("semantic_extraction", "semantic extraction"),
+            ("independent_consensus", "independent consensus"),
+            ("declared_profile_conformance", "declared profile conformance"),
+            (
+                "downstream_consumer_compatibility",
+                "downstream consumer compatibility",
+            ),
+        )
+        for counter, counter_label in (("passed", "passed"), ("total", "declared"))
+    ),
     ("gates.identity.checks_joined", "higher_better", 0, "identity: cross-artifact joins holding"),
     ("gates.identity.checks_total", "higher_better", 0, "identity: cross-artifact joins declared"),
     ("gates.inertness.formats_marked", "higher_better", 0, "inertness: formats carrying a marker"),
@@ -552,6 +571,9 @@ for _family, _rule in _RULE_CLASSES:
     )
 
 _METRICS = [*_GENERATOR_METRICS, *_SOLVABILITY_METRICS]
+_NUMERIC_ONLY_METRICS = {
+    path for path, _direction, _tolerance, _label in _GENERATOR_METRICS
+}
 
 SCHEMA_VERSION = "2.0"
 
@@ -610,6 +632,16 @@ def _dig(card: dict, path: str):
             return None
         node = node[part]
     return node
+
+
+def _metric_value(card: dict, path: str) -> tuple[bool, object]:
+    """Return presence separately from value so JSON null is not mistaken for absence."""
+    node = card
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
 
 
 def _status_block(reports, gate_names, *, experimental: bool) -> dict:
@@ -712,7 +744,13 @@ def build_scorecard(
 
 
 def regressions(baseline: dict, current: dict) -> list:
-    """Which tracked metrics got worse. A missing metric is `missing`, never a pass."""
+    """Which tracked metrics got worse, allowing forward metric introduction.
+
+    A metric absent from the baseline has no earlier value to regress against. This keeps
+    published legacy cards comparable when a later release introduces a new tracked metric.
+    Once a metric is present in the baseline, removing it is a regression. Explicit malformed
+    values are invalid rather than being treated as absence.
+    """
     def valid_number(value) -> bool:
         return (
             not isinstance(value, bool)
@@ -722,9 +760,29 @@ def regressions(baseline: dict, current: dict) -> list:
 
     out = []
     for path, direction, tol, label in _METRICS:
-        was, now = _dig(baseline, path), _dig(current, path)
-        if was is None or now is None:
+        was_present, was = _metric_value(baseline, path)
+        now_present, now = _metric_value(current, path)
+        if not was_present and not now_present:
+            continue
+        if not was_present:
+            introduced_value_is_valid = (
+                valid_number(now)
+                if path in _NUMERIC_ONLY_METRICS
+                else isinstance(now, bool) or valid_number(now)
+            )
+            if not introduced_value_is_valid:
+                out.append((label, "invalid", None, now))
+            continue
+        if not now_present:
             out.append((label, "missing", was, now))
+            continue
+        if path in _NUMERIC_ONLY_METRICS:
+            if not valid_number(was) or not valid_number(now):
+                out.append((label, "invalid", was, now))
+                continue
+            worse = (now < was - tol) if direction == "higher_better" else (now > was + tol)
+            if worse:
+                out.append((label, "regressed", was, now))
             continue
         was_boolean = isinstance(was, bool)
         now_boolean = isinstance(now, bool)

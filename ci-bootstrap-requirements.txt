@@ -1,0 +1,11 @@
+# ArtifactForge CI bootstrap closure.
+#
+# These are the exact PyPI wheel digests for the three hosted-runner architectures used by
+# .github/workflows/*.yml.  --only-binary=:all: prevents a source fallback, and --no-deps plus
+# --require-hashes makes the single-file bootstrap closed.  Update by reviewing the official
+# https://pypi.org/pypi/uv/<version>/json response for upload/yank state and these filenames:
+#   manylinux_2_17_x86_64.manylinux2014_x86_64, macosx_11_0_arm64, win_amd64
+uv==0.11.17 \
+    --hash=sha256:9da839e5a491c9a701d7d327a199cafc76ac27a03ac84fd2a8d4bf32c3af2448 \
+    --hash=sha256:58c07ffc272c847d29cd98ca5082fa4304a645f87c718ec900e3cca9026bd096 \
+    --hash=sha256:44ec1fe3af839f87370dcf0400c0cab917cc1ce697d563e860fc7d9ed72655e7

@@ -18,12 +18,15 @@ ArtifactForge API. See docs/DESIGN.md.
 """
 
 from artifactforge.artifacts import (
+    HiveTimestampSpec,
+    PrefetchTimestamps,
     build_bash_history,
     build_desktop_entry,
     build_amcache_hive,
     build_knowledgec,
     build_launch_agent,
     build_prefetch,
+    build_prefetch_v30,
     build_quarantine_events,
     build_run_hive,
     build_tcc,
@@ -63,9 +66,12 @@ __all__ = [
     "linux_profile",
     "deterministic_uuid",
     # artifacts
+    "HiveTimestampSpec",
+    "PrefetchTimestamps",
     "build_run_hive",
     "build_amcache_hive",
     "build_prefetch",
+    "build_prefetch_v30",
     "build_knowledgec",
     "build_tcc",
     "build_quarantine_events",

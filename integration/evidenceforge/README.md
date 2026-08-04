@@ -10,15 +10,17 @@ EvidenceForge's committed `uv.lock`; [`constraints-v1.13.1.txt`](constraints-v1.
 records both the source commit and upstream lock digest. The measurement record binds that
 runtime attestation as well as the scenario and complete output tree.
 
-Nothing here has been proposed to the EvidenceForge maintainers. This directory holds a
-controlled reproducer, an upstream-ready issue draft, and a design RFC so the option can be
-evaluated before anything is posted:
+ArtifactForge has already been mentioned in a
+[public EvidenceForge #332 follow-up](https://github.com/Cisco-Talos/EvidenceForge/issues/332#issuecomment-5152265897).
+This directory holds a controlled reproducer, a still-local issue draft and design RFC, and
+review patches so the formal proposal can be evaluated before any new issue or pull request is
+opened:
 
 - [`scenarios/content-identity-witness-v1.13.1.yaml`](scenarios/content-identity-witness-v1.13.1.yaml)
   declares one exact download-to-execution relation plus transfer-only, process-only, and
-  same-basename controls;
+  same-basename controls.
 - [`ISSUE_DRAFT.md`](ISSUE_DRAFT.md) states the measured result and asks whether the relation
-  belongs in EvidenceForge's model;
+  belongs in EvidenceForge's model.
 - [`CONTENT_IDENTITY_RFC.md`](CONTENT_IDENTITY_RFC.md) specifies a backward-compatible,
   role-specific content identity.
 - [`patches/README.md`](patches/README.md) documents two clean-applying review patches, their
@@ -125,11 +127,9 @@ the non-certificate rows actually carry.
 
 ## What a change would have to touch
 
-Deliberately understated in earlier drafts of this plan, so stated carefully here.
-
 1. **A scenario/world-level content identity object.** One place that maps a declared logical
-   file reference to an immutable digest identity—and to bytes only when bytes are actually
-   materialized—and can be referenced by separate transfer and execution events. EvidenceForge
+   file reference to an immutable digest identity, and to bytes only when bytes are actually
+   materialized. Separate transfer and execution events can reference that identity. EvidenceForge
    has per-event `PeContext` data and an HTTP file-download action, but those are distinct
    `SecurityEvent` instances; neither currently proves that a transferred object is the later
    executed object. The shared relation must therefore be explicit cross-event state, not just
@@ -140,17 +140,16 @@ Deliberately understated in earlier drafts of this plan, so stated carefully her
 3. **`GROUND_TRUTH.json`.** It carries no hash labels today, and its schema uses
    `extra="forbid"`, so new fields must be declared and the schema version bumped.
 
-Gated off by default, it changes no existing output. That is the only version worth
-proposing: a contribution that silently alters every generated dataset is one no maintainer
-should accept.
+The proposed field is opt-in and disabled by default, so it preserves existing output. An
+upstream change should not silently alter every generated dataset.
 
-## Why it is worth doing at all
+## Maintenance rationale
 
-Because the alternative is a subscription. Recovering identity by reproducing a private seed
-construction works — `artifactforge/ef_seeds.py` does it, verifies every recovery against the
-emitted digest, and refuses rather than guessing — but it is a private surface that SemVer
-does not protect, and it has to be re-verified on every upstream release. Contribution is the
-only version of this that stops the clock.
+Recovering identity by reproducing a private seed construction works:
+`artifactforge/ef_seeds.py` verifies every recovery against the emitted digest and refuses
+rather than guessing. However, SemVer does not protect that private surface, so it must be
+re-verified on every upstream release. An explicit upstream identity would remove that recurring
+version-specific reconstruction burden.
 
 ## Current status
 
@@ -159,4 +158,6 @@ mutation tests are complete. CI regenerates both the stock run and the controlle
 the pinned v1.13.1 source. A role-specific content-identity prototype and the independent
 Event 1/Event 7 Description correction clean-apply to that pin and passed the upstream suite as
 recorded in `patches/README.md`. Both remain review files here. The issue remains a draft: no
-GitHub issue, pull request, branch, commit, or message has been created upstream.
+new GitHub issue, pull request, upstream branch or upstream commit has been created from this
+material. The existing public #332 follow-up above is the only posted ArtifactForge note this
+status statement describes.

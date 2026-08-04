@@ -15,6 +15,8 @@ import json
 from typing import TypeAlias
 import unicodedata
 
+from artifactforge.fixture import resources
+
 JSONScalar: TypeAlias = None | bool | int | str
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
@@ -49,7 +51,7 @@ def _validate_string(value: str, where: str) -> None:
         raise CanonicalJSONError(f"{where} contains an unpaired Unicode surrogate") from exc
 
 
-def _validate_value(value: object, where: str = "$") -> None:
+def _validate_value(value: object, where: str = "$", *, depth: int = 0) -> None:
     if value is None or isinstance(value, bool):
         return
     if isinstance(value, str):
@@ -60,19 +62,58 @@ def _validate_value(value: object, where: str = "$") -> None:
     if isinstance(value, float):
         raise CanonicalJSONError(f"{where} is a float; fixture JSON permits integers only")
     if isinstance(value, list):
+        nested = depth + 1
+        if nested > resources.RESOURCE_POLICY.max_json_nesting:
+            raise CanonicalJSONError(
+                "fixture JSON exceeds the "
+                f"{resources.RESOURCE_POLICY.max_json_nesting}-level nesting limit"
+            )
         for index, item in enumerate(value):
-            _validate_value(item, f"{where}[{index}]")
+            _validate_value(item, f"{where}[{index}]", depth=nested)
         return
     if isinstance(value, Mapping):
+        nested = depth + 1
+        if nested > resources.RESOURCE_POLICY.max_json_nesting:
+            raise CanonicalJSONError(
+                "fixture JSON exceeds the "
+                f"{resources.RESOURCE_POLICY.max_json_nesting}-level nesting limit"
+            )
         for key, item in value.items():
             if not isinstance(key, str):
                 raise CanonicalJSONError(f"{where} has a non-string object member name")
             _validate_string(key, f"{where} object member name")
-            _validate_value(item, f"{where}.{key}")
+            _validate_value(item, f"{where}.{key}", depth=nested)
         return
     raise CanonicalJSONError(
         f"{where} has unsupported type {type(value).__name__}; expected a JSON value"
     )
+
+
+def _validate_text_nesting(text: str) -> None:
+    """Bound container depth before handing text to the recursive stdlib decoder."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > resources.RESOURCE_POLICY.max_json_nesting:
+                raise CanonicalJSONError(
+                    "fixture JSON exceeds the "
+                    f"{resources.RESOURCE_POLICY.max_json_nesting}-level nesting limit"
+                )
+        elif character in "]}":
+            depth -= 1
 
 
 def load_json_strict(data: bytes | str) -> JSONValue:
@@ -82,6 +123,11 @@ def load_json_strict(data: bytes | str) -> JSONValue:
     non-NFC strings, and trailing input are all errors.
     """
     if isinstance(data, bytes):
+        if len(data) > resources.RESOURCE_POLICY.max_input_bytes:
+            raise CanonicalJSONError(
+                "fixture JSON exceeds the "
+                f"{resources.RESOURCE_POLICY.max_input_bytes}-byte input limit"
+            )
         if data.startswith(b"\xef\xbb\xbf"):
             raise CanonicalJSONError("a UTF-8 BOM is forbidden")
         try:
@@ -90,11 +136,21 @@ def load_json_strict(data: bytes | str) -> JSONValue:
             raise CanonicalJSONError("input is not valid UTF-8") from exc
     elif isinstance(data, str):
         text = data
+        try:
+            encoded_size = len(text.encode("utf-8", errors="strict"))
+        except UnicodeEncodeError:
+            encoded_size = 0  # _validate_string reports the more specific surrogate error.
+        if encoded_size > resources.RESOURCE_POLICY.max_input_bytes:
+            raise CanonicalJSONError(
+                "fixture JSON exceeds the "
+                f"{resources.RESOURCE_POLICY.max_input_bytes}-byte input limit"
+            )
         if text.startswith("\ufeff"):
             raise CanonicalJSONError("a Unicode BOM is forbidden")
     else:
         raise TypeError("strict JSON input must be bytes or str")
 
+    _validate_text_nesting(text)
     try:
         value = json.loads(
             text,
@@ -124,7 +180,13 @@ def canonical_json_bytes(value: object) -> bytes:
         )
     except (TypeError, ValueError, RecursionError) as exc:
         raise CanonicalJSONError(f"cannot encode canonical JSON: {exc}") from exc
-    return (rendered + "\n").encode("utf-8", errors="strict")
+    result = (rendered + "\n").encode("utf-8", errors="strict")
+    if len(result) > resources.RESOURCE_POLICY.max_input_bytes:
+        raise CanonicalJSONError(
+            "fixture JSON exceeds the "
+            f"{resources.RESOURCE_POLICY.max_input_bytes}-byte input limit"
+        )
+    return result
 
 
 def load_canonical_json(data: bytes) -> JSONValue:

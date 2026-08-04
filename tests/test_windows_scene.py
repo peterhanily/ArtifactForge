@@ -7,15 +7,33 @@ the decoys are checked too. A scene where every signal points at the same file c
 investigation from a lookup — a benchmark built on one scored 100% after its hash pivot had
 been deliberately destroyed.
 """
-import glob
 import hashlib
 import os
+from pathlib import Path
+import re
+import sqlite3
 
 import pytest
 
 from artifactforge import suite
-from artifactforge.compose.scene import build_windows_scene
+from artifactforge.artifacts.shell_link import parse_shell_link
+from artifactforge.artifacts.windows_task import (
+    read_scheduled_task_xml_wire,
+    validate_scheduled_task_xml,
+)
+from artifactforge.compose.scene import (
+    WINDOWS_SHELL_LINK_SOURCE,
+    WINDOWS_TASK_XML_SOURCE,
+    build_windows_scene,
+)
 from artifactforge.content import ContentStore
+from artifactforge.gates.oracles.prefetch_profile import (
+    dissect_prefetch_v30_view,
+    parse_mam_prefetch_v30_variant1,
+    pyscca_prefetch_v30_view,
+    require_prefetch_v30_consensus,
+    validate_artifactforge_prefetch_v30_profile,
+)
 from artifactforge.model import windows_profile
 
 KEY = suite.scenario_key(suite.PUBLIC_DEV_KEY, "test-windows-scene")
@@ -116,16 +134,115 @@ def test_amcache_relation_has_no_name_or_size_shortcut(tmp_path):
 
 
 def test_prefetch_carries_execution_and_exactly_one_orphan(tmp_path):
-    wp = pytest.importorskip("windowsprefetch")
     s = _scene(tmp_path)
     files = _resident(s.directory)
     counts = {}
-    for pf_path in sorted(glob.glob(os.path.join(s.directory, "*.pf"))):
-        pf = wp.Prefetch(pf_path)
-        counts[pf.executableName.lower()] = pf.runCount
-    assert len(counts) >= 4
+    for pf_path in sorted(Path(s.directory).glob("*.pf")):
+        data = pf_path.read_bytes()
+        strict = parse_mam_prefetch_v30_variant1(data)
+        consensus = require_prefetch_v30_consensus(
+            {
+                "pyscca": pyscca_prefetch_v30_view(data),
+                "dissect.target-prefetch": dissect_prefetch_v30_view(data),
+            }
+        )
+        validate_artifactforge_prefetch_v30_profile(strict, consensus)
+        counts[strict.executable_name.lower()] = strict.run_count
+    assert len(counts) == s.join["prefetch"]["artifact_count"] == 4
+    assert sorted(counts) == sorted(
+        name.casefold() for name in s.join["prefetch"]["execution_names"]
+    )
     assert counts[s.join["persisted"]["name"].lower()] == s.join["persisted"]["run_count"]
     assert [n for n in counts if n not in files] == [s.join["orphan_execution"].lower()]
+
+
+def test_chromium_history_uses_content_addressed_url_and_native_empty_hash(tmp_path):
+    s = _scene(tmp_path)
+    files = _resident(s.directory)
+    connection = sqlite3.connect(os.path.join(s.directory, "History"))
+    try:
+        rows = tuple(
+            connection.execute(
+                "SELECT d.target_path,d.received_bytes,d.total_bytes,d.hash,d.opened,"
+                "d.referrer,u.url FROM downloads AS d JOIN downloads_url_chains AS u "
+                "ON u.id=d.id ORDER BY d.id"
+            )
+        )
+    finally:
+        connection.close()
+    assert len(rows) == 3
+    assert all(row[3] == b"" for row in rows)
+    pattern = re.compile(
+        r"https://downloads\.artifactforge\.invalid/ARTIFACTFORGE/sha256/"
+        r"([0-9a-f]{64})/([^/?#]+)"
+    )
+    resident_rows = []
+    for target, received, total, _stored_hash, _opened, _referrer, url in rows:
+        match = pattern.fullmatch(url)
+        assert match
+        name = target.rsplit("\\", 1)[-1].lower()
+        assert match.group(2).lower() == name
+        if name in files:
+            assert match.group(1) == hashlib.sha256(files[name]).hexdigest()
+            assert (received, total) == (len(files[name]), len(files[name]))
+            resident_rows.append((target, url))
+    assert resident_rows == [
+        (
+            s.join["browser_download"]["target_path"],
+            s.join["browser_download"]["source_url"],
+        )
+    ]
+
+
+def test_task_and_shell_link_are_inert_references_to_distinct_resident_bytes(tmp_path):
+    s = _scene(tmp_path)
+    files = _resident(s.directory)
+    task_truth = s.join["scheduled_task"]
+    shell_truth = s.join["shell_link"]
+
+    task_data = (Path(s.directory) / WINDOWS_TASK_XML_SOURCE).read_bytes()
+    task = validate_scheduled_task_xml(
+        task_data,
+        resident_pe_paths=(task_truth["target_path"],),
+    )
+    task_wire = read_scheduled_task_xml_wire(task_data)
+    shell = parse_shell_link(
+        (Path(s.directory) / WINDOWS_SHELL_LINK_SOURCE).read_bytes()
+    )
+
+    assert task.command == task_wire.command == task_truth["target_path"]
+    assert task.task_name == task_truth["task_name"]
+    assert task.enabled is task.allow_start_on_demand is False
+    assert (task.trigger_count, task.action_count) == (0, 1)
+    assert task_truth["guest_path"] == (
+        rf"C:\Windows\System32\Tasks\ArtifactForge\{task.task_name}"
+    )
+
+    assert shell.target_path == shell_truth["target_path"]
+    assert shell.target_size == shell_truth["target_size"]
+    assert (
+        shell.creation_filetime,
+        shell.access_filetime,
+        shell.write_filetime,
+        shell.volume_serial,
+    ) == (
+        shell_truth["creation_filetime"],
+        shell_truth["access_filetime"],
+        shell_truth["write_filetime"],
+        shell_truth["volume_serial"],
+    )
+
+    assert task_truth["target_role"] != "persisted"
+    assert shell_truth["target_role"] != "persisted"
+    assert task_truth["target_path"] != shell_truth["target_path"]
+    assert {
+        task_truth["target_path"],
+        shell_truth["target_path"],
+    }.isdisjoint({s.join["persisted"]["path"]})
+    for truth in (task_truth, shell_truth):
+        target = files[truth["target_name"].lower()]
+        assert len(target) == truth["target_size"]
+        assert hashlib.sha256(target).hexdigest() == truth["target_sha256"]
 
 
 def test_only_the_allowlisted_files_are_served(tmp_path):

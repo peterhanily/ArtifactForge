@@ -11,10 +11,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
+from itertools import islice
 import os
 from pathlib import Path
 import re
 import stat
+from typing import TYPE_CHECKING
 import unicodedata
 
 from artifactforge.fixture.canonical import (
@@ -24,15 +26,24 @@ from artifactforge.fixture.canonical import (
     load_canonical_json,
     load_json_strict,
 )
+from artifactforge.fixture.abi import (
+    CANONICALIZATION_V1 as CANONICALIZATION,
+    GENERATOR_ABI_V1 as GENERATOR_ABI,
+    MANIFEST_SCHEMA_V1 as MANIFEST_SCHEMA,
+    SPEC_SCHEMA_V1 as SPEC_SCHEMA,
+    MANIFEST_SCHEMA_V2,
+    SPEC_SCHEMA_V2,
+    TREE_CANONICALIZATION_V1 as TREE_CANONICALIZATION,
+    require_spec_producer,
+)
+from artifactforge.fixture import resources
 from artifactforge.inventory import InventoryError, validate_relative_path
 
-SPEC_SCHEMA = "artifactforge-fixture-spec-v1"
+if TYPE_CHECKING:
+    from artifactforge.fixture.model_v2 import FixtureManifestV2, FixtureSpecV2
+
 SPEC_PURPOSE = "public-reproducible-fixture"
-MANIFEST_SCHEMA = "artifactforge-fixture-manifest-v1"
-CANONICALIZATION = "artifactforge-canonical-json-v1"
-TREE_CANONICALIZATION = "artifactforge-fixture-tree-v1"
 GENERATOR_NAME = "artifactforge"
-GENERATOR_ABI = "artifactforge-fixture-generator-v1"
 PAYLOAD_ROOT = "artifacts"
 
 PROFILE_FAMILIES = {
@@ -112,9 +123,16 @@ def _labelled_sha256(value: object, where: str) -> str:
 def validate_artifact_path(path: object) -> str:
     """Validate one printable-ASCII, relative POSIX payload path without normalising it."""
     try:
-        return validate_relative_path(path)
+        validated = validate_relative_path(path)
     except InventoryError as exc:
         raise FixtureValidationError(str(exc)) from exc
+    depth = len(validated.split("/"))
+    if depth > resources.RESOURCE_POLICY.max_path_depth:
+        raise FixtureValidationError(
+            "artifact path exceeds the "
+            f"{resources.RESOURCE_POLICY.max_path_depth}-component depth limit: {validated!r}"
+        )
+    return validated
 
 
 @dataclass(frozen=True)
@@ -239,7 +257,12 @@ class ArtifactEntry:
 
     def __post_init__(self) -> None:
         validate_artifact_path(self.path)
-        _integer(self.size, f"artifact {self.path!r} size")
+        size = _integer(self.size, f"artifact {self.path!r} size")
+        if size > resources.RESOURCE_POLICY.max_file_bytes:
+            raise FixtureValidationError(
+                f"artifact {self.path!r} exceeds the "
+                f"{resources.RESOURCE_POLICY.max_file_bytes}-byte per-file limit"
+            )
         _labelled_sha256(self.sha256, f"artifact {self.path!r} sha256")
 
     @classmethod
@@ -272,9 +295,16 @@ def _validated_entries(
     if isinstance(entries, (str, bytes, Mapping)):
         raise FixtureValidationError("artifact files must be a sequence of ArtifactEntry values")
     try:
-        result = tuple(entries)
+        iterator = iter(entries)
     except TypeError as exc:
-        raise FixtureValidationError("artifact files must be iterable") from exc
+        raise FixtureValidationError(
+            "artifact files must be an iterable of ArtifactEntry values"
+        ) from exc
+    result = tuple(islice(iterator, resources.RESOURCE_POLICY.max_files + 1))
+    if len(result) > resources.RESOURCE_POLICY.max_files:
+        raise FixtureValidationError(
+            f"artifact files exceed the {resources.RESOURCE_POLICY.max_files}-file limit"
+        )
     if not result:
         raise FixtureValidationError("a fixture payload must contain at least one artifact file")
     for index, entry in enumerate(result):
@@ -315,6 +345,19 @@ def _validated_entries(
         if entry.path in complete_paths:
             raise FixtureValidationError(f"duplicate artifact path: {entry.path!r}")
         complete_paths.add(entry.path)
+    total_bytes = sum(entry.size for entry in ordered)
+    if total_bytes > resources.RESOURCE_POLICY.max_total_bytes:
+        raise FixtureValidationError(
+            "artifact files exceed the "
+            f"{resources.RESOURCE_POLICY.max_total_bytes}-byte total limit"
+        )
+    archive_members = len(complete_paths) + len(directory_prefixes) + 3
+    if archive_members > resources.RESOURCE_POLICY.max_members:
+        raise FixtureValidationError(
+            "artifact paths require "
+            f"{archive_members} archive members; limit is "
+            f"{resources.RESOURCE_POLICY.max_members}"
+        )
     return ordered
 
 
@@ -355,13 +398,24 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
         raise FixtureValidationError(f"artifact root must be a directory: {root_path}")
 
     entries: list[ArtifactEntry] = []
+    member_count = 0
+    total_bytes = 0
+    observed_directory_names: dict[tuple[str, ...], tuple[str, ...]] = {}
+    observed_directory_states: dict[tuple[str, ...], tuple[int, int, int, int, int]] = {}
+    observed_file_states: dict[str, tuple[int, int, int, int, int]] = {}
 
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flag = getattr(os, "O_DIRECTORY", 0)
 
-    def same_identity(first: os.stat_result, second: os.stat_result) -> bool:
-        return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+    def stable_state(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
 
     def open_checked(
         directory_fd: int, name: str, expected: os.stat_result, relative: str, *, is_dir: bool
@@ -375,7 +429,10 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
             raise FixtureValidationError(f"cannot safely open artifact path {relative!r}: {exc}") from exc
         opened_stat = os.fstat(opened)
         expected_kind = stat.S_ISDIR if is_dir else stat.S_ISREG
-        if not expected_kind(opened_stat.st_mode) or not same_identity(expected, opened_stat):
+        if (
+            not expected_kind(opened_stat.st_mode)
+            or stable_state(expected) != stable_state(opened_stat)
+        ):
             os.close(opened)
             raise FixtureValidationError(f"artifact path changed while inventorying: {relative!r}")
         # O_NOFOLLOW is absent on a few supported Python platforms.  A descriptor/path identity
@@ -388,7 +445,10 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
                 raise FixtureValidationError(
                     f"cannot recheck artifact path {relative!r}: {exc}"
                 ) from exc
-            if not expected_kind(path_stat.st_mode) or not same_identity(opened_stat, path_stat):
+            if (
+                not expected_kind(path_stat.st_mode)
+                or stable_state(opened_stat) != stable_state(path_stat)
+            ):
                 os.close(opened)
                 raise FixtureValidationError(
                     f"artifact path changed while inventorying: {relative!r}"
@@ -396,9 +456,22 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
         return opened
 
     def visit(directory_fd: int, relative_parts: tuple[str, ...]) -> int:
+        nonlocal member_count, total_bytes
+        before_directory = os.fstat(directory_fd)
         try:
             with os.scandir(directory_fd) as scan:
-                children = sorted(scan, key=lambda item: item.name)
+                children = []
+                for child in scan:
+                    member_count += 1
+                    if member_count > resources.RESOURCE_POLICY.max_members:
+                        raise FixtureValidationError(
+                            "artifact tree exceeds the "
+                            f"{resources.RESOURCE_POLICY.max_members}-member limit"
+                        )
+                    children.append(child)
+                children.sort(key=lambda item: item.name)
+        except FixtureValidationError:
+            raise
         except OSError as exc:
             shown = "/".join(relative_parts) or "."
             raise FixtureValidationError(
@@ -431,6 +504,20 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
                 continue
             if not stat.S_ISREG(mode):
                 raise FixtureValidationError(f"artifact tree contains a special file: {relative!r}")
+            if child_stat.st_size > resources.RESOURCE_POLICY.max_file_bytes:
+                raise FixtureValidationError(
+                    f"artifact file exceeds the "
+                    f"{resources.RESOURCE_POLICY.max_file_bytes}-byte limit: {relative!r}"
+                )
+            if len(entries) + 1 > resources.RESOURCE_POLICY.max_files:
+                raise FixtureValidationError(
+                    f"artifact tree exceeds the {resources.RESOURCE_POLICY.max_files}-file limit"
+                )
+            if total_bytes + child_stat.st_size > resources.RESOURCE_POLICY.max_total_bytes:
+                raise FixtureValidationError(
+                    "artifact tree exceeds the "
+                    f"{resources.RESOURCE_POLICY.max_total_bytes}-byte total limit"
+                )
             file_fd = open_checked(
                 directory_fd, child.name, child_stat, relative, is_dir=False
             )
@@ -438,22 +525,60 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
             size = 0
             try:
                 before = os.fstat(file_fd)
-                while chunk := os.read(file_fd, 1024 * 1024):
+                remaining = resources.RESOURCE_POLICY.max_total_bytes - total_bytes
+                if before.st_size > remaining:
+                    raise FixtureValidationError(
+                        "artifact tree exceeds the "
+                        f"{resources.RESOURCE_POLICY.max_total_bytes}-byte total limit"
+                    )
+                # The opened file's full state is bound by open_checked. Read exactly that
+                # many bytes; the post-read descriptor/path comparison detects any mutation.
+                while size < before.st_size:
+                    chunk = os.read(
+                        file_fd,
+                        min(
+                            resources.READ_CHUNK,
+                            before.st_size - size,
+                        ),
+                    )
+                    if not chunk:
+                        break
                     digest.update(chunk)
                     size += len(chunk)
                 after = os.fstat(file_fd)
+                after_path = os.stat(
+                    child.name, dir_fd=directory_fd, follow_symlinks=False
+                )
+            except FixtureValidationError:
+                raise
             except OSError as exc:
                 raise FixtureValidationError(f"cannot read artifact file {relative!r}: {exc}") from exc
             finally:
                 os.close(file_fd)
             stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-            if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            if (
+                any(getattr(before, field) != getattr(after, field) for field in stable_fields)
+                or any(
+                    getattr(after, field) != getattr(after_path, field)
+                    for field in stable_fields
+                )
+            ):
                 raise FixtureValidationError(
                     f"artifact file changed while inventorying: {relative!r}"
+                )
+            if size > resources.RESOURCE_POLICY.max_file_bytes:
+                raise FixtureValidationError(
+                    f"artifact file exceeds the "
+                    f"{resources.RESOURCE_POLICY.max_file_bytes}-byte limit: {relative!r}"
                 )
             if size != after.st_size:
                 raise FixtureValidationError(
                     f"artifact file length changed while inventorying: {relative!r}"
+                )
+            if total_bytes + size > resources.RESOURCE_POLICY.max_total_bytes:
+                raise FixtureValidationError(
+                    "artifact tree exceeds the "
+                    f"{resources.RESOURCE_POLICY.max_total_bytes}-byte total limit"
                 )
             entries.append(
                 ArtifactEntry(
@@ -462,8 +587,92 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
                     sha256="sha256:" + digest.hexdigest(),
                 )
             )
+            observed_file_states[relative] = stable_state(after_path)
+            total_bytes += size
             files_below += 1
+        after_directory = os.fstat(directory_fd)
+        directory_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(
+            getattr(before_directory, field) != getattr(after_directory, field)
+            for field in directory_fields
+        ):
+            shown = "/".join(relative_parts) or "."
+            raise FixtureValidationError(
+                f"artifact directory changed while inventorying: {shown!r}"
+            )
+        observed_directory_names[relative_parts] = tuple(
+            child.name for child in children
+        )
+        observed_directory_states[relative_parts] = stable_state(after_directory)
         return files_below
+
+    def revalidate(directory_fd: int, relative_parts: tuple[str, ...]) -> None:
+        """Reject changes to earlier siblings after the first-pass read completed."""
+        shown = "/".join(relative_parts) or "."
+        expected_directory_state = observed_directory_states[relative_parts]
+        if stable_state(os.fstat(directory_fd)) != expected_directory_state:
+            raise FixtureValidationError(
+                f"artifact directory changed after inventorying: {shown!r}"
+            )
+        expected_names = observed_directory_names[relative_parts]
+        try:
+            names = resources.bounded_directory_names(
+                directory_fd,
+                max_entries=len(expected_names),
+                label=f"artifact directory {shown!r}",
+            )
+        except resources.FixtureResourceError as exc:
+            raise FixtureValidationError(
+                f"artifact directory changed after inventorying: {shown!r}: {exc}"
+            ) from exc
+        if names != expected_names:
+            raise FixtureValidationError(
+                f"artifact directory changed after inventorying: {shown!r}"
+            )
+        for name in names:
+            parts = (*relative_parts, name)
+            relative = "/".join(parts)
+            try:
+                current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except (NotImplementedError, OSError) as exc:
+                raise FixtureValidationError(
+                    f"cannot recheck artifact path {relative!r}: {exc}"
+                ) from exc
+            if relative in observed_file_states:
+                if (
+                    not stat.S_ISREG(current.st_mode)
+                    or stable_state(current) != observed_file_states[relative]
+                ):
+                    raise FixtureValidationError(
+                        f"artifact file changed after inventorying: {relative!r}"
+                    )
+                continue
+            if parts not in observed_directory_states or not stat.S_ISDIR(current.st_mode):
+                raise FixtureValidationError(
+                    f"artifact path changed after inventorying: {relative!r}"
+                )
+            child_fd = open_checked(
+                directory_fd, name, current, relative, is_dir=True
+            )
+            try:
+                revalidate(child_fd, parts)
+                path_after = os.stat(
+                    name, dir_fd=directory_fd, follow_symlinks=False
+                )
+                if stable_state(path_after) != observed_directory_states[parts]:
+                    raise FixtureValidationError(
+                        f"artifact directory changed after inventorying: {relative!r}"
+                    )
+            except OSError as exc:
+                raise FixtureValidationError(
+                    f"cannot recheck artifact directory {relative!r}: {exc}"
+                ) from exc
+            finally:
+                os.close(child_fd)
+        if stable_state(os.fstat(directory_fd)) != expected_directory_state:
+            raise FixtureValidationError(
+                f"artifact directory changed after inventorying: {shown!r}"
+            )
 
     root_flags = os.O_RDONLY | cloexec | nofollow | directory_flag
     try:
@@ -472,19 +681,36 @@ def artifact_entries_from_tree(root: str | os.PathLike[str]) -> tuple[ArtifactEn
         raise FixtureValidationError(f"cannot safely open artifact root {root_path}: {exc}") from exc
     try:
         opened_root_stat = os.fstat(root_fd)
-        if not stat.S_ISDIR(opened_root_stat.st_mode) or not same_identity(
-            root_stat, opened_root_stat
+        if (
+            not stat.S_ISDIR(opened_root_stat.st_mode)
+            or stable_state(root_stat) != stable_state(opened_root_stat)
         ):
             raise FixtureValidationError(f"artifact root changed while inventorying: {root_path}")
         if not nofollow:
             after_open = root_path.lstat()
-            if not stat.S_ISDIR(after_open.st_mode) or not same_identity(
-                opened_root_stat, after_open
+            if (
+                not stat.S_ISDIR(after_open.st_mode)
+                or stable_state(opened_root_stat) != stable_state(after_open)
             ):
                 raise FixtureValidationError(
                     f"artifact root changed while inventorying: {root_path}"
                 )
         visit(root_fd, ())
+        revalidate(root_fd, ())
+        final_root_stat = os.fstat(root_fd)
+        try:
+            final_root_path = root_path.lstat()
+        except OSError as exc:
+            raise FixtureValidationError(
+                f"cannot recheck artifact root {root_path}: {exc}"
+            ) from exc
+        if (
+            stable_state(opened_root_stat) != stable_state(final_root_stat)
+            or stable_state(final_root_stat) != stable_state(final_root_path)
+        ):
+            raise FixtureValidationError(
+                f"artifact root changed while inventorying: {root_path}"
+            )
     finally:
         os.close(root_fd)
     return canonical_artifact_entries(entries)
@@ -554,15 +780,24 @@ class FixturePayload:
             "manifest.payload.canonicalization",
         )
         try:
-            files = tuple(self.files)
+            files = validate_artifact_entries(self.files, require_sorted=True)
         except TypeError as exc:
             raise FixtureValidationError(
                 "manifest.payload.files must be an iterable of ArtifactEntry values"
             ) from exc
         object.__setattr__(self, "files", files)
-        validate_artifact_entries(files, require_sorted=True)
         file_count = _integer(self.file_count, "manifest.payload.file_count", minimum=1)
         total_bytes = _integer(self.total_bytes, "manifest.payload.total_bytes")
+        if file_count > resources.RESOURCE_POLICY.max_files:
+            raise FixtureValidationError(
+                "manifest.payload.file_count exceeds the "
+                f"{resources.RESOURCE_POLICY.max_files}-file limit"
+            )
+        if total_bytes > resources.RESOURCE_POLICY.max_total_bytes:
+            raise FixtureValidationError(
+                "manifest.payload.total_bytes exceeds the "
+                f"{resources.RESOURCE_POLICY.max_total_bytes}-byte total limit"
+            )
         if file_count != len(files):
             raise FixtureValidationError(
                 "manifest.payload.file_count does not equal the number of files"
@@ -583,6 +818,9 @@ class FixturePayload:
 
     @classmethod
     def create(cls, entries: Iterable[ArtifactEntry]) -> FixturePayload:
+        # This helper constructs a payload explicitly labelled with the v1 tree contract.
+        # Keep validation/digest functions readable, but do not bless new trees as frozen v1.
+        require_spec_producer(SPEC_SCHEMA)
         files = canonical_artifact_entries(entries)
         return cls(
             file_count=len(files),
@@ -602,6 +840,25 @@ class FixturePayload:
         raw_files = mapping["files"]
         if not isinstance(raw_files, list):
             raise FixtureValidationError("manifest.payload.files must be an array")
+        file_count = _integer(
+            mapping["file_count"], "manifest.payload.file_count", minimum=1
+        )
+        total_bytes = _integer(mapping["total_bytes"], "manifest.payload.total_bytes")
+        if file_count > resources.RESOURCE_POLICY.max_files:
+            raise FixtureValidationError(
+                "manifest.payload.file_count exceeds the "
+                f"{resources.RESOURCE_POLICY.max_files}-file limit"
+            )
+        if total_bytes > resources.RESOURCE_POLICY.max_total_bytes:
+            raise FixtureValidationError(
+                "manifest.payload.total_bytes exceeds the "
+                f"{resources.RESOURCE_POLICY.max_total_bytes}-byte total limit"
+            )
+        if len(raw_files) > resources.RESOURCE_POLICY.max_files:
+            raise FixtureValidationError(
+                "manifest.payload.files exceeds the "
+                f"{resources.RESOURCE_POLICY.max_files}-file limit"
+            )
         files = tuple(
             ArtifactEntry.from_mapping(item, where=f"manifest.payload.files[{index}]")
             for index, item in enumerate(raw_files)
@@ -611,8 +868,8 @@ class FixturePayload:
             canonicalization=_text(
                 mapping["canonicalization"], "manifest.payload.canonicalization"
             ),
-            file_count=_integer(mapping["file_count"], "manifest.payload.file_count", minimum=1),
-            total_bytes=_integer(mapping["total_bytes"], "manifest.payload.total_bytes"),
+            file_count=file_count,
+            total_bytes=total_bytes,
             tree_sha256=_labelled_sha256(
                 mapping["tree_sha256"], "manifest.payload.tree_sha256"
             ),
@@ -667,6 +924,9 @@ class FixtureManifest:
         generator_version: str,
         entries: Iterable[ArtifactEntry],
     ) -> FixtureManifest:
+        # Construction is a producer operation, not a parser convenience.  V1 remains
+        # readable, but current writers are no longer the frozen 0.5.0 byte producer.
+        require_spec_producer(recipe.schema)
         return cls(
             generator=GeneratorIdentity(version=generator_version),
             recipe=recipe,
@@ -726,3 +986,78 @@ class FixtureManifest:
 
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(self.to_mapping())
+
+
+def _dispatch_schema(
+    value: object,
+    *,
+    where: str,
+    parsers: Mapping[str, object],
+) -> object:
+    """Select a parser by the exact top-level schema before interpreting its fields."""
+    mapping = _as_mapping(value, where)
+    schema = mapping.get("schema")
+    if not isinstance(schema, str):
+        raise FixtureValidationError(f"{where}.schema must be a string")
+    parser = parsers.get(schema)
+    if parser is None:
+        raise FixtureValidationError(f"unsupported fixture {where} schema: {schema!r}")
+    return parser(mapping)  # type: ignore[operator]
+
+
+def _parse_spec_v2(value: object) -> object:
+    from artifactforge.fixture.model_v2 import FixtureSpecV2
+
+    return FixtureSpecV2.from_mapping(value)
+
+
+def _parse_manifest_v2(value: object) -> object:
+    from artifactforge.fixture.model_v2 import FixtureManifestV2
+
+    return FixtureManifestV2.from_mapping(value)
+
+
+_SPEC_PARSERS = {
+    SPEC_SCHEMA: FixtureSpec.from_mapping,
+    SPEC_SCHEMA_V2: _parse_spec_v2,
+}
+_MANIFEST_PARSERS = {
+    MANIFEST_SCHEMA: FixtureManifest.from_mapping,
+    MANIFEST_SCHEMA_V2: _parse_manifest_v2,
+}
+
+
+def parse_fixture_spec(data: bytes | str) -> FixtureSpec | FixtureSpecV2:
+    """Strictly decode and explicitly dispatch a public fixture recipe."""
+    result = _dispatch_schema(load_json_strict(data), where="spec", parsers=_SPEC_PARSERS)
+    from artifactforge.fixture.model_v2 import FixtureSpecV2
+
+    if not isinstance(
+        result, (FixtureSpec, FixtureSpecV2)
+    ):  # pragma: no cover - registry invariant
+        raise FixtureValidationError("fixture spec parser returned the wrong model type")
+    return result
+
+
+def parse_fixture_manifest(
+    data: bytes | str, *, require_canonical: bool = False
+) -> FixtureManifest | FixtureManifestV2:
+    """Strictly decode and explicitly dispatch a fixture manifest.
+
+    Stored/released machine records set ``require_canonical``; callers parsing an in-memory
+    value can retain the historical whitespace-tolerant v1 parser behavior.
+    """
+    if require_canonical:
+        if not isinstance(data, bytes):
+            raise FixtureValidationError("canonical fixture manifests must be bytes")
+        value = load_canonical_json(data)
+    else:
+        value = load_json_strict(data)
+    result = _dispatch_schema(value, where="manifest", parsers=_MANIFEST_PARSERS)
+    from artifactforge.fixture.model_v2 import FixtureManifestV2
+
+    if not isinstance(
+        result, (FixtureManifest, FixtureManifestV2)
+    ):  # pragma: no cover - registry invariant
+        raise FixtureValidationError("fixture manifest parser returned the wrong model type")
+    return result

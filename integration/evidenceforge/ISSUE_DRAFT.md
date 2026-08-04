@@ -1,18 +1,17 @@
-# RFC: explicit content identity for modeled transfer-to-execution hash pivots
+# Proposal: explicit content identity for transfer-to-execution hash pivots
 
 Measured against EvidenceForge `v1.13.1`
 (`c0c619992fa44418a20f9b7d9abbeae750695916`).
 
-This is a request for a new modeling contract, not a report that the current hash
-strings are malformed. The existing values are correctly shaped and deterministic,
-and the documentation describes the Sysmon values as synthetic. The gap is that a
-scenario cannot explicitly say that an HTTP or SMB file object is the same logical
-content as a later process image, so the two observations cannot share hashes by
+The current hash strings are correctly shaped and deterministic, and the documentation
+describes the Sysmon values as synthetic. The missing contract is explicit content
+identity: a scenario cannot state that an HTTP or SMB file object is the same logical
+content as a later process image, so the observations cannot share hashes by
 construction.
 
 ## Controlled witness
 
-I built a two-hour scenario with one positive pair and two negative controls:
+The two-hour controlled scenario contains one positive pair and two negative controls:
 
 1. PowerShell downloads
    `http://203.0.113.10/af-controlled.exe` to
@@ -54,7 +53,7 @@ The Sysmon value is SHA1 of:
 c:\windows\system32\af-controlled.exe:-:-:-:-
 ```
 
-The fixture and verifier are review material in
+Reproducer materials are published in
 [`peterhanily/ArtifactForge`](https://github.com/peterhanily/ArtifactForge/tree/v0.3.0):
 
 - [`content-identity-witness-v1.13.1.yaml`](https://github.com/peterhanily/ArtifactForge/blob/v0.3.0/integration/evidenceforge/scenarios/content-identity-witness-v1.13.1.yaml)
@@ -69,10 +68,10 @@ the two sources. It does not prove that two digests disagree over shared materia
 bytes: EvidenceForge emits logs and does not materialize this downloaded executable.
 Whether logical-file equality should imply hash equality is the design question.
 
-## Stock-run context, not the positive control
+## Stock-run context
 
-I also generated the shipped `scenarios/branch-office-example` without a format
-filter. On that exact run:
+The shipped `scenarios/branch-office-example` was also generated without a format
+filter. That exact run produced:
 
 | Measure | Result |
 |---|---:|
@@ -124,8 +123,8 @@ curl, or a browser; it is not the downloaded body. A single top-level
 
 ## Proposed opt-in contract
 
-I propose an explicit, versioned `FileContentIdentity` resolved once in the
-scenario/world layer and attached under role-specific names:
+Add an explicit, versioned `FileContentIdentity`, resolve it once in the scenario/world
+layer, and attach it under role-specific names:
 
 - `ProcessContext.image_content_identity`
 - `FileTransferContext.content_identity`
@@ -161,13 +160,11 @@ The narrow version is opt-in by reference:
 - a global heuristic mode, if added later, should default to `legacy` and should
   not become the default before a major release.
 
-That avoids silently changing every hash in existing datasets.
+## Independent Sysmon inconsistency
 
-## Separate Sysmon inconsistency
-
-While tracing this, I found an independent issue in the legacy Sysmon path. Event 1
-calls `_generate_hashes(image, host)`, whose host-derived seed omits `Description`.
-Event 7 calls the same function with
+The legacy Sysmon path has an independent call-site inconsistency. Event 1 calls
+`_generate_hashes(image, host)`, whose host-derived seed omits `Description`. Event 7
+calls the same function with
 `(FileVersion, Description, Product, Company, OriginalFileName)`, and that branch
 includes all five values. The same image path and rendered metadata can therefore
 receive different hashes depending on whether it is projected as Event 1 or Event 7.
@@ -190,7 +187,7 @@ The minimum useful test set would cover:
 8. Event 1 and Event 7 use one standard digest set when given the same explicit image
    identity.
 
-## Design questions
+## Decisions requested
 
 1. Is transfer-to-execution content identity a relationship EvidenceForge wants to
    model explicitly?
@@ -198,7 +195,3 @@ The minimum useful test set would cover:
    rather than emitter-local changes or filename inference?
 3. Is reference-level opt-in sufficient compatibility gating, or would you prefer a
    top-level `legacy` / `content_v1` mode as well?
-
-If this relationship is out of scope, closing the RFC is a perfectly useful answer.
-If it is wanted, I have a narrow review prototype and am happy to rebase, revise, or reduce it
-to the shape you would accept as a PR.

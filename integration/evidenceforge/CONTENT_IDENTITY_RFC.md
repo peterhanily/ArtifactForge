@@ -1,4 +1,4 @@
-# EvidenceForge file-content identity RFC
+# RFC: explicit file-content identity in EvidenceForge
 
 | Property | Value |
 |---|---|
@@ -14,8 +14,9 @@ process image. The relationship should be represented once in the scenario/world
 layer and projected into each event through role-specific canonical contexts.
 
 This RFC does not redefine every existing synthetic hash. It introduces an optional,
-versioned `FileContentIdentity` for scenarios that declare content equality. Existing
-scenarios without content references retain their current output.
+versioned `FileContentIdentity` for scenarios that declare content equality. The first
+implementation covers an HTTP response and a later process image; scenarios without
+content references retain their current output.
 
 ## Motivation
 
@@ -68,7 +69,7 @@ implementations disagree over the same bytes.
 - Retrofitting unrelated stock traffic so that its global hash-set intersection is
   non-empty.
 
-## Why the fields must be role-specific
+## Role-specific fields
 
 A canonical connection event can contain both a `ProcessContext` and a
 `FileTransferContext`:
@@ -96,9 +97,9 @@ The canonical roles should instead be:
 If image-load identity is later migrated to the same model, it should likewise use an
 unambiguous field on `ImageLoadContext`, not borrow the owning process identity.
 
-## Proposed data model
+## Data model
 
-Illustrative dataclasses:
+Proposed dataclasses:
 
 ```python
 from dataclasses import dataclass
@@ -140,10 +141,9 @@ remain as compatibility projections initially. When `content_identity` is presen
 one planner/action helper must populate the projected fields, and validation must
 reject disagreement between the object and the flattened values.
 
-`IMPHASH` is deliberately absent from `FileDigestSet`. A PE import hash is derived
-from normalized imports, not from all file bytes. The legacy synthetic IMPHASH may
-remain as a separate projection until EvidenceForge has a canonical PE import
-identity.
+`FileDigestSet` excludes `IMPHASH`. A PE import hash is derived from normalized imports,
+not from all file bytes. The legacy synthetic IMPHASH may remain as a separate
+projection until EvidenceForge has a canonical PE import identity.
 
 ## Scenario schema
 
@@ -211,7 +211,7 @@ Required invariants:
 6. Reference and derivation version participate in stable action IDs where changing
    either would change emitted evidence.
 
-## Source projection rules
+## Source projections
 
 ### Sysmon
 
@@ -273,7 +273,7 @@ contain only source-native fields; they do not receive a plaintext content refer
 The generation or observation manifest should record the selected identity model and
 derivation version. This makes a hash-changing opt-in reproducible and auditable.
 
-## Compatibility policy
+## Compatibility
 
 ### Default behavior
 
@@ -335,7 +335,7 @@ formula becomes `v2`; it does not silently replace `v1`.
 - Retain a legacy projection until its documented removal window.
 - Consider a future default change only with a major-version migration guide.
 
-## Validation rules
+## Validation
 
 Scenario validation should:
 
@@ -397,7 +397,7 @@ Runtime validation should:
 - Observation IDs, timestamps, paths, and URLs cannot change an explicit identity.
 - Analyzer suppression cannot reveal a digest that the source did not observe.
 
-## Separate legacy Sysmon issue
+## Independent Sysmon seed inconsistency
 
 `v1.13.1` has two seed layouts inside
 `SysmonEventEmitter._generate_hashes`:
@@ -411,7 +411,7 @@ Consequently, the same image path and rendered PE metadata can hash differently 
 event type. This is a direct call-site inconsistency, independent of the
 transfer-to-execution feature.
 
-Recommended handling:
+Resolution:
 
 1. Add a focused regression that passes the same path and metadata through both seed
    branches and exposes the mismatch.
@@ -421,8 +421,8 @@ Recommended handling:
    `ImageLoadContext.image_content_identity` consume the same standard digest set when
    they truly refer to the same image content.
 
-This bug should have its own issue or PR so that accepting or rejecting the broader RFC
-does not block the narrower correction.
+Track this bug in a separate issue or PR so the broader RFC does not block the narrower
+correction.
 
 ## Open questions
 
@@ -435,6 +435,3 @@ does not block the narrower correction.
 4. Which receiver-side file actions should participate in the first implementation?
 5. Should ground truth expose full expected digests, or only the content reference and
    derivation version?
-
-The smallest useful implementation answers only the HTTP-response-to-process case and
-leaves every unreferenced path unchanged.

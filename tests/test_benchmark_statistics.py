@@ -7,6 +7,9 @@ import pytest
 
 from artifactforge.bench.statistics import (
     MIN_SCENES_PER_FAMILY,
+    ONE_CORRECT_EDGE_EVERY_SCENE,
+    SPARSE_POWER_SCENES_PER_FAMILY,
+    WHOLE_MAPPING_QUARTER_SCENES,
     PermutationScene,
     bonferroni_alpha,
     exact_permutation_inference,
@@ -15,6 +18,7 @@ from artifactforge.bench.statistics import (
     permutation_power_contract,
     require_minimum_scene_counts,
     scene_permutation_counts,
+    sparse_permutation_power_contract,
     train_rank_union,
 )
 
@@ -105,6 +109,58 @@ def test_twenty_scene_power_contract_is_exact_at_the_scene_level():
     assert contract.minimum_met
     assert contract.target_met
     assert contract.satisfied
+
+
+def test_sixty_scene_sparse_power_contract_is_exact_for_both_named_alternatives():
+    contract = sparse_permutation_power_contract(60, comparisons=39)
+    one_edge = contract.alternative(ONE_CORRECT_EDGE_EVERY_SCENE)
+    quarter_mapping = contract.alternative(WHOLE_MAPPING_QUARTER_SCENES)
+
+    assert contract.minimum_scenes == SPARSE_POWER_SCENES_PER_FAMILY == 60
+    assert contract.adjusted_alpha == Fraction(1, 780)
+    assert contract.critical_hits == 86
+    assert contract.null_upper_tail <= contract.adjusted_alpha
+    assert one_edge.one_scene_probabilities == (
+        Fraction(0),
+        Fraction(3, 8),
+        Fraction(1, 3),
+        Fraction(1, 4),
+        Fraction(0),
+        Fraction(1, 24),
+    )
+    assert quarter_mapping.one_scene_probabilities == (
+        Fraction(11, 40),
+        Fraction(9, 32),
+        Fraction(1, 8),
+        Fraction(1, 16),
+        Fraction(0),
+        Fraction(41, 160),
+    )
+    assert one_edge.minimum_scenes_for_target == 31
+    assert quarter_mapping.minimum_scenes_for_target == 58
+    assert one_edge.power > Fraction(9_999_997, 10_000_000)
+    assert Fraction(9_911, 10_000) < quarter_mapping.power < Fraction(9_912, 10_000)
+    assert contract.worst_case_power == quarter_mapping.power
+    assert contract.minimum_met
+    assert contract.target_met
+    assert contract.satisfied
+
+
+def test_sparse_power_minima_are_exact_crossing_points_not_simulated_estimates():
+    at_thirty = sparse_permutation_power_contract(30, comparisons=39)
+    at_thirty_one = sparse_permutation_power_contract(31, comparisons=39)
+    at_fifty_seven = sparse_permutation_power_contract(57, comparisons=39)
+    at_fifty_eight = sparse_permutation_power_contract(58, comparisons=39)
+
+    assert not at_thirty.alternative(ONE_CORRECT_EDGE_EVERY_SCENE).target_met
+    assert at_thirty_one.alternative(ONE_CORRECT_EDGE_EVERY_SCENE).target_met
+    assert not at_fifty_seven.alternative(WHOLE_MAPPING_QUARTER_SCENES).target_met
+    assert at_fifty_eight.alternative(WHOLE_MAPPING_QUARTER_SCENES).target_met
+
+
+def test_sparse_power_contract_rejects_an_impossible_edge_universe():
+    with pytest.raises(ValueError, match="at least two"):
+        sparse_permutation_power_contract(60, comparisons=39, candidate_count=1)
 
 
 def test_every_family_must_meet_the_twenty_scene_minimum():

@@ -12,15 +12,20 @@ from dataclasses import replace
 import pytest
 
 from artifactforge import suite
-from artifactforge.fixture.canonical import canonical_json_bytes
-from artifactforge.fixture.model import (
-    FixtureManifest,
-    FixtureSpec,
-    GeneratorIdentity,
-    ProfileSpec,
-    artifact_entries_from_tree,
-)
+from artifactforge.compose.derivation import FIXTURE_V2_SCENE_DERIVATION
 from artifactforge.fixture import operations
+from artifactforge.fixture.abi import GENERATOR_ABI_V1
+from artifactforge.fixture.canonical import canonical_json_bytes
+from artifactforge.fixture.model_v2 import (
+    SCENE_KEY_DOMAIN_V2,
+    FileNodeV2,
+    FixtureManifestV2,
+    FixturePayloadV2,
+    FixtureSpecV2,
+    GeneratorIdentityV2,
+    LinuxMetadataV2,
+    ProfileSpecV2,
+)
 from artifactforge.fixture.operations import (
     FixturePublicationUncertain,
     FixtureUsageError,
@@ -29,22 +34,22 @@ from artifactforge.fixture.operations import (
 )
 
 
-def _spec(family: str = "windows") -> FixtureSpec:
+def _spec(family: str = "windows") -> FixtureSpecV2:
     if family == "windows":
-        profile = ProfileSpec("windows-loose-v1", "WKSTN-01", "v")
+        profile = ProfileSpecV2("windows-loose-v2", "WKSTN-01", "v")
         fixture_id = "windows-fixture-001"
         seed_hex = "01" * 32
     elif family == "macos":
-        profile = ProfileSpec("macos-14-loose-v1", "mac-01", "v")
+        profile = ProfileSpecV2("macos-14-loose-v2", "mac-01", "v")
         fixture_id = "macos-fixture-001"
         seed_hex = "02" * 32
     elif family == "linux":
-        profile = ProfileSpec("linux-glibc-x86_64-loose-v1", "linux-01", "v")
+        profile = ProfileSpecV2("linux-glibc-x86_64-loose-v2", "linux-01", "v")
         fixture_id = "linux-autostart-001"
         seed_hex = "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
     else:
         raise AssertionError(f"unsupported test family: {family}")
-    return FixtureSpec(
+    return FixtureSpecV2.create(
         fixture_id=fixture_id,
         family=family,
         profile=profile,
@@ -57,18 +62,31 @@ def _first_artifact(root: Path) -> Path:
 
 
 def _rewrite_manifest_for_current_payload(root: Path) -> None:
-    old = FixtureManifest.from_json((root / "fixture.json").read_bytes())
-    updated = FixtureManifest.create(
-        old.recipe,
+    old = FixtureManifestV2.from_json((root / "fixture.json").read_bytes())
+    files = tuple(
+        FileNodeV2.from_bytes(
+            guest_path=node.guest_path,
+            served_path=node.served_path,
+            data=(root / "artifacts" / node.served_path).read_bytes(),
+            metadata=node.metadata,
+        )
+        for node in old.payload.files
+    )
+    updated = FixtureManifestV2.create(
         generator_version=old.generator.version,
-        entries=artifact_entries_from_tree(root / "artifacts"),
+        recipe=old.recipe,
+        payload=FixturePayloadV2.create(
+            family=old.payload.family,
+            directories=old.payload.directories,
+            files=files,
+        ),
     )
     (root / "fixture.json").write_bytes(updated.canonical_bytes())
 
 
 @pytest.mark.parametrize(
     ("family", "expected_files"),
-    [("windows", 11), ("macos", 16), ("linux", 9)],
+    [("windows", 14), ("macos", 11), ("linux", 9)],
 )
 def test_builds_canonical_answer_free_fixture_and_verifies(tmp_path, family, expected_files):
     root = tmp_path / family
@@ -93,22 +111,52 @@ def test_builds_canonical_answer_free_fixture_and_verifies(tmp_path, family, exp
     if family == "linux":
         assert b"answer" not in manifest.canonical_bytes().lower()
         assert b"join" not in manifest.canonical_bytes().lower()
-        assert b'"mode"' not in manifest.canonical_bytes()
+        assert b'"mode"' in manifest.canonical_bytes()
         assert all(
-            set(entry.to_mapping()) == {"path", "size", "sha256"}
+            set(entry.to_mapping())
+            == {"guest_path", "served_path", "size", "sha256", "metadata"}
             for entry in manifest.payload.files
         )
-        assert tuple(entry.path for entry in manifest.payload.files) == (
+        served_paths = tuple(entry.served_path for entry in manifest.payload.files)
+        assert served_paths == (
             "home/v/.bash_history",
-            "home/v/.config/autostart/artifactforge-1-session-check.desktop",
-            "home/v/.config/autostart/artifactforge-2-theme-agent.desktop",
-            "home/v/.config/autostart/artifactforge-3-profile-agent.desktop",
-            "home/v/.local/bin/font-index",
-            "home/v/.local/bin/print-helper",
-            "home/v/.local/bin/profile-agent",
-            "home/v/.local/bin/session-check",
-            "home/v/.local/bin/theme-agent",
+            "home/v/.config/autostart/artifactforge-1-update-check.desktop",
+            "home/v/.config/autostart/artifactforge-2-af-sync.desktop",
+            "home/v/.config/autostart/artifactforge-3-backup-watch.desktop",
+            "home/v/.local/bin/af-sync",
+            "home/v/.local/bin/backup-watch",
+            "home/v/.local/bin/cache-helper",
+            "home/v/.local/bin/network-watch",
+            "home/v/.local/bin/update-check",
         )
+        assert tuple(entry.guest_path for entry in manifest.payload.files) == tuple(
+            "/" + path for path in served_paths
+        )
+        assert tuple(directory.guest_path for directory in manifest.payload.directories) == tuple(
+            "/" + directory.served_path for directory in manifest.payload.directories
+        )
+        assert all(
+            isinstance(directory.metadata, LinuxMetadataV2)
+            and directory.metadata.mode == 0o755
+            for directory in manifest.payload.directories
+        )
+        for entry in manifest.payload.files:
+            assert isinstance(entry.metadata, LinuxMetadataV2)
+            if entry.served_path.endswith("/.bash_history"):
+                assert entry.metadata.mode == 0o600
+            elif "/.config/autostart/" in entry.served_path:
+                assert entry.metadata.mode == 0o644
+            else:
+                assert entry.metadata.mode == 0o755
+            if os.name != "nt":
+                carrier = root / "artifacts" / entry.served_path
+                assert carrier.stat().st_mode & 0o777 == 0o600
+        if os.name != "nt":
+            assert all(
+                (root / "artifacts" / directory.served_path).stat().st_mode & 0o777
+                == 0o700
+                for directory in manifest.payload.directories
+            )
 
 
 @pytest.mark.parametrize("family", ["windows", "macos", "linux"])
@@ -129,7 +177,14 @@ def test_scene_key_uses_fixture_domain_and_exact_profile(monkeypatch, tmp_path):
     real_builder = operations.build_windows_scene
 
     def capture(**arguments):
-        seen.append((arguments["skey"], arguments["profile"]))
+        seen.append(
+            (
+                arguments["skey"],
+                arguments["profile"],
+                arguments["causal_clock"],
+                arguments["derivation"],
+            )
+        )
         return real_builder(**arguments)
 
     monkeypatch.setattr(operations, "build_windows_scene", capture)
@@ -140,13 +195,23 @@ def test_scene_key_uses_fixture_domain_and_exact_profile(monkeypatch, tmp_path):
     seed = bytes.fromhex(without_seed.pop("seed_hex"))
     expected = hmac.new(
         seed,
-        b"artifactforge/fixture/scene-key/v1\0" + canonical_json_bytes(without_seed),
+        SCENE_KEY_DOMAIN_V2 + canonical_json_bytes(without_seed),
         hashlib.sha256,
     ).digest()
-    assert seen and {key for key, _profile in seen} == {expected}
+    assert len(seen) == 2
+    assert {key for key, _profile, _clock, _derivation in seen} == {expected}
     assert expected != suite.scenario_key(seed, spec.fixture_id)
-    assert {(profile.os_family, profile.version) for _key, profile in seen} == {
-        ("windows", "loose-v1")
+    assert {
+        (profile.os_family, profile.version)
+        for _key, profile, _clock, _derivation in seen
+    } == {
+        ("windows", "loose-v2")
+    }
+    assert {clock for _key, _profile, clock, _derivation in seen} == {
+        spec.causal_clock
+    }
+    assert {derivation for _key, _profile, _clock, derivation in seen} == {
+        FIXTURE_V2_SCENE_DERIVATION
     }
 
 
@@ -222,7 +287,7 @@ def test_build_does_not_publish_if_internal_reproduction_fails(monkeypatch, tmp_
     monkeypatch.setattr(
         operations,
         "_exact_reproduction_differences",
-        lambda _left, _right: ["injected byte mismatch"],
+        lambda _left, _right, **_kwargs: ["injected byte mismatch"],
     )
     with pytest.raises(FixtureUsageError, match="injected byte mismatch"):
         build_fixture(_spec(), output)
@@ -253,8 +318,14 @@ def test_reproduction_detects_mutation_even_after_manifest_is_rehashed(tmp_path)
 
     result = verify_fixture(root)
     assert not result.ok
-    assert not [failure for failure in result.failures if "manifest" in failure.lower()]
+    assert result.integrity_ok
+    assert result.integrity_failures == ()
+    assert result.reproduction_ok is False
     assert any("do not reproduce" in failure for failure in result.failures)
+    assert any(
+        "complete logical fixture manifest" in failure
+        for failure in result.reproduction_failures
+    )
 
 
 @pytest.mark.parametrize("mutation", ["extra", "missing"])
@@ -262,10 +333,12 @@ def test_recursive_inventory_must_be_exact(tmp_path, mutation):
     root = tmp_path / "fixture"
     manifest = build_fixture(_spec(), root)
     if mutation == "extra":
-        (root / "artifacts" / "extra.bin").write_bytes(b"extra")
+        extra = root / "artifacts" / "extra.bin"
+        extra.write_bytes(b"extra")
+        extra.chmod(0o600)
         expected = "absent from manifest"
     else:
-        (root / "artifacts" / manifest.payload.files[0].path).unlink()
+        (root / "artifacts" / manifest.payload.files[0].served_path).unlink()
         expected = "missing from disk"
 
     result = verify_fixture(root)
@@ -326,8 +399,8 @@ def test_fixture_root_symlink_swap_never_redirects_verification(monkeypatch, tmp
     attacker.mkdir()
     exact_compare = operations._exact_reproduction_differences
 
-    def swap_root_after_compare(left, right):
-        result = exact_compare(left, right)
+    def swap_root_after_compare(left, right, **kwargs):
+        result = exact_compare(left, right, **kwargs)
         root.rename(moved)
         root.symlink_to(attacker, target_is_directory=True)
         return result
@@ -341,13 +414,41 @@ def test_fixture_root_symlink_swap_never_redirects_verification(monkeypatch, tmp
     assert moved.joinpath("fixture.json").is_file()
 
 
-def test_foreign_generator_version_is_unsupported_not_reproduced(tmp_path):
+def test_foreign_v2_generator_version_is_provenance_and_reproduces(monkeypatch, tmp_path):
     root = tmp_path / "fixture"
     manifest = build_fixture(_spec(), root)
-    forged = replace(manifest, generator=GeneratorIdentity(version="999.0.0"))
-    (root / "fixture.json").write_bytes(forged.canonical_bytes())
+    foreign = replace(manifest, generator=GeneratorIdentityV2(version="999.0.0"))
+    (root / "fixture.json").write_bytes(foreign.canonical_bytes())
+    real_materialise = operations._materialise_publication
+    reproduced: list[str] = []
 
-    with pytest.raises(FixtureUsageError, match="unsupported fixture generator version"):
+    def recording_materialise(spec, publication, work):
+        reproduced.append(spec.fixture_id)
+        return real_materialise(spec, publication, work)
+
+    monkeypatch.setattr(operations, "_materialise_publication", recording_materialise)
+    result = verify_fixture(root)
+
+    assert result.ok
+    assert result.reproduction_ok is True
+    assert result.manifest.generator.version == "999.0.0"
+    assert reproduced == [manifest.recipe.fixture_id]
+
+
+def test_incompatible_generator_abi_is_rejected_before_reproduction(monkeypatch, tmp_path):
+    root = tmp_path / "fixture"
+    manifest = build_fixture(_spec(), root)
+    mapping = manifest.to_mapping()
+    generator = mapping["generator"]
+    assert isinstance(generator, dict)
+    generator["abi"] = GENERATOR_ABI_V1
+    (root / "fixture.json").write_bytes(canonical_json_bytes(mapping))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("incompatible ABI reached fixture reproduction")
+
+    monkeypatch.setattr(operations, "_materialise_publication", forbidden)
+    with pytest.raises(FixtureUsageError, match="manifest.generator.abi"):
         verify_fixture(root)
 
 
@@ -390,8 +491,8 @@ def test_payload_change_after_reproduction_is_rejected_as_a_race(monkeypatch, tm
     target = _first_artifact(root)
     exact_compare = operations._exact_reproduction_differences
 
-    def change_after_compare(left, right):
-        result = exact_compare(left, right)
+    def change_after_compare(left, right, **kwargs):
+        result = exact_compare(left, right, **kwargs)
         target.write_bytes(target.read_bytes() + b"raced")
         return result
 

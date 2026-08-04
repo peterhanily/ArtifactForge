@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 from pathlib import Path
 
@@ -12,24 +11,49 @@ from artifactforge.cli import fixture as fixture_cli
 from artifactforge.fixture.model import (
     ArtifactEntry,
     FixtureManifest,
+    FixturePayload,
     FixtureSpec,
     GeneratorIdentity,
+    compute_tree_sha256,
 )
+from artifactforge.fixture.model_v2 import FixtureSpecV2, ProfileSpecV2
 from artifactforge.fixture import archive, operations
 from artifactforge.fixture.operations import VerificationResult
 
 ROOT = Path(__file__).parents[1]
-SPEC = ROOT / "examples" / "fixtures" / "windows-loose-v1.json"
-LINUX_SPEC = ROOT / "examples" / "fixtures" / "linux-glibc-x86_64-loose-v1.json"
+V1_SPEC = ROOT / "examples" / "fixtures" / "windows-loose-v1.json"
 
 
 def _args(**values):
     return argparse.Namespace(**values)
 
 
+def _spec_path(tmp_path: Path, *, family: str = "windows") -> Path:
+    profiles = {
+        "windows": ("windows-loose-v2", "WKSTN-01", "Analyst"),
+        "linux": ("linux-glibc-x86_64-loose-v2", "workstation", "analyst"),
+    }
+    profile_id, hostname, username = profiles[family]
+    spec = FixtureSpecV2.create(
+        fixture_id=f"{family}-cli-v2",
+        family=family,
+        profile=ProfileSpecV2(
+            id=profile_id,
+            hostname=hostname,
+            username=username,
+        ),
+        seed_hex={"windows": "1", "linux": "2"}[family] * 64,
+    )
+    path = tmp_path / f"{family}-spec-v2.json"
+    path.write_bytes(spec.canonical_bytes())
+    return path
+
+
 def _build(tmp_path, capsys, *, json_output=False):
     output = tmp_path / "fixture"
-    result = fixture_cli.cmd_build(_args(spec=SPEC, output=output, json=json_output))
+    result = fixture_cli.cmd_build(
+        _args(spec=_spec_path(tmp_path), output=output, json=json_output)
+    )
     captured = capsys.readouterr()
     assert result == 0, captured.err
     return output, captured
@@ -48,9 +72,22 @@ def test_build_inspect_and_verify_have_stable_json_summaries(tmp_path, capsys):
     second = capsys.readouterr().out
     assert first == second
     inspected = json.loads(first)
-    assert inspected["fixture_id"] == "windows-dropper-001"
-    assert inspected["profile"] == "windows-loose-v1"
-    assert set(inspected["payload"]) == {"file_count", "total_bytes", "tree_sha256"}
+    assert inspected["fixture_id"] == "windows-cli-v2"
+    assert inspected["profile"] == "windows-loose-v2"
+    assert set(inspected["payload"]) == {
+        "directory_count",
+        "file_count",
+        "metadata_blob_bytes",
+        "metadata_blob_count",
+        "regular_file_bytes",
+        "total_bound_bytes",
+        "tree_sha256",
+    }
+    assert inspected["checks"] == {
+        "assurance": "not-run",
+        "integrity": "pass",
+        "reproduction": "not-run",
+    }
     assert "manifest" not in inspected and "seed_hex" not in first
 
     assert fixture_cli.cmd_verify(_args(fixture=fixture, assurance=False, json=True)) == 0
@@ -105,15 +142,16 @@ def test_missing_assurance_oracle_is_clean_red_for_verify_and_release(
 def test_linux_example_builds_inspects_and_verifies_through_the_cli(tmp_path, capsys):
     fixture = tmp_path / "fixture"
     assert fixture_cli.cmd_build(
-        _args(spec=LINUX_SPEC, output=fixture, json=True)
+        _args(spec=_spec_path(tmp_path, family="linux"), output=fixture, json=True)
     ) == 0
     built = json.loads(capsys.readouterr().out)
     assert built["ok"] is True
 
     assert fixture_cli.cmd_inspect(_args(fixture=fixture, json=True)) == 0
     inspected = json.loads(capsys.readouterr().out)
-    assert inspected["fixture_id"] == "linux-autostart-001"
-    assert inspected["profile"] == "linux-glibc-x86_64-loose-v1"
+    assert inspected["fixture_id"] == "linux-cli-v2"
+    assert inspected["profile"] == "linux-glibc-x86_64-loose-v2"
+    assert inspected["payload"]["directory_count"] == 6
     assert inspected["payload"]["file_count"] == 9
 
     assert fixture_cli.cmd_verify(
@@ -125,7 +163,9 @@ def test_linux_example_builds_inspects_and_verifies_through_the_cli(tmp_path, ca
 
 def test_existing_output_and_malformed_spec_are_usage_exit_two(tmp_path, capsys):
     fixture, _captured = _build(tmp_path, capsys)
-    assert fixture_cli.cmd_build(_args(spec=SPEC, output=fixture, json=False)) == 2
+    assert fixture_cli.cmd_build(
+        _args(spec=_spec_path(tmp_path), output=fixture, json=False)
+    ) == 2
     assert "refusing existing fixture output" in capsys.readouterr().err
 
     malformed = tmp_path / "bad.json"
@@ -159,7 +199,9 @@ def test_post_publish_sync_uncertainty_is_explicit_in_canonical_stderr(
         return real_fsync_directory(directory)
 
     monkeypatch.setattr(operations, "_fsync_directory", fail_post_publish)
-    assert fixture_cli.cmd_build(_args(spec=SPEC, output=output, json=True)) == 2
+    assert fixture_cli.cmd_build(
+        _args(spec=_spec_path(tmp_path), output=output, json=True)
+    ) == 2
     captured = capsys.readouterr()
     assert not captured.out
     record = json.loads(captured.err)
@@ -185,25 +227,42 @@ def test_verification_mismatch_is_exit_one_not_usage_error(tmp_path, capsys):
 
 
 def test_semantic_diff_is_path_keyed_and_does_not_shift_array_indices(monkeypatch, capsys):
-    base = FixtureSpec.from_json(SPEC.read_bytes())
+    base = FixtureSpec.from_json(V1_SPEC.read_bytes())
     other = FixtureSpec.from_mapping({
         **base.to_mapping(),
         "fixture_id": "windows-dropper-002",
         "seed_hex": "1" * 64,
     })
-    left = FixtureManifest.create(
-        base,
-        generator_version="1",
-        entries=(ArtifactEntry.from_bytes("a.bin", b"a"),
-                 ArtifactEntry.from_bytes("b.bin", b"b")),
+    left_entries = (
+        ArtifactEntry.from_bytes("a.bin", b"a"),
+        ArtifactEntry.from_bytes("b.bin", b"b"),
     )
-    right = FixtureManifest.create(
-        other,
-        generator_version="2",
-        entries=(ArtifactEntry.from_bytes("b.bin", b"changed"),
-                 ArtifactEntry.from_bytes("c.bin", b"c")),
+    right_entries = (
+        ArtifactEntry.from_bytes("b.bin", b"changed"),
+        ArtifactEntry.from_bytes("c.bin", b"c"),
     )
-    right = dataclasses.replace(right, generator=GeneratorIdentity(version="2"))
+    left = FixtureManifest(
+        generator=GeneratorIdentity(version="1"),
+        recipe=base,
+        recipe_sha256=base.recipe_sha256,
+        payload=FixturePayload(
+            file_count=len(left_entries),
+            total_bytes=sum(entry.size for entry in left_entries),
+            tree_sha256=compute_tree_sha256(left_entries),
+            files=left_entries,
+        ),
+    )
+    right = FixtureManifest(
+        generator=GeneratorIdentity(version="2"),
+        recipe=other,
+        recipe_sha256=other.recipe_sha256,
+        payload=FixturePayload(
+            file_count=len(right_entries),
+            total_bytes=sum(entry.size for entry in right_entries),
+            tree_sha256=compute_tree_sha256(right_entries),
+            files=right_entries,
+        ),
+    )
     results = {"left": VerificationResult(left), "right": VerificationResult(right)}
     monkeypatch.setattr(fixture_cli, "verify_fixture",
                         lambda path, assurance=False: results[str(path)])
@@ -227,7 +286,10 @@ def test_identical_diff_is_exit_zero(tmp_path, capsys):
         _args(left=fixture, right=fixture, json=True)) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["identical"] is True
-    assert result["payload"] == {"added": [], "changed": [], "removed": []}
+    assert result["payload"] == {
+        "directories": {"added": [], "changed": [], "removed": []},
+        "files": {"added": [], "changed": [], "removed": []},
+    }
 
 
 def test_release_handler_publishes_once_and_existing_output_is_exit_two(tmp_path, capsys):

@@ -1,53 +1,51 @@
 # Samples
 
-Three generated scenes, committed so they can be read without running anything.
+Three generated scenes are committed for inspection without running ArtifactForge.
 
-> **Everything in here is synthetic.** No file came from a real host. No hash, UUID, bundle
-> identifier, URL or path identifies anything real, and none should be submitted to
-> VirusTotal, a blocklist, a detection rule or a threat-intelligence platform. Every binary is
-> payload-free under format-specific checks: PE `.text` starts with `ret` and is otherwise
-> zero, Mach-O `__text` is `mov w0, #0; ret`, and ELF's sole executable segment is the
-> nine-byte `xor edi,edi; mov eax,60; syscall` direct-exit body. The ELF interpreter means a
-> real execution attempt would enter the dynamic loader first. Classified structured artifacts
-> carry an in-band `ARTIFACTFORGE`
-> marker; serialized quarantine-xattr sidecars do not. See [`../SECURITY.md`](../SECURITY.md) and
+> **Synthetic samples.** Nothing here was collected from a real host or incident. Do not
+> submit these values to VirusTotal, a blocklist, a detection rule or a threat-intelligence
+> platform. See [`../SECURITY.md`](../SECURITY.md) and
 > [`../docs/inert-by-construction.md`](../docs/inert-by-construction.md).
 
-| Sample | Family | What it holds |
-|---|---|---|
-| [`01-windows-dropper`](01-windows-dropper/) | Windows | Five equal-size PEs, a Run key with three autostarts, eight Amcache records and four prefetch files. Five historical Amcache FileIds match the five resident byte streams; persistence and execution records remain a separate identity layer, including one program that is gone. |
-| [`02-macos-quarantined-app`](02-macos-quarantined-app/) | macOS | Five signed arm64 Mach-O binaries with quarantine records, a TCC database with grants and refusals, knowledgeC usage, and LaunchAgent plists. One app was allowed *and* used; everything else about it hangs off its quarantine UUID. |
-| [`03-linux-autostart-history`](03-linux-autostart-history/) | Linux | Five nested ELF64 x86-64 files, three XDG autostart records and one timestamped Bash history. One resident path is named by both text artifacts; neither record proves activation or execution. |
+| Sample | Family | Answer-bearing pivot |
+| --- | --- | --- |
+| [`01-windows-dropper`](01-windows-dropper/) | Windows | Five Amcache FileId SHA-1 values resolve to five resident PEs. Run, Prefetch and Chromium records provide separate context; Task XML and a Shell Link reference two other residents. |
+| [`02-macos-quarantined-app`](02-macos-quarantined-app/) | macOS | Five serialized quarantine-xattr UUIDs resolve to five QuarantineEventsV2 rows. TCC, knowledgeC and LaunchAgent records add modeled context. |
+| [`03-linux-autostart-history`](03-linux-autostart-history/) | Linux | One resident guest path is the unique intersection of three XDG Exec paths and three Bash-history command paths. |
 
-Each directory holds the artifacts, a `README.md` with declared parser output pasted in —
-including LIEF/pyelftools, PyXDG/raw and dissect.target/raw for Linux — and an
-`ARTIFACT_ANSWERS.json` answer key.
+Each directory contains:
 
-The committed macOS databases were written with **sqlite3 3.50.4**. A SQLite header embeds the
-version of the library that wrote it, so rebuilding them elsewhere produces different bytes in
-those three files and in nothing else — measured against a Linux/x86-64 rebuild with 3.53.1,
-where every PE, Mach-O, registry hive, prefetch record, plist and answer key was byte-identical
-to the macOS/arm64 originals. The Linux fixture is standard-library generated and does not add
-another environment-dependent database format.
+- the loose artifacts;
+- a generated `README.md` containing current parser observations; and
+- `ARTIFACT_ANSWERS.json`, whose claims are re-derived from the committed bytes.
 
-The Windows and macOS samples are built from a **dev suite**, whose key is published in
-`artifactforge/suite.py` on purpose. The Linux sample is built from the public
-`examples/fixtures/linux-glibc-x86_64-loose-v1.json` Fixture Core recipe. That is what makes
-all three reproducible: `scripts/make-samples.sh` regenerates these exact bytes, and a
-regeneration that differs means the generator changed. Their seeds, joins and answers are
-public, so all three are trivially cheatable and useless as a score — for a Windows/macOS
-benchmark corpus, mint a hold-out suite:
+## Safety and scope
+
+Gate 3 checks the emitted executable bodies: PE `.text` starts with `ret` and is otherwise
+zero, Mach-O `__text` is `mov w0, #0; ret`, and ELF `.text` is the nine-byte direct-exit body
+`xor edi,edi; mov eax,60; syscall`. The ELF interpreter would run before that entry on an
+execution attempt. Do not execute the samples, run `ldd`, launch their configuration records
+or evaluate the Bash history.
+
+Classified structured artifacts carry an in-band `ARTIFACTFORGE` marker except for the strict
+serialized quarantine-xattr profile. Task XML and Shell Link agreement proves serialized
+configuration and reference relationships, not registration, activation or execution.
+
+The SQLite files come from ArtifactForge's deterministic owned writer; `sqlite3` is a consumer
+oracle. The Linux sample is generated from Fixture ABI v2, which binds logical guest modes.
+This gallery commits only copied artifact bytes, not an activation-ready filesystem projection.
+
+## Reproduce
+
+From the repository root:
 
 ```sh
-artifactforge bench new suite --n 100 --kind holdout
+scripts/make-samples.sh
 ```
 
-The Linux sample is generator-assurance and fixture material only; it never enters Gate 4.
-Fixture ABI v1 binds paths, sizes and hashes but not POSIX modes, and deterministic release
-archives normalize artifact files to 0644. The ELF files are therefore valid executable-format
-evidence, not an activation-ready filesystem. Do not execute them, use `ldd`, launch their XDG
-records, or source/evaluate their Bash history.
+Windows and macOS use the published development-suite key. Linux uses
+`examples/fixtures/linux-glibc-x86_64-loose-v2.json`. The public seeds and answers make these
+scenes reproducible and unsuitable for performance scoring.
 
-`tests/test_samples_gate.py` re-reads every committed file with the real parsers on every test
-run, re-derives the answer key from the bytes as committed, and checks that nothing private
-was committed alongside them.
+`tests/test_samples_gate.py` reopens every committed artifact with the declared readers,
+re-derives the answer keys and checks that no private suite material was committed.

@@ -31,6 +31,7 @@ import struct
 from dataclasses import dataclass
 
 from artifactforge.gates import GateReport
+from artifactforge.gates.oracles.prefetch_profile import decode_mam_xpress_huffman
 from artifactforge.gates.validity import classify_bytes
 from artifactforge.inventory import InventoryError, inventory_regular_files
 
@@ -40,12 +41,19 @@ MARKERS = {
     "pe":       [b"ARTIFACTFORGE-SYNTHETIC-"],
     "macho":    [b"ARTIFACTFORGE-SYNTHETIC-"],
     "elf":      [b"ARTIFACTFORGE-SYNTHETIC-"],
-    "hive":     ["ArtifactForgeHive".encode("utf-16-le")],
+    # Registry identity remains authentic (Amcache.hve / SOFTWARE). Disclosure lives in a
+    # dedicated key's UTF-16 value data instead of hijacking the REGF base-block file name.
+    "hive":     ["ARTIFACTFORGE".encode("utf-16-le")],
     "prefetch": [b"ARTIFACTFORGE", "ARTIFACTFORGE".encode("utf-16-le")],
+    "prefetch-v17": [b"ARTIFACTFORGE", "ARTIFACTFORGE".encode("utf-16-le")],
     "sqlite":   [b"ARTIFACTFORGE", "ARTIFACTFORGE".encode("utf-16-le")],
     "plist":    [b"ARTIFACTFORGE"],
     "desktop-entry": [b"ARTIFACTFORGE"],
     "bash-history":  [b"ARTIFACTFORGE"],
+    # Task XML and Shell Link StringData use UTF-16LE on disk. Their Gate 1 profiles
+    # independently constrain activation surfaces; Gate 3 owns the disclosure anchor.
+    "task-xml": ["ARTIFACTFORGE".encode("utf-16-le")],
+    "shell-link": ["ARTIFACTFORGE".encode("utf-16-le")],
 }
 
 # This is intentionally distinct from MARKERS: it is one complete, non-executable serialized
@@ -1059,6 +1067,21 @@ def run(scene_dir: str) -> GateReport:
             continue                                   # documentation and other plain text
         classified += 1
 
+        marker_data = data
+        if fmt == "prefetch":
+            try:
+                marker_data = decode_mam_xpress_huffman(data)
+            except (TypeError, ValueError) as exc:
+                r.fail(
+                    f"{name}: compressed Prefetch cannot expose a bounded logical marker — "
+                    f"{type(exc).__name__}: {str(exc)[:100]}"
+                )
+                marker_data = b""
+            else:
+                # A compressed artifact has two relevant indicator surfaces: the exact outer
+                # bytes that travel and the bounded logical bytes a responder extracts.
+                _indicator_hygiene(r, f"{name} (decoded Prefetch)", marker_data)
+
         if fmt in _MARKER_EXEMPT_FORMATS:
             from artifactforge.artifacts.macos import parse_quarantine_xattr
 
@@ -1113,7 +1136,7 @@ def run(scene_dir: str) -> GateReport:
         anchors = MARKERS.get(fmt)
         if anchors is None:
             r.fail(f"{name}: {fmt} has no declared synthetic marker")
-        elif any(a in data for a in anchors):
+        elif any(anchor in marker_data for anchor in anchors):
             marked += 1
         else:
             r.fail(f"{name}: {fmt} carries no in-band synthetic marker, so a copy that "

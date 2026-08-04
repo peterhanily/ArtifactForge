@@ -10,23 +10,25 @@ license-files = ["LICENSE"]
 dependencies = []
 
 [project.optional-dependencies]
-# External DFIR parsers are dev-only CI oracles, never generation dependencies. The SQLite
-# and bplist raw readers ship in the zero-dependency package. Two implementations cover every
-# classified format because one
-# permissive parser hides what a strict one rejects: every prefetch file this project emitted
-# was accepted by `windowsprefetch` and refused by libyal's `pyscca` — which plaso is built on — for as long
-# as `windowsprefetch` was the only oracle installed.
+# External DFIR parsers are dev-only CI oracles, never generation dependencies. The bounded
+# raw readers ship in the zero-dependency package. Independent implementations cover every
+# classified format because one permissive parser can hide what a strict one rejects.
 #   PE        pefile + lief
 #   Mach-O    lief + macholib
 #   registry  regipy + libregf
-#   prefetch  windowsprefetch + libscca
+#   Prefetch  legacy v17: windowsprefetch + libscca; current v30: libscca +
+#             dissect.target semantics + the bounded first-party MAM/layout reader
 #   SQLite    sqlite3 + the bounded first-party raw reader
 #   bplist    plistlib + the bounded first-party raw reader
 #   ELF       LIEF + pyelftools
 #   XDG       PyXDG + the bounded first-party raw reader
 #   Bash      dissect.target + the bounded first-party raw reader
+#   Shell Link liblnk-python + LnkParse3, with the bounded first-party reader owning layout
 dev = [
     "pytest>=8",
+    # Execute the published Draft 2020-12 fixture schemas against every shipped v2 recipe
+    # and freshly generated manifest; model-only cross-field equations remain explicit.
+    "jsonschema>=4.23,<5",
     "pefile",
     "lief",
     "macholib",
@@ -34,7 +36,14 @@ dev = [
     "regipy",
     "libregf-python",
     "windowsprefetch",
-    "libscca-python",
+    # This exact libyal binding build defines the typed v17/v30 adapter contract. Keep parser
+    # upgrades deliberate: a new build can change MAM or variant-layout acceptance.
+    "libscca-python==20260527",
+    # Exact pins define the public adapter contract. liblnk is a compiled LGPL parser loaded
+    # dynamically as a dev-only oracle; LnkParse3 is MIT and pure Python. Neither is imported
+    # by generation code or bundled into ArtifactForge distributions.
+    "liblnk-python==20260525",
+    "LnkParse3==1.6.0",
     # These versions define the Linux oracle adapter contract. PyXDG is used as a typed
     # parser only (its validator rejects modern DBusActivatable and overwrites duplicate
     # keys); the shipped reader owns the strict profile. Gate 1 reaches dissect.target through

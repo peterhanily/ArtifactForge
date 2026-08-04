@@ -13,9 +13,8 @@ import pytest
 from artifactforge import suite
 from artifactforge.bench.benchmark import generate_suite
 from artifactforge.compose import scene as scene_module
-from artifactforge.fixture import operations
 from artifactforge.fixture.archive import create_release_archive, verify_release_archive
-from artifactforge.fixture.model import FixtureSpec, ProfileSpec
+from artifactforge.fixture.model_v2 import FixtureSpecV2, ProfileSpecV2
 from artifactforge.fixture.operations import build_fixture, verify_fixture
 from artifactforge.gates import identity, inertness, validity
 from artifactforge.inventory import (
@@ -27,11 +26,11 @@ from artifactforge.inventory import (
 )
 
 
-def _fixture_spec() -> FixtureSpec:
-    return FixtureSpec(
-        fixture_id="nested-windows-fixture",
-        family="windows",
-        profile=ProfileSpec("windows-loose-v1", "WKSTN-01", "v"),
+def _fixture_spec() -> FixtureSpecV2:
+    return FixtureSpecV2.create(
+        fixture_id="nested-linux-fixture",
+        family="linux",
+        profile=ProfileSpecV2("linux-glibc-x86_64-loose-v2", "linux-01", "v"),
         seed_hex="71" * 32,
     )
 
@@ -433,7 +432,11 @@ def test_all_three_gates_follow_nested_hidden_windows_and_macos_artifacts(tmp_pa
         nested.mkdir(parents=True)
         for file in original:
             file.path.rename(nested / file.name)
-        if task.family == "macos":
+        if task.family == "windows":
+            for relation_name in ("scheduled_task", "shell_link"):
+                relation = task.join[relation_name]
+                relation["source"] = ".evidence/nested/" + relation["source"]
+        elif task.family == "macos":
             for relation in task.join["benchmark_relations"]:
                 selector = relation["selector"]
                 selector["xattr_relative_path"] = (
@@ -450,34 +453,19 @@ def test_all_three_gates_follow_nested_hidden_windows_and_macos_artifacts(tmp_pa
             assert report.ok, report.render()
 
 
-def test_fixture_build_verify_and_release_preserve_nested_hidden_relative_paths(
-    monkeypatch, tmp_path
-):
-    real_builder = operations.build_windows_scene
-
-    def nested_builder(**arguments):
-        scene = real_builder(**arguments)
-        root = Path(scene.directory)
-        nested_names = []
-        for relative in scene.artifacts:
-            source = root.joinpath(*relative.split("/"))
-            nested_relative = f".evidence/nested/{relative}"
-            target = root.joinpath(*nested_relative.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source.rename(target)
-            nested_names.append(nested_relative)
-        scene.artifacts = sorted(nested_names)
-        return scene
-
-    monkeypatch.setattr(operations, "build_windows_scene", nested_builder)
+def test_fixture_build_verify_and_release_preserve_nested_hidden_relative_paths(tmp_path):
     fixture = tmp_path / "fixture"
     manifest = build_fixture(_fixture_spec(), fixture)
 
-    assert all(entry.path.startswith(".evidence/nested/") for entry in manifest.payload.files)
+    served_paths = {entry.served_path for entry in manifest.payload.files}
+    assert "home/v/.bash_history" in served_paths
+    assert any(path.startswith("home/v/.config/autostart/") for path in served_paths)
+    assert any(path.startswith("home/v/.local/bin/") for path in served_paths)
     verification = verify_fixture(fixture, assurance=True)
     assert verification.ok
     assert verification.assurance_ok is True
 
     archive = create_release_archive(fixture, tmp_path / "fixture.tar", assurance=True)
     assert verify_release_archive(archive.path).ok
-    assert any("/artifacts/.evidence/nested/" in member for member in archive.members)
+    assert any("/artifacts/home/v/.config/autostart/" in member for member in archive.members)
+    assert any("/artifacts/home/v/.local/bin/" in member for member in archive.members)

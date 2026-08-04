@@ -1,0 +1,180 @@
+name: Release evidence (manual, attest only, never publish)
+
+# This workflow creates cryptographic provenance and SBOM attestations, which is an external
+# repository mutation.  It is therefore manual-only and tag-only.  It never invokes a package-
+# index publish or uploads a package to PyPI; dependency/bootstrap steps can still download from
+# package indexes.  It creates no GitHub release and pushes no tag.  Configure tag/environment
+# protection before the first approved run; merely committing this file does not execute it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "1"
+  UV_VERSION: "0.11.17"
+  SOURCE_DATE_EPOCH: "1580601600"
+  CYCLONEDX_SCHEMA_COMMIT: "c320fc0f0b46873864927d9d5684eea7ba439728"
+
+jobs:
+  release-evidence:
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: release-attestation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout the exact selected tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an exact version tag and immutable checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git cat-file -t "$GITHUB_REF")" = tag
+          test "$(git rev-parse "$GITHUB_REF^{}")" = "$GITHUB_SHA"
+          EXPECTED_TAG="$(python3 - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as stream:
+              print("v" + tomllib.load(stream)["project"]["version"])
+          PY
+          )"
+          test "$GITHUB_REF_NAME" = "$EXPECTED_TAG"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Install hash-pinned uv bootstrap
+        run: |
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
+
+      - name: Install the frozen release/tooling closure
+        run: |
+          uv python install 3.12.13
+          uv sync --frozen --extra dev --python 3.12.13
+
+      - name: Release-evidence protocol tests
+        run: |
+          uv run pytest -q -rs \
+            tests/test_release_evidence.py \
+            tests/test_publish_rehearsal.py \
+            tests/test_cyclonedx_schema.py \
+            tests/test_workflow_supply_chain.py
+
+      - name: Build twice under hostile ambient differences
+        run: |
+          umask 022
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv build \
+            --no-sources --no-create-gitignore \
+            --build-constraint build-constraints.txt --require-hashes \
+            --out-dir "$RUNNER_TEMP/artifactforge-dist-a"
+          umask 077
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv build \
+            --no-sources --no-create-gitignore \
+            --build-constraint build-constraints.txt --require-hashes \
+            --out-dir "$RUNNER_TEMP/artifactforge-dist-b"
+
+      - name: Install and execute the exact wheel subject without dependencies
+        run: |
+          uv venv "$RUNNER_TEMP/artifactforge-release-smoke" --python 3.12.13
+          uv pip install \
+            --python "$RUNNER_TEMP/artifactforge-release-smoke/bin/python" --no-deps \
+            "$RUNNER_TEMP"/artifactforge-dist-a/artifactforge-*.whl
+          "$RUNNER_TEMP/artifactforge-release-smoke/bin/artifactforge" --version
+          "$RUNNER_TEMP/artifactforge-release-smoke/bin/artifactforge" fixture build \
+            examples/fixtures/windows-loose-v2.json \
+            "$RUNNER_TEMP/artifactforge-release-smoke-fixture"
+          "$RUNNER_TEMP/artifactforge-release-smoke/bin/artifactforge" fixture verify \
+            "$RUNNER_TEMP/artifactforge-release-smoke-fixture"
+
+      - name: Create and separately verify closed local evidence
+        run: |
+          uv run python scripts/release_evidence.py create \
+            --primary-dist "$RUNNER_TEMP/artifactforge-dist-a" \
+            --comparison-dist "$RUNNER_TEMP/artifactforge-dist-b" \
+            --out "$RUNNER_TEMP/artifactforge-release-evidence" \
+            --uv "$RUNNER_TEMP/artifactforge-uv-bootstrap/bin/uv"
+          uv run python scripts/release_evidence.py verify \
+            "$RUNNER_TEMP/artifactforge-release-evidence" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uv "$RUNNER_TEMP/artifactforge-uv-bootstrap/bin/uv"
+
+      - name: Validate every SBOM with hash-pinned official CycloneDX 1.5 schemas
+        run: |
+          SCHEMA_DIR="$RUNNER_TEMP/artifactforge-cyclonedx-1.5"
+          mkdir -p "$SCHEMA_DIR"
+          for SCHEMA_NAME in \
+            bom-1.5.schema.json \
+            jsf-0.82.schema.json \
+            spdx.schema.json; do
+            curl --fail --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --connect-timeout 10 --max-time 60 --max-filesize 524288 \
+              "https://raw.githubusercontent.com/CycloneDX/specification/${CYCLONEDX_SCHEMA_COMMIT}/schema/${SCHEMA_NAME}" \
+              --output "$SCHEMA_DIR/$SCHEMA_NAME"
+          done
+          (
+            cd "$SCHEMA_DIR"
+            printf '%s  %s\n' \
+              067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b \
+              bom-1.5.schema.json \
+              8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae \
+              jsf-0.82.schema.json \
+              4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc \
+              spdx.schema.json | sha256sum --check --strict
+          )
+          uv run python scripts/validate_cyclonedx.py \
+            --schema-dir "$SCHEMA_DIR" \
+            "$RUNNER_TEMP/artifactforge-release-evidence/sbom/wheel.cdx.json" \
+            "$RUNNER_TEMP/artifactforge-release-evidence/sbom/sdist.cdx.json" \
+            "$RUNNER_TEMP/artifactforge-release-evidence/sbom/development-oracles.cdx.json"
+
+      - name: Validate candidate paths and flags with a credential-free loopback dry run
+        run: |
+          .venv/bin/python scripts/publish_rehearsal.py \
+            "$RUNNER_TEMP/artifactforge-release-evidence/dist" \
+            --uv "$RUNNER_TEMP/artifactforge-uv-bootstrap/bin/uv"
+
+      - name: Attest build provenance for both exact distribution subjects
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            ${{ runner.temp }}/artifactforge-release-evidence/dist/*.tar.gz
+            ${{ runner.temp }}/artifactforge-release-evidence/dist/*.whl
+
+      - name: Attest the wheel runtime SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/artifactforge-release-evidence/dist/*.whl
+          sbom-path: ${{ runner.temp }}/artifactforge-release-evidence/sbom/wheel.cdx.json
+
+      - name: Attest the sdist runtime SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/artifactforge-release-evidence/dist/*.tar.gz
+          sbom-path: ${{ runner.temp }}/artifactforge-release-evidence/sbom/sdist.cdx.json
+
+      - name: Attest the closed evidence index and development closure
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            ${{ runner.temp }}/artifactforge-release-evidence/release-evidence.json
+            ${{ runner.temp }}/artifactforge-release-evidence/checksums.txt
+            ${{ runner.temp }}/artifactforge-release-evidence/sbom/development-oracles.cdx.json
+
+      - name: Retain the exact local evidence bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifactforge-release-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/artifactforge-release-evidence
+          if-no-files-found: error

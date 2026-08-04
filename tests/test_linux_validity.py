@@ -79,6 +79,13 @@ def test_linux_scene_has_two_typed_reads_and_two_semantic_checks_per_artifact(tm
         "oracle_reads_total": 18,
         "semantic_checks_passed": 18,
         "semantic_checks_total": 18,
+        "claim_scopes": {
+            "container_acceptance": {"passed": 18, "total": 18},
+            "semantic_extraction": {"passed": 18, "total": 18},
+            "independent_consensus": {"passed": 9, "total": 9},
+            "declared_profile_conformance": {"passed": 9, "total": 9},
+            "downstream_consumer_compatibility": {"passed": 0, "total": 0},
+        },
     }
     assert validity.classify_bytes(b"\x7fELF", "anything") == "elf"
     assert validity.classify_bytes(b"text", "entry.desktop") == "desktop-entry"
@@ -242,6 +249,13 @@ def test_elf_magic_still_runs_both_oracles_when_named_as_text(tmp_path):
         "oracle_reads_total": 20,
         "semantic_checks_passed": 19,
         "semantic_checks_total": 20,
+        "claim_scopes": {
+            "container_acceptance": {"passed": 20, "total": 20},
+            "semantic_extraction": {"passed": 20, "total": 20},
+            "independent_consensus": {"passed": 10, "total": 10},
+            "declared_profile_conformance": {"passed": 9, "total": 10},
+            "downstream_consumer_compatibility": {"passed": 0, "total": 0},
+        },
     }
     assert any("Linux ELF must be served" in failure for failure in report.fails)
 

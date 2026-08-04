@@ -1,4 +1,4 @@
-# ArtifactForge — working notes
+# ArtifactForge working notes
 
 ## What this is
 
@@ -8,14 +8,18 @@ EvidenceForge, which generates the logs, and it stands alone.
 
 ## Hard constraints
 
-**Determinism is not negotiable.** Every byte is a pure function of a seed. No wall clock, no
-`os.urandom`, no PID, no dict-ordering dependence. If you need randomness, derive it from the
-seed. Every other property in this repository rests on this one.
+**Determinism is not negotiable.** Every modeled value is a pure function of a seed. No wall
+clock, no `os.urandom`, no PID, no dict-ordering dependence. If you need randomness, derive it
+from the seed. Byte identity additionally requires a declared byte-producing ABI/runtime.
+Fixture ABI v1 does not record its SQLite producer and remains parse-only at the frozen 0.5.0
+vectors. Fixture ABI v2 binds `artifactforge-owned-sqlite-leaf-v1`. Any cross-runtime byte
+identity claim must name the ABI, producer profile, and tested runtime matrix.
 
-**A gate is not built until all six bindings exist.** Module, CLI subcommand with a non-zero
-exit, pytest file, `gates.<name>` block in the scorecard, a row in `scorecard._METRICS`, a
-named CI step, and a registered mutation in `tests/test_gate_mutations.py` that turns it red.
-`tests/test_gates.py` checks this. A gate that has never been observed to fail proves nothing.
+**A gate is not built until every binding exists.** It needs a question-bearing module, a CLI
+subcommand with a non-zero failure exit, tests, registered scorecard metrics, a named CI step,
+a design section, and a mutation in `tests/test_gate_mutations.py` that turns it red.
+`tests/test_gates.py` checks this contract. A gate that has never been observed to fail proves
+nothing.
 
 **Claims must be smaller than the code, never larger.** If a test cannot fail when the thing
 it checks is broken, delete it and write one that can. If a document describes a mechanism,
@@ -23,7 +27,7 @@ something must enforce it. The scorecard ships whatever it honestly reads, inclu
 
 ## The validation gate is the definition of done
 
-Not "the tests pass" — the tests are a floor. Done means an independent real parser reads the
+"The tests pass" is only a floor. Done means an independent real parser reads the
 artifact, the cross-artifact identity re-derives from the bytes on disk, nothing ships without
 its synthetic marker, and no adversary can answer a benchmark question without doing the work.
 `artifactforge scorecard` runs all of it.
@@ -38,7 +42,7 @@ its synthetic marker, and no adversary can answer a benchmark question without d
 The prose quotes figures from the scorecard, and prose does not regenerate. The README once
 published a chance floor the committed scorecard contradicted, five lines above a sentence
 warning against exactly that. `tests/test_published_numbers.py` now catches the divergence and
-`scripts/pin-published-numbers.py` closes it — run both, in that order.
+`scripts/pin-published-numbers.py` closes it. Run both, in that order.
 
 ## Design values
 

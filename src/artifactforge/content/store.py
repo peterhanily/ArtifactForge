@@ -8,9 +8,10 @@ and cdhash from the embedded CodeDirectory. Callers that reuse one ``Content`` o
 reuse one file identity. This claim is deliberately about materialized ``Content`` instances,
 not every hash-shaped decoy field a composed scene may carry.
 
-Bytes are a pure function of the seed, so the same identity regenerates byte-identical
-forever. The writers are hand-assembled rather than driven by a toolchain or by LIEF,
-neither of which promises determinism.
+Bytes are pure functions of the seed under the declared content-writer ABI, so the same identity
+regenerates byte-identically within that contract. A byte-affecting writer change requires an
+explicit ABI transition; this is not a cross-version promise. The writers are hand-assembled
+rather than driven by a toolchain or by LIEF, neither of which promises determinism.
 
 The native code emitted here is payload-free: PE ``.text`` is ``ret`` plus zero padding, while
 Mach-O ``__text`` is ``mov w0,#0 ; ret`` and ELF ``.text`` is a direct ``exit(0)`` syscall. The
@@ -19,8 +20,11 @@ the exact checks and their current scope.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import secrets
+import stat
 import struct
 from dataclasses import dataclass
 
@@ -235,6 +239,150 @@ class Content:
 #: therefore its SHA256; passing it separately would break the content_id -> bytes contract.
 KNOWN_FORMATS = ("pe", "macho", "elf")
 
+_CACHE_FILE_MODE = 0o600
+_CACHE_TEMP_ATTEMPTS = 64
+_CACHE_VERIFY_ATTEMPTS = 128
+_CACHE_STABLE_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_nlink",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _cache_failure(message: str, error: BaseException | None = None) -> RuntimeError:
+    failure = RuntimeError(f"unsafe content cache: {message}")
+    if error is not None:
+        failure.__cause__ = error
+    return failure
+
+
+def _same_state(first: os.stat_result, second: os.stat_result) -> bool:
+    return all(
+        getattr(first, field) == getattr(second, field)
+        for field in _CACHE_STABLE_FIELDS
+    )
+
+
+def _same_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def _directory_flags() -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise _cache_failure(
+            "this platform lacks O_NOFOLLOW/O_DIRECTORY; secure cache I/O is unsupported"
+        )
+    return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow | directory
+
+
+def _file_flags(access: int) -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise _cache_failure("this platform lacks O_NOFOLLOW; secure cache I/O is unsupported")
+    return access | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0) | nofollow
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise _cache_failure("a temporary-file write made no progress")
+        view = view[written:]
+
+
+def _read_descriptor(descriptor: int, maximum: int) -> bytes:
+    """Read no more than ``maximum + 1`` bytes from an already-pinned file."""
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while total <= maximum:
+        chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
+def _sync_directory(descriptor: int) -> None:
+    """Persist a directory entry where the host filesystem implements directory fsync."""
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        # Some otherwise POSIX-like filesystems reject fsync on a directory. The file inode
+        # has already been synced; this is the only durability guarantee unavailable there.
+        unsupported = {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}
+        if exc.errno not in unsupported:
+            raise
+
+
+def _entry_matches(cache_fd: int, name: str, sha256: str, expected: bytes) -> bool:
+    """Verify one named cache entry without ever following or trusting its path."""
+    descriptor = -1
+    try:
+        before = os.stat(name, dir_fd=cache_fd, follow_symlinks=False)
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != _CACHE_FILE_MODE
+            or before.st_size != len(expected)
+        ):
+            return False
+        descriptor = os.open(name, _file_flags(os.O_RDONLY), dir_fd=cache_fd)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or not _same_identity(before, opened):
+            return False
+        payload = _read_descriptor(descriptor, len(expected))
+        after_read = os.fstat(descriptor)
+        after_path = os.stat(name, dir_fd=cache_fd, follow_symlinks=False)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (NotImplementedError, OSError):
+        # A link swap, concurrent replacement or unreadable corrupt entry is a miss. It is
+        # repaired only by an atomic rename through the pinned cache descriptor below.
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return (
+        _same_state(before, opened)
+        and _same_state(opened, after_read)
+        and _same_state(after_read, after_path)
+        and payload == expected
+        and hashlib.sha256(payload).hexdigest() == sha256
+    )
+
+
+def _temporary_is_verified(
+    cache_fd: int,
+    name: str,
+    descriptor: int,
+    sha256: str,
+    expected: bytes,
+) -> bool:
+    before_read = os.fstat(descriptor)
+    payload = _read_descriptor(descriptor, len(expected))
+    after_read = os.fstat(descriptor)
+    named = os.stat(name, dir_fd=cache_fd, follow_symlinks=False)
+    return (
+        stat.S_ISREG(after_read.st_mode)
+        and after_read.st_nlink == 1
+        and stat.S_IMODE(after_read.st_mode) == _CACHE_FILE_MODE
+        and after_read.st_size == len(expected)
+        and _same_state(before_read, after_read)
+        and _same_state(after_read, named)
+        and payload == expected
+        and hashlib.sha256(payload).hexdigest() == sha256
+    )
+
 
 class ContentStore:
     """content_id -> real bytes, content-addressed by sha256 (git-blob style).
@@ -247,26 +395,284 @@ class ContentStore:
 
     def __init__(self, scenario_seed: str, cache_dir: str):
         self._root = _sub_seed(scenario_seed.encode(), "contentstore")
-        self._cache = cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
+        self._cache = os.fspath(cache_dir)
+        if not isinstance(self._cache, str):
+            raise TypeError("content cache path must be text, not bytes")
+        requested = os.path.normpath(os.path.abspath(self._cache))
+        cache_name = os.path.basename(requested)
+        if not cache_name or cache_name in {".", ".."}:
+            raise ValueError("content cache must have one non-empty final path component")
+        self._cache_name = cache_name
+        self._cache_requested = requested
+        self._cache_parent = os.path.realpath(os.path.dirname(requested))
+        os.makedirs(self._cache, mode=0o700, exist_ok=True)
+
+        # mkdir modes are masked by the process umask.  Repair only the final cache entry
+        # through a held parent descriptor and refuse links/replacements around the chmod;
+        # this stays usable even under umask 0777 without ever chmodding through a pathname.
+        mode_parent_fd = -1
+        try:
+            mode_parent_fd = os.open(self._cache_parent, _directory_flags())
+            before_mode = os.stat(
+                self._cache_name,
+                dir_fd=mode_parent_fd,
+                follow_symlinks=False,
+            )
+            if stat.S_ISLNK(before_mode.st_mode) or not stat.S_ISDIR(before_mode.st_mode):
+                raise _cache_failure("cache path is not a real directory")
+            os.chmod(
+                self._cache_name,
+                0o700,
+                dir_fd=mode_parent_fd,
+                follow_symlinks=False,
+            )
+            after_mode = os.stat(
+                self._cache_name,
+                dir_fd=mode_parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not _same_identity(before_mode, after_mode)
+                or stat.S_IMODE(after_mode.st_mode) != 0o700
+            ):
+                raise _cache_failure("cache directory changed while setting its mode")
+        except RuntimeError:
+            raise
+        except (NotImplementedError, OSError) as exc:
+            raise _cache_failure("cannot set the private cache directory mode", exc) from exc
+        finally:
+            if mode_parent_fd >= 0:
+                os.close(mode_parent_fd)
+
+        parent_fd = cache_fd = -1
+        try:
+            parent_fd, cache_fd = self._open_cache(expected=False)
+            os.fchmod(cache_fd, 0o700)
+            parent_state = os.fstat(parent_fd)
+            cache_state = os.fstat(cache_fd)
+            self._parent_identity = parent_state.st_dev, parent_state.st_ino
+            self._cache_identity = cache_state.st_dev, cache_state.st_ino
+            self._verify_cache_binding(parent_fd, cache_fd)
+        finally:
+            if cache_fd >= 0:
+                os.close(cache_fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
+
+    def _open_cache(self, *, expected: bool = True) -> tuple[int, int]:
+        """Open the cache and its parent as a stable, non-link descriptor pair."""
+        parent_fd = cache_fd = -1
+        try:
+            parent_before = os.stat(self._cache_parent, follow_symlinks=False)
+            if stat.S_ISLNK(parent_before.st_mode) or not stat.S_ISDIR(parent_before.st_mode):
+                raise _cache_failure("resolved cache parent is not a real directory")
+            parent_fd = os.open(self._cache_parent, _directory_flags())
+            parent_opened = os.fstat(parent_fd)
+            parent_after = os.stat(self._cache_parent, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(parent_opened.st_mode)
+                or not _same_identity(parent_before, parent_opened)
+                or not _same_identity(parent_opened, parent_after)
+            ):
+                raise _cache_failure("cache parent changed while it was being opened")
+
+            cache_before = os.stat(
+                self._cache_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if stat.S_ISLNK(cache_before.st_mode) or not stat.S_ISDIR(cache_before.st_mode):
+                raise _cache_failure("cache path is not a real directory")
+            cache_fd = os.open(
+                self._cache_name,
+                _directory_flags(),
+                dir_fd=parent_fd,
+            )
+            cache_opened = os.fstat(cache_fd)
+            cache_after = os.stat(
+                self._cache_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(cache_opened.st_mode)
+                or not _same_identity(cache_before, cache_opened)
+                or not _same_identity(cache_opened, cache_after)
+            ):
+                raise _cache_failure("cache directory changed while it was being opened")
+            if expected and (
+                (parent_opened.st_dev, parent_opened.st_ino) != self._parent_identity
+                or (cache_opened.st_dev, cache_opened.st_ino) != self._cache_identity
+            ):
+                raise _cache_failure("cache directory or its parent was replaced")
+            return parent_fd, cache_fd
+        except RuntimeError:
+            if cache_fd >= 0:
+                os.close(cache_fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
+            raise
+        except (NotImplementedError, OSError) as exc:
+            if cache_fd >= 0:
+                os.close(cache_fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
+            raise _cache_failure(f"cannot safely open {self._cache_requested!r}", exc) from exc
+
+    def _verify_cache_binding(self, parent_fd: int, cache_fd: int) -> None:
+        """Prove both held directories still have the names the caller will receive."""
+        try:
+            parent_opened = os.fstat(parent_fd)
+            parent_path = os.stat(self._cache_parent, follow_symlinks=False)
+            cache_opened = os.fstat(cache_fd)
+            cache_in_parent = os.stat(
+                self._cache_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            requested_path = os.stat(self._cache_requested, follow_symlinks=False)
+        except (NotImplementedError, OSError) as exc:
+            raise _cache_failure("cannot post-verify the cache directory binding", exc) from exc
+        if (
+            not stat.S_ISDIR(parent_opened.st_mode)
+            or not stat.S_ISDIR(cache_opened.st_mode)
+            or not _same_identity(parent_opened, parent_path)
+            or not _same_identity(cache_opened, cache_in_parent)
+            or not _same_identity(cache_opened, requested_path)
+            or (parent_opened.st_dev, parent_opened.st_ino) != self._parent_identity
+            or (cache_opened.st_dev, cache_opened.st_ino) != self._cache_identity
+        ):
+            raise _cache_failure("cache directory binding changed during I/O")
+
+    @staticmethod
+    def _new_temporary(cache_fd: int) -> tuple[str, int]:
+        flags = _file_flags(os.O_RDWR) | os.O_CREAT | os.O_EXCL
+        for _attempt in range(_CACHE_TEMP_ATTEMPTS):
+            name = f".artifactforge-content-{secrets.token_hex(16)}.tmp"
+            try:
+                return name, os.open(name, flags, _CACHE_FILE_MODE, dir_fd=cache_fd)
+            except FileExistsError:
+                continue
+            except (NotImplementedError, OSError) as exc:
+                raise _cache_failure("cannot create an exclusive private temporary file", exc) from exc
+        raise _cache_failure("cannot allocate an exclusive private temporary file")
+
+    def _verified_entry(
+        self,
+        parent_fd: int,
+        cache_fd: int,
+        sha256: str,
+        data: bytes,
+        *,
+        attempts: int = 1,
+    ) -> bool:
+        for _attempt in range(attempts):
+            if not _entry_matches(cache_fd, sha256, sha256, data):
+                continue
+            self._verify_cache_binding(parent_fd, cache_fd)
+            # The binding check is deliberately bracketed by entry reads. A directory swap
+            # after the first read must not turn the returned path into a different object.
+            if _entry_matches(cache_fd, sha256, sha256, data):
+                # The second entry read itself is a race window because it uses the held old
+                # directory descriptor. Recheck the public pathname after that read before
+                # returning it. A pathname can of course be replaced after return; callers
+                # needing a continuously pinned object must open and retain their own fd.
+                self._verify_cache_binding(parent_fd, cache_fd)
+                return True
+        return False
 
     def _store(self, sha256: str, data: bytes) -> str:
-        """Write content-addressed, atomically, and re-verify anything already there."""
-        path = os.path.join(self._cache, sha256)
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                if hashlib.sha256(f.read()).hexdigest() == sha256:
-                    return path
-            # Present but wrong: a torn write. Fall through and replace it.
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "xb") as f:
-            os.chmod(tmp, 0o600)
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)                     # atomic within the same directory
-        os.chmod(path, 0o600)
-        return path
+        """Durably publish one verified inode through a pinned cache directory."""
+        if not isinstance(data, bytes):
+            raise TypeError("content cache payload must be bytes")
+        actual = hashlib.sha256(data).hexdigest()
+        if sha256 != actual:
+            raise ValueError(
+                f"content cache address {sha256!r} does not match payload SHA256 {actual}"
+            )
+        # Return the absolute, descriptor-bound cache location. Retaining the caller's
+        # relative spelling here made an otherwise safe publication appear to move when the
+        # process changed working directory after construction.
+        path = os.path.join(self._cache_parent, self._cache_name, sha256)
+        parent_fd = cache_fd = temporary_fd = -1
+        temporary_name: str | None = None
+        published = False
+        try:
+            parent_fd, cache_fd = self._open_cache()
+            if self._verified_entry(parent_fd, cache_fd, sha256, data):
+                return path
+
+            temporary_name, temporary_fd = self._new_temporary(cache_fd)
+            _write_all(temporary_fd, data)
+            os.fchmod(temporary_fd, _CACHE_FILE_MODE)
+            os.fsync(temporary_fd)
+            if not _temporary_is_verified(
+                cache_fd,
+                temporary_name,
+                temporary_fd,
+                sha256,
+                data,
+            ):
+                raise _cache_failure("temporary bytes changed before publication")
+
+            # A writer that arrived first may already have published the same bytes. Reusing
+            # that verified inode avoids needless replacement while retaining lock-free
+            # concurrent generation.
+            if self._verified_entry(parent_fd, cache_fd, sha256, data):
+                return path
+            self._verify_cache_binding(parent_fd, cache_fd)
+            try:
+                os.replace(
+                    temporary_name,
+                    sha256,
+                    src_dir_fd=cache_fd,
+                    dst_dir_fd=cache_fd,
+                )
+            except (NotImplementedError, OSError) as exc:
+                raise _cache_failure("cannot atomically publish content", exc) from exc
+            published = True
+            _sync_directory(cache_fd)
+
+            # Do not insist that the name still identifies our temporary inode: another safe
+            # writer may atomically publish identical bytes immediately after us. The content
+            # address, exact bytes, file type, link count and mode are the shared invariant.
+            if not self._verified_entry(
+                parent_fd,
+                cache_fd,
+                sha256,
+                data,
+                attempts=_CACHE_VERIFY_ATTEMPTS,
+            ):
+                raise _cache_failure("published content failed byte or path verification")
+            return path
+        except RuntimeError:
+            raise
+        except (NotImplementedError, OSError) as exc:
+            if published:
+                raise _cache_failure(
+                    "content was published but its verification or durability is uncertain",
+                    exc,
+                ) from exc
+            raise _cache_failure("content publication failed", exc) from exc
+        finally:
+            if temporary_name is not None and not published and cache_fd >= 0:
+                try:
+                    named = os.stat(
+                        temporary_name,
+                        dir_fd=cache_fd,
+                        follow_symlinks=False,
+                    )
+                    held = os.fstat(temporary_fd)
+                    if stat.S_ISREG(named.st_mode) and _same_identity(named, held):
+                        os.unlink(temporary_name, dir_fd=cache_fd)
+                except OSError:
+                    pass
+            if temporary_fd >= 0:
+                os.close(temporary_fd)
+            if cache_fd >= 0:
+                os.close(cache_fd)
+            if parent_fd >= 0:
+                os.close(parent_fd)
 
     def materialize(self, content_id: str) -> Content:
         fmt = content_id.split(":", 1)[0]

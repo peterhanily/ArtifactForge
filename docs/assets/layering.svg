@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" role="img" aria-labelledby="title description">
+  <title id="title">ArtifactForge package layering</title>
+  <desc id="description">Import arrows point from the command-line layer through fixture and benchmark, compose, artifacts, content, and model toward lower-level dependencies. Compose, fixture, benchmark, gates, and scorecard share the bounded inventory layer. The EvidenceForge ingest adapter remains outside the core dependency chain.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #ffffff;
+      --text: #172033;
+      --muted: #475569;
+      --panel: #f8fafc;
+      --line: #475569;
+      --shared-fill: #ecfdf5;
+      --shared-line: #0f766e;
+      --outside-fill: #fff7ed;
+      --outside-line: #9a3412;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #0d1117;
+        --text: #f0f6fc;
+        --muted: #c9d1d9;
+        --panel: #161b22;
+        --line: #8b949e;
+        --shared-fill: #153e3a;
+        --shared-line: #5eead4;
+        --outside-fill: #431407;
+        --outside-line: #fdba74;
+      }
+    }
+    text {
+      fill: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .canvas { fill: var(--canvas); }
+    .core { fill: var(--panel); stroke: var(--line); stroke-width: 2; }
+    .shared { fill: var(--shared-fill); stroke: var(--shared-line); stroke-width: 2; }
+    .outside { fill: var(--outside-fill); stroke: var(--outside-line); stroke-width: 2; stroke-dasharray: 8 6; }
+    .arrow { fill: none; stroke: var(--line); stroke-width: 2; }
+    .heading { font-size: 28px; font-weight: 700; }
+    .label { font-size: 21px; font-weight: 700; }
+    .detail { fill: var(--muted); font-size: 18px; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="var(--line)"/>
+    </marker>
+  </defs>
+
+  <rect class="canvas" width="1280" height="360"/>
+  <text class="heading" x="40" y="42">Package dependencies point toward lower layers</text>
+  <text class="detail" x="40" y="70">Each arrow points to the module being imported.</text>
+
+  <g aria-label="model package">
+    <rect class="core" x="40" y="94" width="150" height="78" rx="12"/>
+    <text class="label" x="115" y="128" text-anchor="middle">model</text>
+    <text class="detail" x="115" y="154" text-anchor="middle">base types</text>
+  </g>
+
+  <g aria-label="content package">
+    <rect class="core" x="226" y="94" width="150" height="78" rx="12"/>
+    <text class="label" x="301" y="128" text-anchor="middle">content</text>
+    <text class="detail" x="301" y="154" text-anchor="middle">byte identity</text>
+  </g>
+
+  <g aria-label="artifacts package">
+    <rect class="core" x="412" y="94" width="150" height="78" rx="12"/>
+    <text class="label" x="487" y="128" text-anchor="middle">artifacts</text>
+    <text class="detail" x="487" y="154" text-anchor="middle">format builders</text>
+  </g>
+
+  <g aria-label="compose package">
+    <rect class="core" x="598" y="94" width="150" height="78" rx="12"/>
+    <text class="label" x="673" y="128" text-anchor="middle">compose</text>
+    <text class="detail" x="673" y="154" text-anchor="middle">scene assembly</text>
+  </g>
+
+  <g aria-label="fixture and benchmark packages">
+    <rect class="core" x="784" y="94" width="196" height="78" rx="12"/>
+    <text class="label" x="882" y="128" text-anchor="middle">fixture + bench</text>
+    <text class="detail" x="882" y="154" text-anchor="middle">public products</text>
+  </g>
+
+  <g aria-label="command-line package">
+    <rect class="core" x="1016" y="94" width="150" height="78" rx="12"/>
+    <text class="label" x="1091" y="128" text-anchor="middle">cli</text>
+    <text class="detail" x="1091" y="154" text-anchor="middle">commands</text>
+  </g>
+
+  <path class="arrow" d="M 226 133 H 198" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 412 133 H 384" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 598 133 H 570" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 784 133 H 756" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 1016 133 H 988" marker-end="url(#arrowhead)"/>
+
+  <g aria-label="shared inventory package">
+    <rect class="shared" x="500" y="246" width="310" height="82" rx="12"/>
+    <text class="label" x="655" y="280" text-anchor="middle">inventory</text>
+    <text class="detail" x="655" y="308" text-anchor="middle">bounded paths and snapshots</text>
+  </g>
+
+  <g aria-label="gates and scorecard packages">
+    <rect class="core" x="846" y="246" width="210" height="82" rx="12"/>
+    <text class="label" x="951" y="280" text-anchor="middle">gates + scorecard</text>
+    <text class="detail" x="951" y="308" text-anchor="middle">measurement</text>
+  </g>
+
+  <g aria-label="EvidenceForge ingest adapter outside the core chain">
+    <rect class="outside" x="1092" y="230" width="148" height="98" rx="12"/>
+    <text class="label" x="1166" y="266" text-anchor="middle">ingest</text>
+    <text class="detail" x="1166" y="292" text-anchor="middle">companion</text>
+    <text class="detail" x="1166" y="316" text-anchor="middle">outside core</text>
+  </g>
+
+  <path class="arrow" d="M 673 172 V 238" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 882 172 V 208 H 770 V 238" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 846 287 H 818" marker-end="url(#arrowhead)"/>
+</svg>

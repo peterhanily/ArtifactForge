@@ -181,18 +181,31 @@ def _macos_questions(join: dict) -> list:
     return _questions(join, "macos")
 
 
-def generate_suite(
-    n: int, root: str, *, key: bytes = suite.PUBLIC_DEV_KEY, kind: str = "dev"
+def _generate_protocol_suite(
+    n: int,
+    root: str,
+    *,
+    key: bytes,
+    kind: str,
+    protocol_domain: bytes,
+    origin: dict | None,
+    ceremony_record: dict | None,
 ) -> list:
-    """Build a suite of `n` scenarios under `root`.
-
-    A dev suite uses the published key and is reproducible by anyone, which is what makes it
-    good for development and worthless as a score. A hold-out suite uses a key that never
-    leaves the evaluator. The internal scorecard-measurement kind also uses a public key, but
-    one with separate derivation provenance; it is reproducible and explicitly non-reportable.
-    """
+    """Internal protocol constructor; public APIs select the key/origin trust model."""
     n = suite.validate_benchmark_scenario_count(n)
     suite.validate_suite_key_kind(key, kind)
+    if protocol_domain == suite.DOMAIN:
+        if origin is not None or ceremony_record is not None:
+            raise ValueError("legacy benchmark v2 must not carry ceremony state")
+    elif protocol_domain == suite.BENCHMARK_V3_DOMAIN:
+        n = suite.validate_benchmark_v3_scenario_count(n)
+        if origin is None or ceremony_record is None:
+            raise ValueError("benchmark v3 requires paired ceremony state")
+        suite.validate_benchmark_origin(origin)
+        if kind != suite.HOLDOUT_SUITE_KIND:
+            raise ValueError("benchmark v3 evaluator ceremony requires holdout suite kind")
+    else:
+        raise ValueError("unsupported benchmark protocol domain")
 
     requested_output = Path(root)
     if not requested_output.name or requested_output.name in {".", ".."}:
@@ -226,17 +239,18 @@ def generate_suite(
 
         build_root = os.fspath(temporary)
         paths = suite.suite_paths(build_root)
-        os.mkdir(paths["scenarios"], mode=0o700)
-        os.mkdir(paths["answers"], mode=0o700)
-        os.mkdir(paths["content"], mode=0o700)
-        os.mkdir(paths["staging"], mode=0o700)
+        for private_directory in ("scenarios", "answers", "content", "staging"):
+            os.mkdir(paths[private_directory], mode=0o700)
+            os.chmod(paths[private_directory], 0o700)
         suite.write_key(build_root, key)
+        if ceremony_record is not None:
+            suite._write_ceremony_record(root_fd, ceremony_record)
         store = ContentStore(suite.WINDOWS_MACOS_CONTENT_NAMESPACE, paths["content"])
 
         tasks, public = [], []
         for i in range(n):
-            pid = suite.public_id(key, i)
-            skey = suite.scenario_key(key, pid)
+            pid = suite.public_id(key, i, domain=protocol_domain)
+            skey = suite.scenario_key(key, pid, domain=protocol_domain)
             scene_dir = os.path.join(paths["scenarios"], pid)
             staging = os.path.join(paths["staging"], pid)
 
@@ -289,10 +303,14 @@ def generate_suite(
             )
 
         _rmtree(paths["staging"])
-        document = suite.build_public_document(
-            {"suite_kind": kind, "domain": suite.DOMAIN.decode(), "scenarios": public},
-            paths["scenarios"],
-        )
+        base_document = {
+            "suite_kind": kind,
+            "domain": protocol_domain.decode(),
+            "scenarios": public,
+        }
+        if origin is not None:
+            base_document["origin"] = origin
+        document = suite.build_public_document(base_document, paths["scenarios"])
         with open(paths["public"], "xb") as file:
             file.write(suite.canonical_public_bytes(document))
         os.chmod(paths["public"], 0o600)
@@ -333,6 +351,36 @@ def generate_suite(
             except OSError:
                 pass
         os.close(parent_fd)
+
+
+def generate_local_suite(
+    n: int,
+    root: str,
+    *,
+    key: bytes = suite.PUBLIC_DEV_KEY,
+    kind: str = suite.DEV_SUITE_KIND,
+) -> list:
+    """Build a legacy v2 local diagnostic; every result is permanently non-reportable."""
+    return _generate_protocol_suite(
+        n,
+        root,
+        key=key,
+        kind=kind,
+        protocol_domain=suite.DOMAIN,
+        origin=None,
+        ceremony_record=None,
+    )
+
+
+def generate_suite(
+    n: int,
+    root: str,
+    *,
+    key: bytes = suite.PUBLIC_DEV_KEY,
+    kind: str = suite.DEV_SUITE_KIND,
+) -> list:
+    """Compatibility alias for :func:`generate_local_suite` and its frozen v2 semantics."""
+    return generate_local_suite(n, root, key=key, kind=kind)
 
 
 def _profile(skey: bytes, family: str) -> HostProfile:
@@ -465,12 +513,17 @@ def _load_public_tasks_live_unsafe(public_root: str) -> tuple[dict, list[PublicT
 
 
 @contextmanager
-def frozen_public_tasks(public_root: str | os.PathLike[str]):
+def frozen_public_tasks(
+    public_root: str | os.PathLike[str], *, pinned_root_fd: int | None = None
+):
     """Yield solver tasks rooted only in one private, immutable export snapshot.
 
     The task paths are valid only inside the context. The original export can be replaced or
     corrupted after entry without changing either the validated document or artifact bytes
     observed through the yielded tasks.
     """
-    with suite.frozen_public_export(os.fspath(public_root)) as (document, snapshot_root):
+    with suite.frozen_public_export(
+        os.fspath(public_root),
+        pinned_root_fd=pinned_root_fd,
+    ) as (document, snapshot_root):
         yield document, _tasks_from_validated_public(document, snapshot_root)

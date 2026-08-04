@@ -70,7 +70,7 @@ def test_current_family_file_schedule_fits_the_hard_inventory_limit(tmp_path):
     observed = {task.family: len(inventory_regular_files(task.directory)) for task in tasks}
     assert observed == dict(suite.BENCHMARK_ARTIFACT_FILES_PER_SCENE)
     assert suite.benchmark_public_file_count(2) == 1 + sum(observed.values())
-    assert suite.benchmark_public_file_count(suite.BENCHMARK_MAX_SCENARIOS) == 2701
+    assert suite.benchmark_public_file_count(suite.BENCHMARK_MAX_SCENARIOS) == 3001
     assert suite.benchmark_public_file_count(suite.BENCHMARK_MAX_SCENARIOS) <= MAX_SCENE_FILES
 
 

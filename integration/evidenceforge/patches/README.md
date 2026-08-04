@@ -1,10 +1,9 @@
 # EvidenceForge v1.13.1 review patches
 
-These are review prototypes for a possible upstream EvidenceForge contribution. They
-have not been applied to, committed in, proposed to, or pushed to the EvidenceForge
-repository. They are not Cisco-authored or Cisco-endorsed. New files in the patches
-are copyright Peter Hanily and MIT-licensed; existing upstream file headers are
-preserved.
+These independent prototypes are for upstream review. They have not been applied to,
+committed in, proposed to, or pushed to the EvidenceForge repository. They are not
+Cisco-authored or Cisco-endorsed. New files in the patches are copyright Peter Hanily
+and MIT-licensed; existing upstream file headers are preserved.
 
 ## Source pin and integrity
 
@@ -36,13 +35,12 @@ git apply /path/to/ArtifactForge/integration/evidenceforge/patches/sysmon-eid1-e
 git diff --check
 ```
 
-`git status --short` should be empty before application. The two patches were also
-validated in this order in a fresh detached worktree at the source pin.
+`git status --short` should be empty before application.
 
 ## Patch 1: role-specific file-content identity
 
-`content-identity-prototype-v1.13.1.patch` implements an opt-in HTTP-response to
-process-image join:
+`content-identity-prototype-v1.13.1.patch` implements an opt-in join between an HTTP
+response and a process image:
 
 - scenarios declare `content_identities`, and unknown references fail validation;
 - `response_content_ref` and `image_content_ref` resolve once through a
@@ -64,19 +62,21 @@ process-image join:
   role-specific reference, derivation version, provenance, and expected digests;
   scenarios without declarations retain schema version 1 and the legacy path.
 
-This patch deliberately does not claim that the digests cover materialized executable
-bytes. `synthetic_v1` hashes a versioned scenario/reference seed. It currently supports
-the controlled direct, plaintext-HTTP path only. HTTPS decryption, explicit proxies,
-SMB, SMTP migration, content transformations, and byte-backed identities remain out of
-scope. It rejects unknown references but does not yet warn about a reference used only
-once or prove path continuity independently of the author's explicit reference.
+### Limitations
+
+The digests do not cover materialized executable bytes. `synthetic_v1` hashes a
+versioned scenario/reference seed. Patch 1 supports only the controlled direct,
+plaintext-HTTP path. HTTPS decryption, explicit proxies, SMB, SMTP migration, content
+transformations, and byte-backed identities remain out of scope. The patch rejects
+unknown references but does not warn about a reference used only once or prove path
+continuity independently of the author's explicit reference.
 
 ## Patch 2: legacy Sysmon Description seed consistency
 
-`sysmon-eid1-eid7-description-v1.13.1.patch` is intentionally separate. It includes
-`Description` in the host-derived Sysmon hash seed so the same path and rendered PE
-metadata take the same legacy seed shape in Event 1 and Event 7. Its focused regression
-also proves that changing only Description changes the result.
+`sysmon-eid1-eid7-description-v1.13.1.patch` is independent. It includes `Description`
+in the host-derived Sysmon hash seed so the same path and rendered PE metadata take the
+same legacy seed shape in Event 1 and Event 7. Its focused regression also proves that
+changing only Description changes the result.
 
 Unlike Patch 1, this correction is not output-preserving: accepting it changes
 deterministic legacy Sysmon hashes whose host-derived metadata has a Description. It
@@ -84,8 +84,8 @@ therefore needs its own upstream compatibility and migration decision.
 
 ## Validation performed
 
-All validation was manual in temporary detached EvidenceForge worktrees; ArtifactForge
-CI does not currently apply these patches.
+Validation ran manually in temporary detached EvidenceForge worktrees. ArtifactForge CI
+does not currently apply these patches.
 
 After applying both patches in the order above:
 
@@ -121,7 +121,7 @@ PYTHONPATH=src python -m pytest -q \
 
 Result: `508 passed in 4.10s`.
 
-The new integration-style unit test constructs a validated scenario, runs
+The integration-style unit test constructs a validated scenario, runs
 `GenerationEngine.generate()`, and then independently parses emitted Zeek `files.json`,
 Sysmon XML, `GROUND_TRUTH.json`, and `OBSERVATION_MANIFEST.json`. It verifies the SHA1
 join without using a digest to select the records, verifies distinct downloader-image
@@ -137,11 +137,11 @@ PYTHONPATH=src python -m pytest -q tests/unit \
 
 Result: `4829 passed, 23 skipped, 1 deselected in 109.67s`.
 
-As a separate opt-out compatibility check, Patch 1 alone was applied and the existing
-unannotated ArtifactForge controlled scenario was regenerated. Its complete 17-file output
-tree was byte-for-byte identical to the tree emitted by unmodified v1.13.1.
+For a separate opt-out compatibility check, Patch 1 alone was applied and the existing
+unannotated ArtifactForge controlled scenario was regenerated. Its complete 17-file
+output tree was byte-for-byte identical to the tree emitted by unmodified v1.13.1.
 
 The one deselected stock Splunk harness test opens a localhost listening socket; the
 validation sandbox rejects that bind with `PermissionError: [Errno 1] Operation not
-permitted`. It is unrelated to either patch. No claim is made that this manual gate is
-continuous upstream CI coverage.
+permitted`. It is unrelated to either patch. This manual gate is not continuous upstream
+CI coverage.

@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 520" role="img" aria-labelledby="title description">
+  <title id="title">How ArtifactForge builds and checks a scene</title>
+  <desc id="description">A five-step flow moves from a deterministic seed and profile through content-first byte generation, loose-scene composition, bounded snapshot capture, and paired parser validation. Four separate boxes state the questions answered by the validity, identity, inertness, and solvability gates.</desc>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #ffffff;
+      --text: #172033;
+      --muted: #475569;
+      --panel: #f8fafc;
+      --line: #475569;
+      --accent: #115e59;
+      --accent-fill: #ccfbf1;
+      --gate-fill: #eff6ff;
+      --gate-line: #1d4ed8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #0d1117;
+        --text: #f0f6fc;
+        --muted: #c9d1d9;
+        --panel: #161b22;
+        --line: #8b949e;
+        --accent: #5eead4;
+        --accent-fill: #153e3a;
+        --gate-fill: #172554;
+        --gate-line: #93c5fd;
+      }
+    }
+    text {
+      fill: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .canvas { fill: var(--canvas); }
+    .step { fill: var(--panel); stroke: var(--line); stroke-width: 2; }
+    .step-number { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 2; }
+    .gate { fill: var(--gate-fill); stroke: var(--gate-line); stroke-width: 2; }
+    .arrow { fill: none; stroke: var(--line); stroke-width: 2; }
+    .heading { font-size: 28px; font-weight: 700; }
+    .label { font-size: 21px; font-weight: 700; }
+    .detail { fill: var(--muted); font-size: 18px; }
+    .number { fill: var(--accent); font-size: 18px; font-weight: 700; }
+    .gate-number { fill: var(--gate-line); font-size: 18px; font-weight: 700; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="var(--line)"/>
+    </marker>
+  </defs>
+
+  <rect class="canvas" width="1280" height="520"/>
+  <text class="heading" x="40" y="44">From deterministic input to checked forensic artifacts</text>
+
+  <g aria-label="Step 1: seed and profile">
+    <rect class="step" x="40" y="80" width="208" height="132" rx="12"/>
+    <circle class="step-number" cx="68" cy="108" r="17"/>
+    <text class="number" x="68" y="114" text-anchor="middle">1</text>
+    <text class="label" x="144" y="120" text-anchor="middle">Seed + profile</text>
+    <text class="detail" x="144" y="158" text-anchor="middle">Public recipe</text>
+    <text class="detail" x="144" y="184" text-anchor="middle">Deterministic inputs</text>
+  </g>
+
+  <g aria-label="Step 2: build bytes once">
+    <rect class="step" x="288" y="80" width="208" height="132" rx="12"/>
+    <circle class="step-number" cx="316" cy="108" r="17"/>
+    <text class="number" x="316" y="114" text-anchor="middle">2</text>
+    <text class="label" x="392" y="120" text-anchor="middle">Build bytes once</text>
+    <text class="detail" x="392" y="158" text-anchor="middle">ContentStore</text>
+    <text class="detail" x="392" y="184" text-anchor="middle">Hashes from bytes</text>
+  </g>
+
+  <g aria-label="Step 3: compose a loose scene">
+    <rect class="step" x="536" y="80" width="208" height="132" rx="12"/>
+    <circle class="step-number" cx="564" cy="108" r="17"/>
+    <text class="number" x="564" y="114" text-anchor="middle">3</text>
+    <text class="label" x="640" y="120" text-anchor="middle">Compose scene</text>
+    <text class="detail" x="640" y="158" text-anchor="middle">Windows, macOS, Linux</text>
+    <text class="detail" x="640" y="184" text-anchor="middle">Loose artifact files</text>
+  </g>
+
+  <g aria-label="Step 4: freeze one bounded snapshot">
+    <rect class="step" x="784" y="80" width="208" height="132" rx="12"/>
+    <circle class="step-number" cx="812" cy="108" r="17"/>
+    <text class="number" x="812" y="114" text-anchor="middle">4</text>
+    <text class="label" x="888" y="120" text-anchor="middle">Freeze snapshot</text>
+    <text class="detail" x="888" y="158" text-anchor="middle">Bounded, no-follow</text>
+    <text class="detail" x="888" y="184" text-anchor="middle">One byte view</text>
+  </g>
+
+  <g aria-label="Step 5: validate the stated claims">
+    <rect class="step" x="1032" y="80" width="208" height="132" rx="12"/>
+    <circle class="step-number" cx="1060" cy="108" r="17"/>
+    <text class="number" x="1060" y="114" text-anchor="middle">5</text>
+    <text class="label" x="1136" y="120" text-anchor="middle">Validate claims</text>
+    <text class="detail" x="1136" y="158" text-anchor="middle">Paired readers</text>
+    <text class="detail" x="1136" y="184" text-anchor="middle">Exact profiles</text>
+  </g>
+
+  <path class="arrow" d="M 248 146 H 280" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 496 146 H 528" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 744 146 H 776" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M 992 146 H 1024" marker-end="url(#arrowhead)"/>
+
+  <text class="heading" x="40" y="270">Four measured questions</text>
+
+  <g aria-label="Gate 1: validity">
+    <rect class="gate" x="40" y="294" width="280" height="126" rx="12"/>
+    <text class="gate-number" x="62" y="326">GATE 1</text>
+    <text class="label" x="180" y="360" text-anchor="middle">Validity</text>
+    <text class="detail" x="180" y="390" text-anchor="middle">Can the declared readers</text>
+    <text class="detail" x="180" y="414" text-anchor="middle">open and agree?</text>
+  </g>
+
+  <g aria-label="Gate 2: identity">
+    <rect class="gate" x="346" y="294" width="280" height="126" rx="12"/>
+    <text class="gate-number" x="368" y="326">GATE 2</text>
+    <text class="label" x="486" y="360" text-anchor="middle">Identity</text>
+    <text class="detail" x="486" y="390" text-anchor="middle">Do the selected artifact</text>
+    <text class="detail" x="486" y="414" text-anchor="middle">pivots join?</text>
+  </g>
+
+  <g aria-label="Gate 3: inertness">
+    <rect class="gate" x="652" y="294" width="280" height="126" rx="12"/>
+    <text class="gate-number" x="674" y="326">GATE 3</text>
+    <text class="label" x="792" y="360" text-anchor="middle">Inertness</text>
+    <text class="detail" x="792" y="390" text-anchor="middle">Are executable bytes inert?</text>
+    <text class="detail" x="792" y="414" text-anchor="middle">Are disclosure rules met?</text>
+  </g>
+
+  <g aria-label="Gate 4: solvability">
+    <rect class="gate" x="958" y="294" width="280" height="126" rx="12"/>
+    <text class="gate-number" x="980" y="326">GATE 4</text>
+    <text class="label" x="1098" y="360" text-anchor="middle">Solvability</text>
+    <text class="detail" x="1098" y="390" text-anchor="middle">Can shortcut solvers</text>
+    <text class="detail" x="1098" y="414" text-anchor="middle">bypass the benchmark?</text>
+  </g>
+
+  <text class="detail" x="640" y="466" text-anchor="middle">Fixture Core and samples use Gates 1-3. Benchmarks add Gate 4.</text>
+  <text class="detail" x="640" y="496" text-anchor="middle">A passing gate proves only the question written on that gate.</text>
+</svg>

@@ -42,7 +42,18 @@ from artifactforge.bench.benchmark import (
     grade,
     normalize,
 )
-from artifactforge.bench.counterfactual import evaluate_counterfactuals
+from artifactforge.bench.counterfactual import (
+    LOCAL_CHECKS_PER_FAMILY,
+    MACOS_DATABASE_UUID_RELATION,
+    MACOS_XATTR_UUID_RELATION,
+    MAPPING_PARSER_ARTIFACTS_PER_WORLD,
+    MAPPING_RELATIONS,
+    MAPPING_WORLD_COUNT,
+    QUESTION_COUNT,
+    RegisteredAttackExecutionError,
+    WINDOWS_FILEID_RELATION,
+    evaluate_counterfactuals,
+)
 from artifactforge.bench.positive_controls import calibrate_positive_controls
 from artifactforge.bench.partial_union import (
     fit_partial_union as _fit_partial_union,
@@ -337,21 +348,65 @@ def _contract(
 
 def _counterfactual_contract(r: GateReport, public_tasks) -> bool:
     failures_before = len(r.fails)
-    passed = total = 0
+    public_tasks = tuple(public_tasks)
+    passed = 0
+    total = sum(
+        LOCAL_CHECKS_PER_FAMILY.get(public.family, 0) for public in public_tasks
+    )
     by_family = defaultdict(lambda: [0, 0])
     for public in public_tasks:
+        by_family[public.family][1] += LOCAL_CHECKS_PER_FAMILY.get(public.family, 0)
+
+    representatives = {}
+    for public in sorted(
+        public_tasks,
+        key=lambda task: (str(getattr(task, "family", "")), task.scenario_id),
+    ):
+        if public.family in MAPPING_RELATIONS:
+            representatives.setdefault(public.family, public)
+    missing_representatives = sorted(set(MAPPING_RELATIONS) - set(representatives))
+    if missing_representatives:
+        r.fail(
+            "counterfactual mapping worlds have no deterministic representative for "
+            f"families: {missing_representatives!r}"
+        )
+
+    mapping_counts: Counter = Counter()
+    mapping_relations_seen = set()
+    source_trees_passed = 0
+    mapping_diagnostics = 0
+    max_mapping_diagnostics = 12
+    for public in public_tasks:
+        include_mapping_worlds = representatives.get(public.family) is public
         try:
-            report = evaluate_counterfactuals(public)
+            report = evaluate_counterfactuals(
+                public, include_mapping_worlds=include_mapping_worlds
+            )
+        except RegisteredAttackExecutionError as exc:
+            r.metrics["registered_attack_execution_failed_attack"] = exc.name
+            r.metrics["registered_attack_execution_failed_corpus"] = "measured"
+            r.fail(
+                f"registered attack {exc.name!r} failed on the measured corpus: "
+                f"{type(exc.cause).__name__}: {exc.cause}; shortcut inference was suppressed"
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 - a proof failure is gate evidence
             r.fail(
                 f"{public.scenario_id}: parser-valid counterfactual evaluation failed: "
                 f"{type(exc).__name__}: {exc}"
             )
             continue
+        expected_local = LOCAL_CHECKS_PER_FAMILY[report.family]
+        if report.total != expected_local:
+            r.fail(
+                f"{public.scenario_id}: counterfactual engine returned {report.total} "
+                f"local checks, expected {expected_local}"
+            )
         passed += report.passed
-        total += report.total
         by_family[report.family][0] += report.passed
-        by_family[report.family][1] += report.total
+        source_trees_passed += int(report.source_tree_unchanged)
+        if not report.source_tree_unchanged:
+            r.fail(f"{public.scenario_id}: counterfactual evaluation changed its source tree")
         for detail in report.details:
             if not detail.passed:
                 explanation = detail.error or ", ".join(
@@ -362,8 +417,101 @@ def _counterfactual_contract(r: GateReport, public_tasks) -> bool:
                     f"{public.scenario_id}: counterfactual {detail.mutation} on "
                     f"{detail.targets!r} did not have its exact local effect: {explanation}"
                 )
+        for mapping_report in report.mapping_worlds:
+            mapping_relations_seen.add(mapping_report.relation)
+            mapping_counts.update(mapping_report.metric_counts())
+            relation_stem = mapping_report.relation.replace("-", "_")
+            r.metrics[f"mapping_world_{relation_stem}_passed"] = mapping_report.passed
+            r.metrics[f"mapping_world_{relation_stem}_total"] = mapping_report.total
+            expected_attacks = tuple(sorted(ADVERSARIES))
+            if mapping_report.attack_names != expected_attacks:
+                r.fail(
+                    f"{public.scenario_id}: mapping relation {mapping_report.relation!r} "
+                    "did not execute the exact registered relation-omitting attack set"
+                )
+            for world in mapping_report.details:
+                if world.passed:
+                    continue
+                if mapping_diagnostics < max_mapping_diagnostics:
+                    reasons = []
+                    if world.error:
+                        reasons.append(world.error)
+                    reasons.extend(world.attack_failures)
+                    if world.reference_questions_passed != world.reference_questions_total:
+                        reasons.append(
+                            "reference recovered "
+                            f"{world.reference_questions_passed}/"
+                            f"{world.reference_questions_total} intended answers"
+                        )
+                    if (
+                        world.positive_control_questions_passed
+                        != world.positive_control_questions_total
+                    ):
+                        reasons.append(
+                            "positive control recovered "
+                            f"{world.positive_control_questions_passed}/"
+                            f"{world.positive_control_questions_total} intended answers"
+                        )
+                    r.fail(
+                        f"{public.scenario_id}: mapping relation "
+                        f"{mapping_report.relation!r} world {world.permutation!r} failed: "
+                        + ("; ".join(reasons) or "one or more exact checks failed")
+                    )
+                    mapping_diagnostics += 1
+
+    expected_relations = {
+        WINDOWS_FILEID_RELATION,
+        MACOS_XATTR_UUID_RELATION,
+        MACOS_DATABASE_UUID_RELATION,
+    }
+    if mapping_relations_seen != expected_relations:
+        r.fail(
+            "counterfactual mapping-world mechanisms differ from the exact contract: "
+            f"observed={sorted(mapping_relations_seen)!r}, "
+            f"expected={sorted(expected_relations)!r}"
+        )
+    expected_mapping_totals = {
+        "mapping_relations_total": len(expected_relations),
+        "mapping_worlds_total": len(expected_relations) * MAPPING_WORLD_COUNT,
+        "mapping_parser_artifacts_total": MAPPING_WORLD_COUNT
+        * sum(MAPPING_PARSER_ARTIFACTS_PER_WORLD.values()),
+        "mapping_reference_questions_total": len(expected_relations)
+        * MAPPING_WORLD_COUNT
+        * QUESTION_COUNT,
+        "mapping_attack_invariance_total": len(expected_relations)
+        * MAPPING_WORLD_COUNT
+        * len(ADVERSARIES),
+        "mapping_positive_control_questions_total": len(expected_relations)
+        * MAPPING_WORLD_COUNT
+        * QUESTION_COUNT,
+        "mapping_positive_control_changes_total": len(expected_relations)
+        * (MAPPING_WORLD_COUNT - 1),
+    }
+    for total_name, expected_total in expected_mapping_totals.items():
+        passed_name = total_name.removesuffix("_total") + "_passed"
+        observed_total = mapping_counts[total_name]
+        r.metrics[passed_name] = mapping_counts[passed_name]
+        r.metrics[total_name] = expected_total
+        if observed_total != expected_total:
+            r.fail(
+                f"counterfactual mapping metric {total_name!r} observed "
+                f"{observed_total}, expected {expected_total}"
+            )
+    failed_mapping_worlds = (
+        expected_mapping_totals["mapping_worlds_total"]
+        - mapping_counts["mapping_worlds_passed"]
+    )
+    if failed_mapping_worlds > mapping_diagnostics:
+        r.fail(
+            f"counterfactual mapping worlds had {failed_mapping_worlds} failures; "
+            f"diagnostics were bounded to the first {max_mapping_diagnostics}"
+        )
     r.metrics["counterfactual_checks_passed"] = passed
     r.metrics["counterfactual_checks_total"] = total
+    r.metrics["counterfactual_source_trees_passed"] = source_trees_passed
+    r.metrics["counterfactual_source_trees_total"] = len(public_tasks)
+    r.metrics["mapping_world_representative_scenes_total"] = len(representatives)
+    r.metrics["mapping_world_representative_mechanisms_total"] = len(expected_relations)
     for family, (family_passed, family_total) in sorted(by_family.items()):
         r.metrics[f"counterfactual_{family}_passed"] = family_passed
         r.metrics[f"counterfactual_{family}_total"] = family_total

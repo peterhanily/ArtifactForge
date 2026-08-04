@@ -20,9 +20,12 @@ env:
   # Bootstrap through an isolated venv so PEP 668 runner Python installations stay untouched.
   # Keep the installer version centralized and exact; every job verifies what it installed.
   UV_VERSION: "0.11.17"
-  # Hatchling consumes this standard build timestamp. A fixed epoch makes release archives
-  # independent of checkout/build time; the hashed build closure fixes the producer itself.
-  SOURCE_DATE_EPOCH: "0"
+  # Hatchling consumes this standard build timestamp. Use the exact 2020-02-02 timestamp
+  # enforced by the raw wheel/gzip/tar inspectors, rather than relying on backend clamping.
+  SOURCE_DATE_EPOCH: "1580601600"
+  # Official CycloneDX 1.5 tag resolved to its immutable upstream commit. The release-evidence
+  # lane also verifies the exact reviewed hashes of all three schema resources before use.
+  CYCLONEDX_SCHEMA_COMMIT: "c320fc0f0b46873864927d9d5684eea7ba439728"
   # One place to bump the pin. The seed formulas in artifactforge/ef_seeds.py are verified
   # against this exact tag, and tests/ef_contract/test_golden_formulas.py compares them to
   # upstream's own code on every run.
@@ -32,15 +35,19 @@ jobs:
   # ArtifactForge is standalone. This job installs NO EvidenceForge on purpose: if the suite
   # cannot go green without it, the standalone claim is false.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]   # 3.11 is the declared floor — test it, don't assume it
+        # 3.11 is the declared floor. The locked native oracles ship CPython 3.13 wheels;
+        # CPython 3.14 has a dedicated zero-dependency fixture lane below. Its full external
+        # oracle closure remains explicitly blocked and is never inferred from wheel tags.
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           # The committed scorecard cites its producer commit, normally the parent of the card
           # commit. Its provenance test must be able to read that object in CI and PR merge refs.
           fetch-depth: 0
@@ -53,7 +60,7 @@ jobs:
           UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
           python3 -m venv "$UV_BOOTSTRAP"
           "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
-            "uv==$UV_VERSION"
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
           echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
           "$UV_BOOTSTRAP/bin/uv" --version
       - name: Python ${{ matrix.python-version }}
@@ -72,7 +79,8 @@ jobs:
           uv run python - <<'PY'
           import importlib.metadata
           import sqlite3
-          import lief, macholib, pefile, pyregf, pyscca, regipy, windowsprefetch, yara
+          import lief, macholib, pefile, pylnk, pyregf, pyscca, regipy, windowsprefetch, yara
+          from LnkParse3.lnk_file import LnkFile
           from dissect.target import Target
           from elftools.elf.elffile import ELFFile
           from xdg.DesktopEntry import DesktopEntry
@@ -88,13 +96,17 @@ jobs:
           print("regipy          ", getattr(regipy, "__version__", "(unversioned)"))
           print("libregf         ", pyregf.get_version())
           print("windowsprefetch ", getattr(windowsprefetch, "__version__", "(unversioned)"))
+          assert pyscca.get_version() == "20260527", pyscca.get_version()
           print("libscca         ", pyscca.get_version())
+          print("liblnk-python  ", pylnk.get_version())
+          print("LnkParse3      ", importlib.metadata.version("LnkParse3"))
           print("yara-python     ", yara.__version__)
           print("pyelftools      ", importlib.metadata.version("pyelftools"))
           print("PyXDG           ", importlib.metadata.version("PyXDG"))
           print("dissect.target  ", importlib.metadata.version("dissect.target"))
           print("sqlite3         ", sqlite3.sqlite_version)
           print("Linux adapters  ", ELFFile.__name__, DesktopEntry.__name__, Target.__name__)
+          print("Shell Link      ", pylnk.file.__name__, LnkFile.__name__)
           print("shipped raw     ", loads_sqlite.__name__, loads_binary_plist.__name__,
                 loads_desktop_entry.__name__, loads_bash_history.__name__)
           PY
@@ -107,39 +119,76 @@ jobs:
 
       - name: Fixture Core — build, reproduce, assure and release deterministically
         run: |
-          uv run artifactforge fixture build \
-            examples/fixtures/windows-loose-v1.json fixture-run/windows-a
+          FIXTURE_RUN="$RUNNER_TEMP/artifactforge-fixture-run"
+          mkdir -p "$FIXTURE_RUN"
+          umask 022
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture build \
+            examples/fixtures/windows-loose-v2.json "$FIXTURE_RUN/windows-a"
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture verify \
+            "$FIXTURE_RUN/windows-a" --assurance
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture release \
+            "$FIXTURE_RUN/windows-a" "$FIXTURE_RUN/windows-a.tar" --assurance
+          umask 077
           PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture build \
-            examples/fixtures/windows-loose-v1.json fixture-run/windows-b
-          uv run artifactforge fixture verify fixture-run/windows-a --assurance
-          uv run artifactforge fixture diff fixture-run/windows-a fixture-run/windows-b
-          uv run artifactforge fixture release \
-            fixture-run/windows-a fixture-run/windows-a.tar --assurance
-          uv run artifactforge fixture release \
-            fixture-run/windows-b fixture-run/windows-b.tar --assurance
-          cmp fixture-run/windows-a.tar fixture-run/windows-b.tar
-          uv run artifactforge fixture build \
-            examples/fixtures/linux-glibc-x86_64-loose-v1.json fixture-run/linux-a
+            examples/fixtures/windows-loose-v2.json "$FIXTURE_RUN/windows-b"
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture verify \
+            "$FIXTURE_RUN/windows-b" --assurance
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture release \
+            "$FIXTURE_RUN/windows-b" "$FIXTURE_RUN/windows-b.tar" --assurance
+          umask 022
+          uv run artifactforge fixture diff "$FIXTURE_RUN/windows-a" "$FIXTURE_RUN/windows-b"
+          diff -r "$FIXTURE_RUN/windows-a" "$FIXTURE_RUN/windows-b"
+          cmp "$FIXTURE_RUN/windows-a.tar" "$FIXTURE_RUN/windows-b.tar"
+
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture build \
+            examples/fixtures/macos-14-loose-v2.json "$FIXTURE_RUN/macos-a"
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture verify \
+            "$FIXTURE_RUN/macos-a" --assurance
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture release \
+            "$FIXTURE_RUN/macos-a" "$FIXTURE_RUN/macos-a.tar" --assurance
+          umask 077
           PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture build \
-            examples/fixtures/linux-glibc-x86_64-loose-v1.json fixture-run/linux-b
-          uv run artifactforge fixture verify fixture-run/linux-a --assurance
-          uv run artifactforge fixture diff fixture-run/linux-a fixture-run/linux-b
-          uv run artifactforge fixture release \
-            fixture-run/linux-a fixture-run/linux-a.tar --assurance
-          uv run artifactforge fixture release \
-            fixture-run/linux-b fixture-run/linux-b.tar --assurance
-          cmp fixture-run/linux-a.tar fixture-run/linux-b.tar
-          echo "Windows and Linux fixture trees and release archives are byte-identical"
+            examples/fixtures/macos-14-loose-v2.json "$FIXTURE_RUN/macos-b"
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture verify \
+            "$FIXTURE_RUN/macos-b" --assurance
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture release \
+            "$FIXTURE_RUN/macos-b" "$FIXTURE_RUN/macos-b.tar" --assurance
+          umask 022
+          uv run artifactforge fixture diff "$FIXTURE_RUN/macos-a" "$FIXTURE_RUN/macos-b"
+          diff -r "$FIXTURE_RUN/macos-a" "$FIXTURE_RUN/macos-b"
+          cmp "$FIXTURE_RUN/macos-a.tar" "$FIXTURE_RUN/macos-b.tar"
+
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v2.json "$FIXTURE_RUN/linux-a"
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture verify \
+            "$FIXTURE_RUN/linux-a" --assurance
+          PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv run artifactforge fixture release \
+            "$FIXTURE_RUN/linux-a" "$FIXTURE_RUN/linux-a.tar" --assurance
+          umask 077
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture build \
+            examples/fixtures/linux-glibc-x86_64-loose-v2.json "$FIXTURE_RUN/linux-b"
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture verify \
+            "$FIXTURE_RUN/linux-b" --assurance
+          PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv run artifactforge fixture release \
+            "$FIXTURE_RUN/linux-b" "$FIXTURE_RUN/linux-b.tar" --assurance
+          umask 022
+          uv run artifactforge fixture diff "$FIXTURE_RUN/linux-a" "$FIXTURE_RUN/linux-b"
+          diff -r "$FIXTURE_RUN/linux-a" "$FIXTURE_RUN/linux-b"
+          cmp "$FIXTURE_RUN/linux-a.tar" "$FIXTURE_RUN/linux-b.tar"
+          echo "all v2 fixture trees and release archives are byte-identical"
 
       - name: Distributions — constrained reproducible sdist, wheel and no-dependency smoke
         if: matrix.python-version == '3.12'
         run: |
+          test -z "$(git status --porcelain --untracked-files=all)"
           umask 022
           PYTHONHASHSEED=1 TZ=UTC LC_ALL=C uv build \
+            --no-sources --no-create-gitignore \
             --build-constraint build-constraints.txt --require-hashes \
             --out-dir "$RUNNER_TEMP/artifactforge-dist-a"
           umask 077
           PYTHONHASHSEED=7 TZ=Asia/Tokyo LC_ALL=C uv build \
+            --no-sources --no-create-gitignore \
             --build-constraint build-constraints.txt --require-hashes \
             --out-dir "$RUNNER_TEMP/artifactforge-dist-b"
           cmp "$RUNNER_TEMP"/artifactforge-dist-a/artifactforge-*.tar.gz \
@@ -153,17 +202,17 @@ jobs:
             --python "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/python" --no-deps \
             "$RUNNER_TEMP"/artifactforge-dist-a/artifactforge-*.whl
           "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture build \
-            examples/fixtures/windows-loose-v1.json \
+            examples/fixtures/windows-loose-v2.json \
             "$RUNNER_TEMP/artifactforge-wheel-windows-fixture"
           "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture verify \
             "$RUNNER_TEMP/artifactforge-wheel-windows-fixture"
           "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture build \
-            examples/fixtures/macos-14-loose-v1.json \
+            examples/fixtures/macos-14-loose-v2.json \
             "$RUNNER_TEMP/artifactforge-wheel-macos-fixture"
           "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture verify \
             "$RUNNER_TEMP/artifactforge-wheel-macos-fixture"
           "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture build \
-            examples/fixtures/linux-glibc-x86_64-loose-v1.json \
+            examples/fixtures/linux-glibc-x86_64-loose-v2.json \
             "$RUNNER_TEMP/artifactforge-wheel-linux-fixture"
           "$RUNNER_TEMP/artifactforge-wheel-smoke/bin/artifactforge" fixture verify \
             "$RUNNER_TEMP/artifactforge-wheel-linux-fixture"
@@ -174,6 +223,7 @@ jobs:
           import tarfile
           import zipfile
           from artifactforge.gates.oracles import load_binary_plist, load_sqlite
+          from artifactforge.gates.oracles.sqlite_subset import SQLiteWireProfile
 
           runner = Path(os.environ["RUNNER_TEMP"])
           dist = runner / "artifactforge-dist-a"
@@ -190,11 +240,26 @@ jobs:
           assert any(name.endswith("/build-constraints.txt") for name in members)
 
           names = sorted(path.name for path in files("artifactforge.fixture.schemas").iterdir())
-          assert names == ["fixture-manifest-v1.schema.json", "fixture-spec-v1.schema.json"]
+          assert names == [
+              "fixture-manifest-v1.schema.json",
+              "fixture-manifest-v2.schema.json",
+              "fixture-spec-v1.schema.json",
+              "fixture-spec-v2.schema.json",
+          ]
           payload = runner / "artifactforge-wheel-macos-fixture" / "artifacts"
-          databases = [payload / name for name in ("knowledgeC.db", "TCC.db", "QuarantineEventsV2")]
-          plists = sorted(payload.glob("*.plist"))
-          assert all(load_sqlite(path).tables for path in databases)
+          databases = [
+              payload / "private/var/db/CoreDuet/Knowledge/knowledgeC.db",
+              payload / "Users/v/Library/Application Support/com.apple.TCC/TCC.db",
+              payload / (
+                  "Users/v/Library/Preferences/"
+                  "com.apple.LaunchServices.QuarantineEventsV2"
+              ),
+          ]
+          plists = sorted((payload / "Users/v/Library/LaunchAgents").glob("*.plist"))
+          assert all(load_sqlite(
+              path,
+              wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+          ).tables for path in databases)
           assert len(plists) == 3 and all(load_binary_plist(path) for path in plists)
           linux_payload = runner / "artifactforge-wheel-linux-fixture" / "artifacts"
           linux_files = sorted(path for path in linux_payload.rglob("*") if path.is_file())
@@ -204,6 +269,61 @@ jobs:
           assert sum(path.name == ".bash_history" for path in linux_files) == 1
           print(names)
           PY
+
+      - name: Local release evidence — SBOM, archive and no-publish rehearsal
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run python scripts/release_evidence.py create \
+            --primary-dist "$RUNNER_TEMP/artifactforge-dist-a" \
+            --comparison-dist "$RUNNER_TEMP/artifactforge-dist-b" \
+            --out "$RUNNER_TEMP/artifactforge-release-evidence" \
+            --uv "$RUNNER_TEMP/artifactforge-uv-bootstrap/bin/uv"
+          uv run python scripts/release_evidence.py verify \
+            "$RUNNER_TEMP/artifactforge-release-evidence" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --uv "$RUNNER_TEMP/artifactforge-uv-bootstrap/bin/uv"
+          .venv/bin/python scripts/publish_rehearsal.py \
+            "$RUNNER_TEMP/artifactforge-release-evidence/dist" \
+            --uv "$RUNNER_TEMP/artifactforge-uv-bootstrap/bin/uv"
+
+      - name: Validate every SBOM with hash-pinned official CycloneDX 1.5 schemas
+        if: matrix.python-version == '3.12'
+        run: |
+          SCHEMA_DIR="$RUNNER_TEMP/artifactforge-cyclonedx-1.5"
+          mkdir -p "$SCHEMA_DIR"
+          for SCHEMA_NAME in \
+            bom-1.5.schema.json \
+            jsf-0.82.schema.json \
+            spdx.schema.json; do
+            curl --fail --silent --show-error --location \
+              --proto '=https' --proto-redir '=https' \
+              --connect-timeout 10 --max-time 60 --max-filesize 524288 \
+              "https://raw.githubusercontent.com/CycloneDX/specification/${CYCLONEDX_SCHEMA_COMMIT}/schema/${SCHEMA_NAME}" \
+              --output "$SCHEMA_DIR/$SCHEMA_NAME"
+          done
+          (
+            cd "$SCHEMA_DIR"
+            printf '%s  %s\n' \
+              067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b \
+              bom-1.5.schema.json \
+              8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae \
+              jsf-0.82.schema.json \
+              4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc \
+              spdx.schema.json | sha256sum --check --strict
+          )
+          uv run python scripts/validate_cyclonedx.py \
+            --schema-dir "$SCHEMA_DIR" \
+            "$RUNNER_TEMP/artifactforge-release-evidence/sbom/wheel.cdx.json" \
+            "$RUNNER_TEMP/artifactforge-release-evidence/sbom/sdist.cdx.json" \
+            "$RUNNER_TEMP/artifactforge-release-evidence/sbom/development-oracles.cdx.json"
+
+      - name: Retain unsigned local release evidence
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifactforge-local-release-evidence
+          path: ${{ runner.temp }}/artifactforge-release-evidence
+          if-no-files-found: error
 
       # The keystone. Declared answer-bearing resident-file identities are re-derived from the
       # bytes on disk through real parsers and then compared. Deliberate stale/absent decoys
@@ -227,46 +347,45 @@ jobs:
       # differs is a change in the generator, and should be reviewed as one rather than
       # discovered by a reader.
       #
-      # SQLite files are excluded, and only those. A SQLite header embeds the version of the
-      # library that wrote it, so knowledgeC / TCC / QuarantineEventsV2 differ between the
-      # runner's sqlite3 and whichever built the committed copies — KNOWN_TELLS.md has said so
-      # from the start, and a step asserting the opposite would be asserting something the
-      # project documents as untrue. Everything else must match to the byte, across operating
-      # system and architecture: the gallery was built on macOS/arm64 and this runs on
-      # Linux/x86-64.
+      # The owned SQLite encoder makes the complete gallery independent of host sqlite3.
+      # Every file, including all three databases, must match across OS and architecture.
       - name: Samples — regenerate and byte-diff against what is committed
         run: |
           cp -r samples samples.committed
           PY=.venv/bin/python AF=.venv/bin/artifactforge ./scripts/make-samples.sh
-          diff -r -x 'knowledgeC.db' -x 'TCC.db' -x 'QuarantineEventsV2' \
-            samples.committed samples
-          echo "every non-SQLite artifact is byte-identical across OS and architecture"
-          # The excluded three still have to satisfy both implementations, or the exclusion
-          # would hide a break.
+          diff -r samples.committed samples
+          echo "every sample artifact is byte-identical across OS and architecture"
           for db in knowledgeC.db TCC.db QuarantineEventsV2; do
             uv run python -c "
           import sqlite3, sys
           from artifactforge.gates.oracles import load_sqlite
+          from artifactforge.gates.oracles.sqlite_subset import SQLiteWireProfile
           con = sqlite3.connect('samples/02-macos-quarantined-app/$db')
           assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
           assert con.execute(\"SELECT count(*) FROM sqlite_master WHERE type='table'\").fetchone()[0] >= 2
-          assert load_sqlite('samples/02-macos-quarantined-app/$db').tables
+          assert load_sqlite(
+              'samples/02-macos-quarantined-app/$db',
+              wire_profile=SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+          ).tables
           print('  $db ok')"
           done
 
       - name: Demo — the whole loop end to end
         run: AF=.venv/bin/artifactforge ./scripts/demo.sh
 
-      # Gate 4's CI assertion is the deterministic, source-bound scorecard-measurement corpus.
-      # --n must match its committed provenance. This verifies that no registered shortcut is
-      # detected at the declared familywise alpha; complete attacks and composition ensembles
-      # have independent calibrations. It is a non-reportable control, not universal shortcut
-      # resistance or a performance score.
+      # Gate 4's CI assertion is a fresh deterministic, source-bound scorecard-measurement
+      # corpus. The root fidelity-scorecard.json remains immutable v0.5 evidence and is not a
+      # valid comparison baseline for Phase 4's expanded measurement identity. This ephemeral
+      # card reruns all four gates, records the current checkout/lock/contract, and must pass.
+      # It is a non-reportable control, not release provenance, universal shortcut resistance
+      # or a performance score.
       # CI deliberately does not require a freshly random-keyed holdout to stay green: the
       # declared test permits a Type-I rejection, so that outcome cannot be a deterministic
       # build invariant.
-      - name: Gate 4 — solvability (source-bound deterministic scorecard check)
-        run: uv run artifactforge scorecard --n 40 --check fidelity-scorecard.json
+      - name: Gate 4 — solvability (fresh current-source scorecard must pass)
+        run: >-
+          uv run artifactforge scorecard --n 40
+          --out "$RUNNER_TEMP/artifactforge-current-scorecard.json" --require-pass
 
       - name: Determinism — regenerate and byte-diff
         # The property everything else rests on: the same seed must produce the same bytes.
@@ -281,15 +400,165 @@ jobs:
           diff -r out/a/_answers out/b/_answers
           echo "byte-identical across runs"
 
+  # CPython 3.14 is a real zero-dependency core lane, not a full-oracle claim.  The locked
+  # dissect-target 3.25.1 import and yara-python 4.5.4 wheel remain explicit red promotion
+  # blockers; this job proves the package build plus every Fixture v2 family without pretending
+  # those external parser contracts ran.
+  python314-fixture-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install hash-pinned uv bootstrap
+        run: |
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
+
+      - name: Install CPython 3.14 and prove the split support decision
+        run: |
+          uv python install 3.14
+          PY314="$(uv python find 3.14)"
+          "$PY314" scripts/check_python_support.py \
+            --profile core --python 3.14 --require-current-cpython --json \
+            > "$RUNNER_TEMP/artifactforge-python314-core-preflight.json"
+          if "$PY314" scripts/check_python_support.py \
+            --profile full-oracles --python 3.14 --json \
+            > "$RUNNER_TEMP/artifactforge-python314-oracle-blockers.json"; then
+            ORACLE_STATUS=0
+          else
+            ORACLE_STATUS=$?
+          fi
+          if [ "$ORACLE_STATUS" -ne 1 ]; then
+            echo "expected known-blocked exit 1, received $ORACLE_STATUS" >&2
+            exit 1
+          fi
+          "$PY314" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          core = json.loads((root / "artifactforge-python314-core-preflight.json").read_text())
+          blockers = json.loads(
+              (root / "artifactforge-python314-oracle-blockers.json").read_text()
+          )
+          expected_blockers = {
+              "dissect-target": {"version": "3.25.1", "kind": "runtime-import"},
+              "yara-python": {"version": "4.5.4", "kind": "binary-distribution"},
+          }
+          conditions = (
+              core.get("schema") == "artifactforge-python-support-audit-v2",
+              core.get("profile") == "core-preflight",
+              core.get("status") == "runtime_candidate",
+              core.get("target_python") == "3.14",
+              core.get("blockers") == {},
+              core.get("runtime_binding", {}).get("mode") == "current-cpython-bound",
+              blockers.get("schema") == "artifactforge-python-support-audit-v2",
+              blockers.get("profile") == "full-oracle-preflight",
+              blockers.get("status") == "known_blocked",
+              blockers.get("target_python") == "3.14",
+              blockers.get("runtime_binding") == {"mode": "metadata-only"},
+              set(blockers.get("blockers", {})) == set(expected_blockers),
+              all(
+                  blockers["blockers"].get(name, {}).get(key) == value
+                  for name, expected in expected_blockers.items()
+                  for key, value in expected.items()
+              ),
+          )
+          if not all(conditions):
+              raise SystemExit("CPython 3.14 support evidence differs from reviewed policy")
+          PY
+
+      - name: Build and install the zero-dependency wheel on 3.14
+        run: |
+          PY314="$(uv python find 3.14)"
+          uv build --python "$PY314" --no-sources --no-create-gitignore \
+            --build-constraint build-constraints.txt --require-hashes \
+            --out-dir "$RUNNER_TEMP/artifactforge-python314-dist"
+          uv venv "$RUNNER_TEMP/artifactforge-python314-core" --python "$PY314"
+          uv pip install \
+            --python "$RUNNER_TEMP/artifactforge-python314-core/bin/python" --no-deps \
+            "$RUNNER_TEMP"/artifactforge-python314-dist/artifactforge-*.whl
+          "$RUNNER_TEMP/artifactforge-python314-core/bin/python" - <<'PY'
+          import artifactforge
+          import compileall
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          package = Path(artifactforge.__file__).resolve().parent
+          if not compileall.compile_dir(package, quiet=1):
+              raise SystemExit("installed ArtifactForge package did not compile")
+          dist = Path(os.environ["RUNNER_TEMP"]) / "artifactforge-python314-dist"
+          wheel, = dist.glob("artifactforge-*.whl")
+          payload = wheel.read_bytes()
+          record = {"name": wheel.name, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+          (Path(os.environ["RUNNER_TEMP"]) / "artifactforge-python314-wheel.json").write_text(
+              json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          PY
+          "$RUNNER_TEMP/artifactforge-python314-core/bin/artifactforge" --version
+
+      - name: Build and reproduce all three Fixture v2 families on 3.14
+        run: |
+          AF="$RUNNER_TEMP/artifactforge-python314-core/bin/artifactforge"
+          for family in \
+            windows-loose-v2 \
+            macos-14-loose-v2 \
+            linux-glibc-x86_64-loose-v2; do
+            "$AF" fixture build \
+              "examples/fixtures/$family.json" "$RUNNER_TEMP/python314-$family"
+            "$AF" fixture verify "$RUNNER_TEMP/python314-$family"
+          done
+          PY314="$(uv python find 3.14)"
+          "$PY314" scripts/check_python_support.py \
+            --fixture-evidence \
+              "windows-loose-v2=$RUNNER_TEMP/python314-windows-loose-v2" \
+            --fixture-evidence \
+              "macos-14-loose-v2=$RUNNER_TEMP/python314-macos-14-loose-v2" \
+            --fixture-evidence \
+              "linux-glibc-x86_64-loose-v2=$RUNNER_TEMP/python314-linux-glibc-x86_64-loose-v2" \
+            --expect-fixture-digest \
+              windows-loose-v2=d2d3865e7eca534c6b1102a77106270a19e10b502c5e4c4cbe0878270ef95ef4 \
+            --expect-fixture-digest \
+              macos-14-loose-v2=da227fd866a0c1b70471be4c5a7a49c06c5af498598821a065ebd1165bd2dea6 \
+            --expect-fixture-digest \
+              linux-glibc-x86_64-loose-v2=1ec6bfc7caa38a6c0e43988d9e8028a80a85c3a25a103d8f9d420a463a375759 \
+            --json > "$RUNNER_TEMP/artifactforge-python314-fixture-evidence.json"
+
+      - name: Retain exact CPython 3.14 core and blocker evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: artifactforge-python314-fixture-core
+          path: |
+            ${{ runner.temp }}/artifactforge-python314-core-preflight.json
+            ${{ runner.temp }}/artifactforge-python314-oracle-blockers.json
+            ${{ runner.temp }}/artifactforge-python314-wheel.json
+            ${{ runner.temp }}/artifactforge-python314-fixture-evidence.json
+          if-no-files-found: error
+
   # Linux exercises the byte-level verifier on every supported Python. This native lane asks
   # Apple's own tools the narrower questions only macOS can answer and retains their responses
   # as JSON. A non-zero spctl result is called a rejection only when the platform positive
   # control passes; an unavailable assessment service is recorded as inconclusive instead.
   macos-native:
-    runs-on: macos-14
+    # macos-14 enters retirement in 2026; keep the host generation explicit while retaining
+    # macos-14-loose-v2 as the artifact-format profile under test.
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Native tools (missing means FAIL)
         run: |
@@ -304,7 +573,7 @@ jobs:
           UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
           python3 -m venv "$UV_BOOTSTRAP"
           "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
-            "uv==$UV_VERSION"
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
           echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
           "$UV_BOOTSTRAP/bin/uv" --version
           "$UV_BOOTSTRAP/bin/uv" python install 3.12
@@ -314,6 +583,16 @@ jobs:
         run: |
           uv run pytest -q -rs tests/test_macho.py tests/test_native_macos_attestation.py
           uv run pytest -q -rs tests/test_gate_mutations.py -k macho
+
+      - name: Benchmark v3 POSIX one-shot ledger and detached evidence
+        run: |
+          uv run pytest -q -rs \
+            tests/test_benchmark_submission.py \
+            tests/test_benchmark_attempt_platform.py \
+            tests/test_benchmark_attempt.py \
+            tests/test_benchmark_attempt_cli.py \
+            tests/test_benchmark_attempt_verify_cli.py \
+            tests/test_benchmark_attempt_integration.py
 
       - name: Gate 3 over the five committed Mach-O binaries
         run: >-
@@ -373,7 +652,7 @@ jobs:
 
       - name: Retain native attestation
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-macos-attestation
           path: native-macos-attestation.json
@@ -389,9 +668,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Native tools and package evidence (missing means FAIL)
         run: |
@@ -414,7 +694,7 @@ jobs:
           UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
           python3 -m venv "$UV_BOOTSTRAP"
           "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
-            "uv==$UV_VERSION"
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
           echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
           "$UV_BOOTSTRAP/bin/uv" --version
           "$UV_BOOTSTRAP/bin/uv" python install 3.12
@@ -430,7 +710,7 @@ jobs:
       - name: Generate the exact Linux Fixture Core root
         run: |
           uv run artifactforge fixture build \
-            examples/fixtures/linux-glibc-x86_64-loose-v1.json \
+            examples/fixtures/linux-glibc-x86_64-loose-v2.json \
             "$RUNNER_TEMP/artifactforge-linux-native/fixture"
 
       - name: Fixture-bound portable assurance plus complementary native attestation
@@ -477,14 +757,42 @@ jobs:
           assert len(fixture["manifest_file"]["sha256"]) == 64
           manifest = fixture["manifest"]
           assert manifest["generator"]["name"] == "artifactforge"
-          assert manifest["generator"]["abi"] == "artifactforge-fixture-generator-v1"
+          assert manifest["generator"]["abi"] == "artifactforge-fixture-generator-v2"
+          assert manifest["generator"]["producer_profile"] == \
+              "artifactforge-fixture-producer-v2"
           assert manifest["recipe"]["family"] == "linux"
           assert manifest["recipe"]["profile"]["id"] == \
-              "linux-glibc-x86_64-loose-v1"
-          assert manifest["payload"]["file_count"] == 9
+              "linux-glibc-x86_64-loose-v2"
+          payload = manifest["payload"]
+          assert payload["directory_count"] == 6
+          assert payload["file_count"] == 9
+          assert payload["metadata_blob_count"] == 0
+          assert payload["metadata_blob_bytes"] == 0
+          assert payload["total_bound_bytes"] == payload["regular_file_bytes"]
           portable = fixture["portable_verification"]
           assert portable["verdict"] == "pass"
           assert portable["failures"] == []
+          assert portable["checks"] == {
+              "assurance": "pass",
+              "integrity": "pass",
+              "reproduction": "pass",
+          }
+          assert portable["payload"] == {
+              key: payload[key]
+              for key in (
+                  "directory_count",
+                  "file_count",
+                  "metadata_blob_bytes",
+                  "metadata_blob_count",
+                  "regular_file_bytes",
+                  "total_bound_bytes",
+              )
+          }
+          compatibility = portable["producer_compatibility"]
+          assert compatibility["generator_abi"] == \
+              "artifactforge-fixture-generator-v2"
+          assert compatibility["producer_profile"] == \
+              "artifactforge-fixture-producer-v2"
           environment = portable["environment"]
           assert environment["python"]["implementation"] == "CPython"
           assert environment["python"]["version"]
@@ -504,6 +812,7 @@ jobs:
           scene = report["scene"]
           assert not Path(scene["path"]).is_absolute()
           assert scene["manifest"]["file_count"] == 9
+          assert payload["regular_file_bytes"] == scene["manifest"]["total_bytes"]
           assert scene["post_attestation"]["tree_sha256"] == scene["manifest"]["tree_sha256"]
           assert scene["post_attestation"]["unchanged"] is True
           assert scene["observed_profile"] == {
@@ -551,10 +860,308 @@ jobs:
 
       - name: Retain native attestation
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-linux-attestation
           path: ${{ runner.temp }}/native-linux-attestation.json
+          if-no-files-found: ignore
+
+  # Fixture Core currently verifies its complete v2 logical filesystem through Unix
+  # descriptor-relative primitives. This job therefore makes the portable assurance result
+  # explicit and transports only its canonical, byte-bound fixture/report bundle to Windows.
+  windows-native-prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv and ArtifactForge
+        run: |
+          UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
+          python3 -m venv "$UV_BOOTSTRAP"
+          "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
+          echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
+          "$UV_BOOTSTRAP/bin/uv" --version
+          "$UV_BOOTSTRAP/bin/uv" python install 3.12
+          "$UV_BOOTSTRAP/bin/uv" sync --frozen --extra dev --python 3.12
+
+      - name: Windows attestation contract and mutation tests
+        run: uv run pytest -q -rs tests/test_native_windows_attestation.py
+
+      - name: Build and fully assure the exact Windows Fixture v2 bundle
+        run: |
+          BUNDLE="$RUNNER_TEMP/artifactforge-windows-native-bundle"
+          mkdir -p "$BUNDLE"
+          uv run artifactforge fixture build \
+            examples/fixtures/windows-loose-v2.json "$BUNDLE/fixture"
+          uv run artifactforge fixture verify "$BUNDLE/fixture" --assurance
+          uv run python scripts/attest_windows_native.py prepare \
+            --fixture "$BUNDLE/fixture" \
+            --out "$BUNDLE/portable.json"
+          uv run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / (
+              "artifactforge-windows-native-bundle/portable.json"
+          )
+          raw = path.read_bytes()
+          report = json.loads(raw)
+          canonical = (json.dumps(
+              report,
+              allow_nan=False,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ) + "\n").encode()
+          assert raw == canonical
+          assert report["schema"] == \
+              "artifactforge-native-windows-portable-prerequisite-v1"
+          assert report["schema_version"] == 1
+          assert report["verdict"] == "pass", report["failures"]
+          assert report["producer"]["source"]["worktree_clean"] is True
+          assert report["producer"]["source_post_preparation"]["unchanged"] is True
+          assert len(report["host"]["identity_sha256"]) == 64
+          assert report["host"]["system"] == "Linux"
+          fixture = report["fixture"]
+          manifest = fixture["manifest"]
+          assert manifest["generator"]["abi"] == "artifactforge-fixture-generator-v2"
+          assert manifest["generator"]["producer_profile"] == \
+              "artifactforge-fixture-producer-v2"
+          assert manifest["recipe"]["family"] == "windows"
+          assert manifest["recipe"]["profile"]["id"] == "windows-loose-v2"
+          assert fixture["carrier"]["file_count"] == 14
+          assert fixture["post_preparation"]["unchanged"] is True
+          portable = fixture["portable_verification"]
+          assert portable["checks"] == {
+              "assurance": "pass",
+              "integrity": "pass",
+              "reproduction": "pass",
+          }
+          assert [(item["gate"], item["name"], item["verdict"])
+                  for item in portable["reports"]] == [
+              (1, "validity", "pass"),
+              (3, "inertness", "pass"),
+          ]
+          assert portable["payload"]["file_count"] == 14
+          assert portable["payload"]["metadata_blob_count"] == 1
+          PY
+
+      - name: Retain exact portable prerequisite and fixture
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-prerequisite
+          path: ${{ runner.temp }}/artifactforge-windows-native-bundle
+          if-no-files-found: error
+
+  # This job never executes an emitted PE. It requires the exact portable-assurance bundle,
+  # matches source/manifest/default-stream digests, then lets signed PowerShell and dumpbin
+  # inspect private copies. Zone.Identifier streams exist only for a bounded readback in that
+  # private tree and are removed before every post-state check.
+  windows-native:
+    needs: windows-native-prepare
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv and ArtifactForge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $bootstrap = Join-Path $env:RUNNER_TEMP "artifactforge-uv-bootstrap"
+          python -m venv $bootstrap
+          $python = Join-Path $bootstrap "Scripts/python.exe"
+          & $python -m pip install --quiet --disable-pip-version-check `
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
+          $scripts = Join-Path $bootstrap "Scripts"
+          $scripts | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $uv = Join-Path $scripts "uv.exe"
+          & $uv --version
+          & $uv python install 3.12
+          & $uv sync --frozen --extra dev --python 3.12
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Require PowerShell and Visual C++ inspection tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          Get-Command pwsh -ErrorAction Stop
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            "Microsoft Visual Studio/Installer/vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+            throw "vswhere.exe is unavailable"
+          }
+          $dumpbin = & $vswhere -latest -products "*" `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe"
+          if ($LASTEXITCODE -ne 0 -or -not $dumpbin) {
+            throw "x64 dumpbin.exe is unavailable"
+          }
+          $dumpbin
+
+      - name: Windows-safe attestation and benchmark platform contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          uv run pytest -q -rs tests/test_native_windows_attestation.py `
+            -k powershell_observations_pass_target_separately_and_use_literal_path
+          uv run pytest -q -rs `
+            tests/test_benchmark_attempt_platform.py `
+            tests/test_benchmark_attempt_verify_cli.py `
+            tests/test_benchmark_submission.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-windows-prerequisite
+          path: ${{ runner.temp }}/artifactforge-windows-native-bundle
+
+      - name: Prerequisite-bound native Windows observation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $bundle = Join-Path $env:RUNNER_TEMP "artifactforge-windows-native-bundle"
+          $report = Join-Path $env:RUNNER_TEMP "native-windows-attestation.json"
+          uv run python scripts/attest_windows_native.py observe `
+            --fixture (Join-Path $bundle "fixture") `
+            --prerequisite (Join-Path $bundle "portable.json") `
+            --out $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "native-windows-attestation.json"
+          raw = path.read_bytes()
+          report = json.loads(raw)
+          canonical = (json.dumps(
+              report,
+              allow_nan=False,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ) + "\n").encode()
+          assert raw == canonical
+          assert report["schema"] == "artifactforge-native-windows-attestation-v4"
+          assert report["schema_version"] == 4
+          assert report["verdict"] == "pass", report["failures"]
+          assert report["claim_scope"]["emitted_pe_execution"] is False
+          assert report["producer"]["source"]["worktree_clean"] is True
+          assert report["producer"]["source_post_observation"]["unchanged"] is True
+          portable = report["portable_prerequisite"]
+          prerequisite_path = Path(os.environ["RUNNER_TEMP"]) / (
+              "artifactforge-windows-native-bundle/portable.json"
+          )
+          assert portable["identity"]["sha256"] == hashlib.sha256(
+              prerequisite_path.read_bytes()
+          ).hexdigest()
+          assert portable["post_observation"]["unchanged"] is True
+          assert portable["record"]["fixture"]["portable_verification"]["checks"] == {
+              "assurance": "pass",
+              "integrity": "pass",
+              "reproduction": "pass",
+          }
+          assert report["fixture"]["post_observation"]["unchanged"] is True
+          assert report["private_scene"]["post_observation"]["unchanged"] is True
+          assert report["host"]["native"]["Is64BitOperatingSystem"] is True
+          assert report["host"]["native"]["Is64BitProcess"] is True
+          assert report["artifact_counts"] == {
+              "default_stream_files": 14,
+              "prefetch": 4,
+              "scheduled_task_xml": 1,
+              "shell_link": 1,
+              "synthetic_pe": 5,
+              "zone_identifier": 1,
+          }
+          tools = report["tools"]
+          assert tools["post_observation"]["unchanged"] is True
+          assert all(len(tools["initial"][name]["sha256"]) == 64
+                     for name in ("dumpbin", "powershell", "vswhere"))
+          control = report["positive_control"]
+          assert control["verdict"] == "pass"
+          assert control["selected"]["signature"]["Status"] == "Valid"
+          assert len(control["selected"]["signature"]["SignerThumbprint"]) == 40
+          assert control["post_observation"]["unchanged"] is True
+          assert "post-size bits" in report["claim_scope"]["prefetch_scope"]
+          prefetches = report["artifacts"]["prefetch"]
+          assert len(prefetches) == 4
+          for prefetch in prefetches:
+              assert prefetch["verdict"] == "pass"
+              assert prefetch["wrapper"]["algorithm"] == 4
+              assert prefetch["inner_header"]["version"] == 30
+              assert prefetch["inner_header"]["signature"] == "SCCA"
+              native = prefetch["native_decompression"]
+              assert native["decompress_ntstatus"] == "0x00000000"
+              assert native["final_uncompressed_size"] == \
+                  prefetch["wrapper"]["declared_uncompressed_size"]
+              assert len(native["output_sha256"]) == 64
+          prefetch_control = report["prefetch_positive_control"]
+          assert prefetch_control["verdict"] == "pass"
+          assert prefetch_control["outcome"] in {
+              "native-error", "nonmatching-exact-output"
+          }
+          for pe in report["artifacts"]["pe"]:
+              assert pe["verdict"] == "pass"
+              assert pe["signature"]["result"]["Status"] == "NotSigned"
+              assert pe["byte_profile"]["instruction_profile"] == [
+                  {"bytes": "c3", "instruction": "ret"},
+              ]
+              assert pe["byte_profile"]["zero_padding_bytes"] == 511
+              assert all(pe["dumpbin_headers"]["markers"].values())
+          tasks = report["artifacts"]["scheduled_task_xml"]
+          links = report["artifacts"]["shell_link"]
+          assert len(tasks) == len(links) == 1
+          task = tasks[0]
+          link = links[0]
+          assert task["verdict"] == link["verdict"] == "pass"
+          assert task["native_parse"]["result"]["Accepted"] is True
+          assert task["native_parse"]["result"]["ApiSequence"] == \
+              "TaskService.Connect;NewTask(0);TaskDefinition.XmlText"
+          assert link["native_parse"]["result"]["ApiSequence"] == \
+              "WScript.Shell.CreateShortcut-read-only"
+          assert link["native_parse"]["result"]["Arguments"] == ""
+          assert link["native_parse"]["result"]["WorkingDirectory"] == ""
+          assert task["target"]["path"] != link["target"]["path"]
+          zone_paths = {
+              zone["path"] for zone in report["artifacts"]["zone_identifier"]
+          }
+          assert {task["target"]["path"], link["target"]["path"]}.isdisjoint(
+              zone_paths
+          )
+          for zone in report["artifacts"]["zone_identifier"]:
+              assert zone["verdict"] == "pass"
+              assert zone["private_projection"]["materialized"] is True
+              assert zone["private_projection"]["removed"] is True
+              assert zone["private_projection"]["before"]["exists"] is False
+              assert zone["private_projection"]["after"]["exists"] is False
+              assert zone["default_stream_postcondition"]["unchanged"] is True
+              assert zone["authenticode_postcondition"]["result"]["Status"] == \
+                  "NotSigned"
+              assert zone["logical_stream"]["size"] == zone["readback"]["result"]["Length"]
+          '@ | uv run python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Retain native Windows attestation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-windows-attestation
+          path: ${{ runner.temp }}/native-windows-attestation.json
           if-no-files-found: ignore
 
   # EvidenceForge is a CI-only development tool, never a declared dependency: it is not on
@@ -566,10 +1173,12 @@ jobs:
   # is missing or if any contract test skips — a skipped integration test exits 0 and reads
   # exactly like a passing one, which is how a formula change would sail through green.
   ef-contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       # uv is installed with pip rather than through astral-sh/setup-uv, for two reasons: the
       # action still targets Node 20 and so annotates every job with a deprecation warning,
       # and this removes a third-party action from the supply chain of a repository whose
@@ -579,7 +1188,7 @@ jobs:
           UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
           python3 -m venv "$UV_BOOTSTRAP"
           "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
-            "uv==$UV_VERSION"
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
           echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
           "$UV_BOOTSTRAP/bin/uv" --version
       - name: Python
@@ -697,11 +1306,13 @@ jobs:
   # seed-formula change shows up here as a warning rather than as a surprise on the day the
   # pin is bumped.
   ef-drift-canary:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       # uv is installed with pip rather than through astral-sh/setup-uv, for two reasons: the
       # action still targets Node 20 and so annotates every job with a deprecation warning,
       # and this removes a third-party action from the supply chain of a repository whose
@@ -711,7 +1322,7 @@ jobs:
           UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"
           python3 -m venv "$UV_BOOTSTRAP"
           "$UV_BOOTSTRAP/bin/python" -m pip install --quiet --disable-pip-version-check \
-            "uv==$UV_VERSION"
+            --no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt
           echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"
           "$UV_BOOTSTRAP/bin/uv" --version
       - run: uv python install 3.12

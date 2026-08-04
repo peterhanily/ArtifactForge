@@ -23,7 +23,17 @@ import pytest
 
 from artifactforge import suite
 from artifactforge.artifacts.hive import build_amcache_hive
+from artifactforge.artifacts.shell_link import (
+    ShellLinkTimestamps,
+    build_shell_link,
+    parse_shell_link,
+)
+from artifactforge.artifacts.windows_task import build_scheduled_task_xml
 from artifactforge.bench.benchmark import generate_suite
+from artifactforge.compose.scene import (
+    WINDOWS_SHELL_LINK_SOURCE,
+    WINDOWS_TASK_XML_SOURCE,
+)
 from artifactforge.gates import identity, inertness, solvability, validity
 
 pytest.importorskip("pefile")
@@ -62,6 +72,31 @@ def test_validity_reddens_when_an_artifact_is_corrupted(tmp_path):
 
     new = _new_fails(before, validity.run(task.directory))
     assert any("regipy rejected" in f for f in new), f"new fails: {new}"
+
+
+def test_validity_reddens_when_macho_header_leaves_the_exact_profile(tmp_path):
+    """MUTATION: add a valid Mach-O header flag that the hand writer never emits.
+
+    Both external parsers still accept and agree on the resulting structure.  Only the
+    claim-scoped writer-profile validator should reject it.
+    """
+    task = _macos(tmp_path, "macho-validity-profile")
+    before = validity.run(task.directory)
+    assert before.ok, before.render()
+    path = _subject_macho(task)
+    with open(path, "rb") as file:
+        data = bytearray(file.read())
+    flags = struct.unpack_from("<I", data, 24)[0]
+    struct.pack_into("<I", data, 24, flags | 0x01000000)  # MH_NO_HEAP_EXECUTION
+    with open(path, "wb") as file:
+        file.write(data)
+
+    _assert_macho_remains_parseable(path)
+    after = validity.run(task.directory)
+    assert after.metrics["oracle_reads_passed"] == after.metrics["oracle_reads_total"]
+    new = _new_fails(before, after)
+    assert any("artifactforge-arm64-macho-v1-profile" in failure for failure in new), new
+    assert not any("macho-consensus" in failure for failure in new), new
 
 
 # --- Gate 2: break a pivot and the identity gate must notice --------------------------
@@ -113,6 +148,95 @@ def test_identity_reddens_when_persistence_points_somewhere_else(tmp_path):
     assert not after.ok
     assert any("not in the scene" in f or "autostart" in f
                for f in _new_fails(before, after)), _new_fails(before, after)
+
+
+def test_identity_reddens_when_parser_valid_task_points_to_a_nonresident(tmp_path):
+    task = _windows(tmp_path, "task-nonresident")
+    before = identity.run(task.directory, task.join)
+    assert before.ok, before.render()
+
+    truth = task.join["scheduled_task"]
+    missing = r"C:\Program Files\ArtifactForge\missing-helper.exe"
+    changed = build_scheduled_task_xml(
+        truth["task_name"],
+        missing,
+        resident_pe_paths=(missing,),
+    )
+    path = Path(task.directory) / WINDOWS_TASK_XML_SOURCE
+    path.write_bytes(changed)
+
+    after = identity.run(task.directory, task.join)
+    new = _new_fails(before, after)
+    assert not after.ok
+    assert any(
+        "Task XML->scene relation" in failure and "target path" in failure
+        or "Task XML->resident truth" in failure
+        for failure in new
+    ), new
+
+
+@pytest.mark.parametrize("mutation", ("path", "size"))
+def test_identity_reddens_on_parser_valid_shell_link_join_mutation(tmp_path, mutation):
+    task = _windows(tmp_path, f"shell-link-{mutation}")
+    before = identity.run(task.directory, task.join)
+    assert before.ok, before.render()
+
+    path = Path(task.directory) / WINDOWS_SHELL_LINK_SOURCE
+    parsed = parse_shell_link(path.read_bytes())
+    target_path = (
+        r"C:\Program Files\ArtifactForge\missing-helper.exe"
+        if mutation == "path"
+        else parsed.target_path
+    )
+    target_size = parsed.target_size + (1 if mutation == "size" else 0)
+    path.write_bytes(
+        build_shell_link(
+            target_path,
+            parsed.display_name,
+            target_size,
+            timestamps=ShellLinkTimestamps(
+                creation_filetime=parsed.creation_filetime,
+                access_filetime=parsed.access_filetime,
+                write_filetime=parsed.write_filetime,
+            ),
+            volume_serial=parsed.volume_serial,
+            volume_label=parsed.volume_label,
+        )
+    )
+
+    after = identity.run(task.directory, task.join)
+    new = _new_fails(before, after)
+    assert not after.ok
+    expected = "exactly one resident target" if mutation == "path" else "header target size"
+    assert any(expected in failure for failure in new), new
+
+
+@pytest.mark.parametrize(
+    ("relation", "field", "replacement", "message"),
+    (
+        ("scheduled_task", "target_role", "stale-role", "target role"),
+        (
+            "shell_link",
+            "guest_path",
+            r"C:\Users\v\Desktop\ArtifactForgeMaintenance.lnk",
+            "Start Menu guest path",
+        ),
+    ),
+)
+def test_identity_rederives_every_private_windows_reference_field(
+    tmp_path, relation, field, replacement, message
+):
+    task = _windows(tmp_path, f"private-{relation}-{field}")
+    before = identity.run(task.directory, task.join)
+    assert before.ok, before.render()
+    changed_join = copy.deepcopy(task.join)
+    changed_join[relation][field] = replacement
+
+    after = identity.run(task.directory, changed_join)
+    new = _new_fails(before, after)
+
+    assert not after.ok
+    assert any(message in failure for failure in new), new
 
 
 # --- Gate 3: strip the marker, or point an indicator somewhere real --------------------
@@ -583,7 +707,7 @@ def test_validity_reddens_on_tcc_meaning_even_when_both_parsers_agree(tmp_path):
         con.close()
 
     new = _new_fails(before, validity.run(task.directory))
-    assert any("macos-sqlite-profile" in failure for failure in new), new
+    assert any("sqlite-profile" in failure for failure in new), new
     assert not any("sqlite-consensus" in failure or "rejected it" in failure for failure in new)
 
 
@@ -620,7 +744,7 @@ def test_validity_reddens_when_sqlite_artifact_names_are_swapped(tmp_path):
     os.replace(temporary, right)
 
     new = _new_fails(before, validity.run(task.directory))
-    profile_failures = [failure for failure in new if "macos-sqlite-profile" in failure]
+    profile_failures = [failure for failure in new if "sqlite-profile" in failure]
     assert len(profile_failures) == 2, new
     assert not any("sqlite-consensus" in failure or "rejected it" in failure for failure in new)
 

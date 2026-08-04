@@ -23,6 +23,7 @@ from artifactforge.fixture.model import (
     FixturePayload,
     FixtureSpec,
     FixtureValidationError,
+    GeneratorIdentity,
     ProfileSpec,
     artifact_entries_from_tree,
     canonical_artifact_entries,
@@ -55,7 +56,21 @@ def _entries() -> tuple[ArtifactEntry, ...]:
 
 
 def _manifest() -> FixtureManifest:
-    return FixtureManifest.create(_spec(), generator_version="0.0.3", entries=_entries())
+    # Parser-model tests construct a historical value directly.  The public v1 producer
+    # helper is intentionally unavailable now that its exact 0.5.0 bytes are frozen.
+    spec = _spec()
+    entries = _entries()
+    return FixtureManifest(
+        generator=GeneratorIdentity(version="0.0.3"),
+        recipe=spec,
+        recipe_sha256=spec.recipe_sha256,
+        payload=FixturePayload(
+            file_count=len(entries),
+            total_bytes=sum(entry.size for entry in entries),
+            tree_sha256=compute_tree_sha256(entries),
+            files=entries,
+        ),
+    )
 
 
 def test_canonical_json_is_sorted_compact_utf8_nfc_with_exactly_one_lf():

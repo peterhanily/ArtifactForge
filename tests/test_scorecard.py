@@ -8,6 +8,7 @@ committed artifact instead. These are the three properties that make guarding it
 
 import hashlib
 import json
+import math
 import os
 import stat
 import subprocess
@@ -204,9 +205,7 @@ def test_scoped_status_order_blocks_deterioration_and_every_current_failure():
         ),
         (lambda card: card["gates"].pop("solvability"), "gates must contain exactly"),
         (
-            lambda card: card["status"]["generator_assurance"].update(
-                {"gates": ["validity"]}
-            ),
+            lambda card: card["status"]["generator_assurance"].update({"gates": ["validity"]}),
             "generator_assurance.gates",
         ),
         (
@@ -228,9 +227,7 @@ def test_scoped_status_order_blocks_deterioration_and_every_current_failure():
                         "gaps": ["Gate 1 (validity): concealed gap"],
                     }
                 ),
-                card["gates"]["validity"].update(
-                    {"gaps": ["concealed gap"]}
-                ),
+                card["gates"]["validity"].update({"gaps": ["concealed gap"]}),
             ),
             "honest_gaps omits",
         ),
@@ -276,8 +273,8 @@ def test_scorecard_measurement_key_has_stable_disclosed_provenance():
             "same_process_python_is_security_boundary": False,
             "resource_limits": {
                 "maximum_scenarios": 200,
-                "current_artifact_files_per_scene": {"windows": 11, "macos": 16},
-                "public_files_at_maximum": 2701,
+                "current_artifact_files_per_scene": {"windows": 14, "macos": 16},
+                "public_files_at_maximum": 3001,
                 "public_json_bytes": 16 * 1024 * 1024,
                 "answer_document_bytes": 1024 * 1024,
                 "answer_value_characters": 4096,
@@ -319,7 +316,16 @@ def test_scorecard_measurement_key_has_stable_disclosed_provenance():
         "counterfactuals": {
             "engine": "parser-valid-local-effect-v1",
             "source_tree_must_remain_unchanged": True,
-            "checks_per_scene": {"windows": 13, "macos": 11},
+            "checks_per_scene": {"windows": 20, "macos": 25},
+            "representative_mapping_world_contract": {
+                "representative_mechanisms": 3,
+                "mapping_worlds": 360,
+                "parser_valid_artifact_rebuilds": 840,
+                "independently_resolved_question_checks": 1800,
+                "registered_attack_invariance_checks": 3960,
+                "positive_control_answer_checks": 1800,
+                "non_identity_control_change_checks": 357,
+            },
             "windows_mutations": [
                 "windows-fileid-swap",
                 "windows-fileid-absent",
@@ -388,9 +394,9 @@ def test_scorecard_measurement_key_has_stable_disclosed_provenance():
                 "purpose": "windows-macos-generator-assurance",
                 "suite_kind": "dev",
                 "families": ["windows", "macos"],
-                    "scenario_count": 40,
-                    "maximum_scenario_count": 200,
-                    "family_counts": {"windows": 20, "macos": 20},
+                "scenario_count": 40,
+                "maximum_scenario_count": 200,
+                "family_counts": {"windows": 20, "macos": 20},
                 "deterministic": True,
                 "benchmark_reportable": False,
                 "suite_derivation_domain": "artifactforge/bench/v2",
@@ -521,7 +527,35 @@ def test_scorecard_counterfactual_counts_match_the_live_engine(tmp_path):
 
 def test_committed_scorecard_has_exact_measurement_and_source_provenance(card):
     """The published card must identify both its corpus and a real matching source commit."""
-    assert card["measurement"] == suite.scorecard_measurement_provenance(40)
+    expected_measurement = suite.scorecard_measurement_provenance(40)
+    if card["generator"]["artifactforge_version"] == "0.5.0":
+        # The tagged 0.5.0 card predates Phase 4's expanded local swaps and representative
+        # all-mapping proof. Preserve what that source commit actually measured instead of
+        # silently relabeling its historical evidence with the stronger current contract.
+        expected_measurement["benchmark_contract"]["counterfactuals"] = {
+            "engine": "parser-valid-local-effect-v1",
+            "source_tree_must_remain_unchanged": True,
+            "checks_per_scene": {"windows": 13, "macos": 11},
+            "windows_mutations": [
+                "windows-fileid-swap",
+                "windows-fileid-absent",
+                "windows-resident-pe-replacement",
+            ],
+            "macos_mutations": [
+                "macos-xattr-uuid-swap",
+                "macos-database-uuid-swap",
+                "macos-xattr-uuid-absent",
+            ],
+        }
+        historical_limits = expected_measurement["benchmark_contract"]["protocol"][
+            "resource_limits"
+        ]
+        historical_limits["current_artifact_files_per_scene"] = {
+            "windows": 11,
+            "macos": 16,
+        }
+        historical_limits["public_files_at_maximum"] = 2701
+    assert card["measurement"] == expected_measurement
 
     generator = card["generator"]
     provenance = generator["source"]
@@ -560,6 +594,24 @@ def test_committed_scorecard_has_exact_measurement_and_source_provenance(card):
         text=True,
     ).stdout.strip()
     assert provenance["git_tree"] == tree
+
+
+def test_historical_v05_card_is_an_explicitly_incompatible_phase4_boundary(card):
+    historical = card["measurement"]["benchmark_contract"]["counterfactuals"]
+    current_measurement = suite.scorecard_measurement_provenance(40)
+    current = current_measurement["benchmark_contract"]["counterfactuals"]
+
+    assert card["generator"]["artifactforge_version"] == "0.5.0"
+    assert historical["checks_per_scene"] == {"windows": 13, "macos": 11}
+    assert "representative_mapping_world_contract" not in historical
+    assert current["checks_per_scene"] == {"windows": 20, "macos": 25}
+    assert current["representative_mapping_world_contract"] == (
+        suite.BENCHMARK_MAPPING_WORLD_CONTRACT
+    )
+    assert measurement_incompatibilities(
+        card,
+        {"measurement": current_measurement},
+    )
 
 
 def _clean_source_provenance():
@@ -621,10 +673,7 @@ def _install_scorecard_gate_reports(monkeypatch, reports):
     monkeypatch.setattr(
         cli_module,
         "GATES",
-        {
-            report.name: (lambda _args, report=report: report)
-            for report in reports
-        },
+        {report.name: (lambda _args, report=report: report) for report in reports},
     )
     source = _clean_source_provenance()
     monkeypatch.setattr(cli_module, "_git_source_provenance", lambda: source)
@@ -641,9 +690,7 @@ def _isolate_status_comparison(monkeypatch):
     )
 
 
-def test_scorecard_check_blocks_pass_to_gap_with_unchanged_metrics(
-    tmp_path, monkeypatch, capsys
-):
+def test_scorecard_check_blocks_pass_to_gap_with_unchanged_metrics(tmp_path, monkeypatch, capsys):
     baseline = tmp_path / "baseline.json"
     save(_release_card(), baseline)
     _install_scorecard_gate_reports(monkeypatch, _release_reports(generator_gap=True))
@@ -660,9 +707,7 @@ def test_scorecard_check_blocks_pass_to_gap_with_unchanged_metrics(
     assert "REGRESSED generator assurance: pass -> gap" in capsys.readouterr().out
 
 
-def test_scorecard_check_allows_one_unchanged_preexisting_gap(
-    tmp_path, monkeypatch, capsys
-):
+def test_scorecard_check_allows_one_unchanged_preexisting_gap(tmp_path, monkeypatch, capsys):
     baseline = tmp_path / "baseline.json"
     save(_release_card(generator_gap=True), baseline)
     _install_scorecard_gate_reports(monkeypatch, _release_reports(generator_gap=True))
@@ -696,6 +741,43 @@ def test_scorecard_check_blocks_a_current_fail_even_when_baseline_already_failed
     )
     assert cli_module.cmd_scorecard(args) == 1
     assert "FAILING   benchmark validity: fail -> fail" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("generator_gap", "benchmark_fail", "expected_code", "expected_verdict"),
+    (
+        (False, False, 0, "pass"),
+        (True, False, 1, "gap"),
+        (False, True, 1, "fail"),
+    ),
+)
+def test_scorecard_require_pass_is_an_absolute_current_source_gate_and_keeps_evidence(
+    tmp_path,
+    monkeypatch,
+    generator_gap,
+    benchmark_fail,
+    expected_code,
+    expected_verdict,
+):
+    output = tmp_path / "current-source.json"
+    _install_scorecard_gate_reports(
+        monkeypatch,
+        _release_reports(
+            generator_gap=generator_gap,
+            benchmark_fail=benchmark_fail,
+        ),
+    )
+    args = SimpleNamespace(
+        n=40,
+        out=os.fspath(output),
+        check=None,
+        gen_dir=None,
+        scene=None,
+        require_pass=True,
+    )
+
+    assert cli_module.cmd_scorecard(args) == expected_code
+    assert load(output)["verdict"] == expected_verdict
 
 
 def test_scorecard_safe_io_round_trips_and_forces_regular_0644_mode(tmp_path):
@@ -811,9 +893,7 @@ def test_prepublication_faults_preserve_old_card_and_remove_owned_temp(
         monkeypatch.setattr(
             scorecard_module.os,
             "replace",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                OSError("injected replace failure")
-            ),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected replace failure")),
         )
 
     with pytest.raises(ScorecardError):
@@ -982,9 +1062,7 @@ def test_scorecard_check_rejects_invalid_release_structure_before_running_gates(
     assert "scorecard release structure invalid" in capsys.readouterr().out
 
 
-def test_scorecard_stdout_mode_refuses_nonfinite_generated_metric(
-    tmp_path, monkeypatch, capsys
-):
+def test_scorecard_stdout_mode_refuses_nonfinite_generated_metric(tmp_path, monkeypatch, capsys):
     reports = _release_reports()
     reports[0].metrics["nonfinite"] = float("nan")
     _install_scorecard_gate_reports(monkeypatch, reports)
@@ -1299,15 +1377,18 @@ def test_ci_consumes_the_frozen_oracle_lock_in_every_project_lane():
     assert 'UV_FROZEN: "1"' in workflow
     assert 'UV_VERSION: "0.11.17"' in workflow
     assert 'uv pip install -e ".[dev]"' not in workflow
-    assert workflow.count("sync --frozen --extra dev --python") == 5
+    assert workflow.count("sync --frozen --extra dev --python") == 7
     assert "pip install --quiet --user" not in workflow
     assert "--break-system-packages" not in workflow
-    assert workflow.count('UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"') == 5
-    assert workflow.count('python3 -m venv "$UV_BOOTSTRAP"') == 5
-    assert workflow.count('"$UV_BOOTSTRAP/bin/python" -m pip install') == 5
-    assert workflow.count('"uv==$UV_VERSION"') == 5
-    assert workflow.count('echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"') == 5
-    assert workflow.count('"$UV_BOOTSTRAP/bin/uv" --version') == 5
+    assert workflow.count('UV_BOOTSTRAP="$RUNNER_TEMP/artifactforge-uv-bootstrap"') == 7
+    assert workflow.count('python3 -m venv "$UV_BOOTSTRAP"') == 7
+    assert workflow.count('"$UV_BOOTSTRAP/bin/python" -m pip install') == 7
+    assert workflow.count(
+        "--no-deps --only-binary=:all: --require-hashes -r ci-bootstrap-requirements.txt"
+    ) == 8
+    assert '"uv==$UV_VERSION"' not in workflow
+    assert workflow.count('echo "$UV_BOOTSTRAP/bin" >> "$GITHUB_PATH"') == 7
+    assert workflow.count('"$UV_BOOTSTRAP/bin/uv" --version') == 7
 
 
 def test_release_build_backend_and_complete_closure_are_pinned_and_hashed():
@@ -1340,8 +1421,9 @@ def test_release_build_backend_and_complete_closure_are_pinned_and_hashed():
 
     with open(os.path.join(ROOT, ".github", "workflows", "ci.yml")) as f:
         workflow = f.read()
-    assert 'SOURCE_DATE_EPOCH: "0"' in workflow
-    assert workflow.count("--build-constraint build-constraints.txt --require-hashes") == 2
+    assert 'SOURCE_DATE_EPOCH: "1580601600"' in workflow
+    assert workflow.count("--build-constraint build-constraints.txt --require-hashes") == 3
+    assert workflow.count("--no-sources") == 3
     assert "artifactforge-dist-a/artifactforge-*.tar.gz" in workflow
     assert "artifactforge-dist-b/artifactforge-*.tar.gz" in workflow
     assert "artifactforge-dist-a/artifactforge-*.whl" in workflow
@@ -1349,10 +1431,76 @@ def test_release_build_backend_and_complete_closure_are_pinned_and_hashed():
     assert '"Generator: hatchling 1.31.0\\n"' in workflow
 
 
-def test_every_tracked_metric_is_present(card):
-    """Every committed metric must compare cleanly with itself, including boolean controls."""
+def test_published_legacy_scorecard_compares_cleanly_with_itself(card):
+    """A scorecard predating newly tracked metrics remains a valid comparison baseline."""
+    assert "claim_scopes" not in card["gates"]["validity"]
     assert regressions(card, card) == []
     assert len(_METRICS) >= 8
+
+
+_CLAIM_SCOPE_METRIC_PATHS = {
+    f"gates.validity.claim_scopes.{scope}.{counter}"
+    for scope in (
+        "container_acceptance",
+        "semantic_extraction",
+        "independent_consensus",
+        "declared_profile_conformance",
+        "downstream_consumer_compatibility",
+    )
+    for counter in ("passed", "total")
+}
+
+
+def _one_metric(path, value):
+    node = result = {}
+    parts = path.split(".")
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+    return result
+
+
+def test_all_gate1_claim_scope_leaves_are_tracked_without_tolerance():
+    configured = {
+        path: (direction, tolerance, label)
+        for path, direction, tolerance, label in _METRICS
+        if path.startswith("gates.validity.claim_scopes.")
+    }
+
+    assert set(configured) == _CLAIM_SCOPE_METRIC_PATHS
+    assert all(
+        direction == "higher_better" for direction, _tolerance, _label in configured.values()
+    )
+    assert all(tolerance == 0 for _direction, tolerance, _label in configured.values())
+
+
+def test_new_claim_scope_metric_is_forward_compatible_with_legacy_baseline():
+    path = "gates.validity.claim_scopes.container_acceptance.passed"
+
+    assert regressions({}, {}) == []
+    assert regressions({}, _one_metric(path, 7)) == []
+
+
+def test_removing_introduced_claim_scope_metric_is_a_regression():
+    path = "gates.validity.claim_scopes.container_acceptance.passed"
+    label = "validity: container acceptance checks passed"
+
+    assert regressions(_one_metric(path, 7), {}) == [(label, "missing", 7, None)]
+
+
+@pytest.mark.parametrize("bad_value", (None, True, "7", float("nan"), float("inf")))
+def test_introduced_claim_scope_metric_rejects_invalid_values(bad_value):
+    path = "gates.validity.claim_scopes.container_acceptance.passed"
+    label = "validity: container acceptance checks passed"
+
+    mismatch = regressions({}, _one_metric(path, bad_value))
+    assert len(mismatch) == 1
+    observed_label, kind, was, now = mismatch[0]
+    assert (observed_label, kind, was) == (label, "invalid", None)
+    if isinstance(bad_value, float) and not math.isfinite(bad_value):
+        assert isinstance(now, float) and not math.isfinite(now)
+    else:
+        assert now == bad_value
 
 
 _NONVACUOUS_METRIC_CONTRACT = {
@@ -1418,6 +1566,14 @@ def _metric_value(card, path):
     return node
 
 
+def _metric_is_present(card, path):
+    try:
+        _metric_value(card, path)
+    except KeyError:
+        return False
+    return True
+
+
 def _set_metric(card, path, value):
     node = card
     parts = path.split(".")
@@ -1430,7 +1586,7 @@ def test_boolean_metrics_preserve_type_and_order(card):
     boolean_metrics = [
         (path, label)
         for path, _direction, _tolerance, label in _METRICS
-        if isinstance(_metric_value(card, path), bool)
+        if _metric_is_present(card, path) and isinstance(_metric_value(card, path), bool)
     ]
     assert boolean_metrics, "the Gate 4 boolean-control comparison surface disappeared"
 

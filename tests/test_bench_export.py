@@ -17,7 +17,7 @@ import pytest
 from artifactforge import cli, suite
 from artifactforge.bench.benchmark import frozen_public_tasks, generate_suite
 from artifactforge.bench.reference_solver import reference_solve
-from artifactforge.inventory import inventory_regular_files
+from artifactforge.inventory import inventory_regular_files, open_real_directory
 
 
 @pytest.fixture
@@ -459,11 +459,12 @@ def test_cli_export_solve_grade_round_trip(tmp_path, evaluator, capsys):
     )
     grade_output = capsys.readouterr().out
     assert (
-        "RAW SCORE (HOLDOUT - TRUST DOMAIN UNATTESTED; NOT REPORTABLE): "
+        "RAW SCORE (HOLDOUT - LEGACY V2 LOCAL PROTOCOL; NOT REPORTABLE): "
         "10/10 = 100.0%" in grade_output
     )
     assert f"suite_id: {document['suite_id']}" in grade_output
     assert "population: 2 scenarios / 10 questions" in grade_output
+    assert "later attestation cannot promote it" in grade_output
     assert "\n  SCORE:" not in grade_output
 
 
@@ -720,6 +721,96 @@ def test_solver_refuses_preexisting_submission_without_touching_it(tmp_path, pub
     assert submission.read_bytes() == b"preserve"
 
 
+def test_solver_output_must_be_outside_public_export(public_export):
+    submission = public_export / "answers.jsonl"
+    with pytest.raises(ValueError, match="outside the public export"):
+        cli.main(
+            [
+                "bench",
+                "solve",
+                os.fspath(public_export),
+                "--out",
+                os.fspath(submission),
+            ]
+        )
+    assert not submission.exists()
+
+
+def test_solver_output_rejects_case_insensitive_public_export_alias(public_export):
+    alias = public_export.with_name(public_export.name.swapcase())
+    try:
+        aliases_export = alias.exists() and os.path.samefile(alias, public_export)
+    except OSError:
+        aliases_export = False
+    if not aliases_export:
+        pytest.skip("test filesystem is case-sensitive")
+
+    submission = alias / "answers.jsonl"
+    with pytest.raises(ValueError, match="outside the public export"):
+        cli.main(
+            [
+                "bench",
+                "solve",
+                os.fspath(public_export),
+                "--out",
+                os.fspath(submission),
+            ]
+        )
+    assert not submission.exists()
+
+
+@pytest.mark.parametrize(
+    ("move_inside_export", "message"),
+    [
+        (True, "outside the public export"),
+        (False, "parent path changed during the operation"),
+    ],
+)
+def test_solver_rechecks_output_parent_after_solving(
+    tmp_path,
+    public_export,
+    monkeypatch,
+    move_inside_export,
+    message,
+):
+    output_parent = tmp_path / "solver-output"
+    output_parent.mkdir()
+    submission = output_parent / "answers.jsonl"
+    moved_parent = (
+        public_export / "moved-solver-output"
+        if move_inside_export
+        else tmp_path / "renamed-solver-output"
+    )
+    original = reference_solve
+    moved = False
+
+    def move_parent_during_solve(task):
+        nonlocal moved
+        if not moved:
+            if move_inside_export:
+                _thaw_public_export(public_export)
+            output_parent.rename(moved_parent)
+            moved = True
+        return original(task)
+
+    monkeypatch.setattr(
+        "artifactforge.bench.reference_solver.reference_solve",
+        move_parent_during_solve,
+    )
+    with pytest.raises(ValueError, match=message):
+        cli.main(
+            [
+                "bench",
+                "solve",
+                os.fspath(public_export),
+                "--out",
+                os.fspath(submission),
+            ]
+        )
+    assert moved
+    assert not (moved_parent / submission.name).exists()
+
+
 def test_copying_export_preserves_suite_identity(tmp_path, public_export):
     copy = tmp_path / "copy"
     shutil.copytree(public_export, copy)
@@ -727,6 +818,25 @@ def test_copying_export_preserves_suite_identity(tmp_path, public_export):
     second = suite.load_public_export(os.fspath(copy))
     assert first["suite_id"] == second["suite_id"]
     assert first["public_export"]["payload"] == second["public_export"]["payload"]
+
+
+def test_pinned_public_loader_validates_held_export_after_path_replacement(
+    tmp_path,
+    public_export,
+):
+    expected = suite.load_public_export(os.fspath(public_export))
+    public_fd = open_real_directory(public_export)
+    moved = tmp_path / "held-public"
+    try:
+        public_export.rename(moved)
+        public_export.mkdir()
+        observed = suite.load_public_export(
+            os.fspath(public_export),
+            pinned_root_fd=public_fd,
+        )
+    finally:
+        os.close(public_fd)
+    assert observed == expected
 
 
 def test_evaluator_loader_rejects_public_dev_key_relabelled_as_holdout(tmp_path):

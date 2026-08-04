@@ -10,31 +10,34 @@ checks exact artifact profiles; the xattr sidecar is join data rather than a par
 format. Its UUID equals the
 QuarantineEventsV2 row identifier — the macOS cross-artifact join.
 
-SQLite files embed the writing library's version in their header; two builds with the same
-sqlite3 are byte-identical (two-clock gate), but cross-version reproducibility is a disclosed
-tell. No real extended attributes are set on the host — the xattr value is emitted as data.
+SQLite bytes are emitted by ArtifactForge's owned, leaf-only encoder rather than the host
+SQLite library.  Header offset 96 is therefore the honest value zero: no SQLite library wrote
+the file.  No real extended attributes are set on the host — the xattr value is emitted as
+data and Fixture ABI v2 binds its eventual guest metadata separately from carrier metadata.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
-import os
 from itertools import islice
 from pathlib import PurePosixPath
 import plistlib
 import re
-import sqlite3
-import stat
 import struct
-import tempfile
 import unicodedata
 from urllib.parse import urlsplit
 
 from artifactforge.disclosure import MARKER, NOTICE, RESERVED_NAME
+from artifactforge.artifacts.sqlite_owned import ColumnSpec, TableSpec, build_sqlite
 
 
-_PAGE_SIZE = 4096
 _MAX_PROFILE_ROWS = 8
+# This names a query-compatibility surface, not an Apple schema claim.  Version 1 is the
+# smallest leaf-page subset that runs the macOS 11--14 APOLLO app-in-focus query and the
+# macOS 11+ mac_apt TCC query current on 2026-08-03.  Expanding it is an ABI change because
+# the CREATE SQL and page ownership are validated byte-for-byte by Gate 1.
+SQLITE_CONSUMER_PROFILE = "macos-11-14-consumer-v1"
 _UUID = re.compile(
     r"[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}"
 )
@@ -45,6 +48,8 @@ _QUARANTINE_VALUE = re.compile(
 _LAUNCH_LABEL = re.compile(
     r"[a-z][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62}){2,}"
 )
+_KNOWLEDGEC_IDENTITY_DOMAIN_V2 = b"artifactforge/knowledgec/identity/v2\0"
+_KNOWLEDGEC_METADATA_DOMAIN_V2 = b"artifactforge/knowledgec/metadata/v2\0"
 
 
 @dataclass(frozen=True)
@@ -141,130 +146,50 @@ def _https_url(value: str, *, where: str) -> str:
     return value
 
 
-def _assert_sqlite_leaf_profile(data: bytes, expected_page_types: tuple[int, ...]) -> bytes:
-    """Never return a database outside the subset Gate 1's raw reader can inspect."""
-    expected_size = len(expected_page_types) * _PAGE_SIZE
-    if len(data) != expected_size:
-        raise ValueError(
-            f"SQLite profile exceeded its fixed leaf-page layout: {len(data)} != {expected_size}"
-        )
-    if data[:16] != b"SQLite format 3\x00" or data[16:18] != b"\x10\x00":
-        raise ValueError("SQLite writer produced an unsupported header/page size")
-    if int.from_bytes(data[28:32], "big") != len(expected_page_types):
-        raise ValueError("SQLite writer page count does not match the emitted bytes")
-    if any(data[32:40]) or any(data[52:56]) or any(data[64:68]):
-        raise ValueError("SQLite writer emitted freelist or auto-vacuum pages")
-    observed = tuple(
-        data[(index * _PAGE_SIZE) + (100 if index == 0 else 0)]
-        for index in range(len(expected_page_types))
+def _marker_table() -> TableSpec:
+    """A reserved, plainly synthetic table ignored by real forensic queries."""
+    return TableSpec(
+        RESERVED_NAME,
+        (ColumnSpec("marker", "TEXT"), ColumnSpec("notice", "TEXT")),
+        ((MARKER, NOTICE),),
     )
-    if observed != expected_page_types:
-        raise ValueError(
-            f"SQLite writer left the supported leaf-root layout: {observed!r}"
-        )
-    for index in range(len(expected_page_types)):
-        page = data[index * _PAGE_SIZE:(index + 1) * _PAGE_SIZE]
-        header = 100 if index == 0 else 0
-        first_freeblock = int.from_bytes(page[header + 1:header + 3], "big")
-        cell_count = int.from_bytes(page[header + 3:header + 5], "big")
-        content_start = int.from_bytes(page[header + 5:header + 7], "big")
-        pointer_end = header + 8 + (2 * cell_count)
-        if not pointer_end <= content_start <= _PAGE_SIZE:
-            raise ValueError("SQLite writer produced overlapping pointer/content regions")
-        if any(page[pointer_end:content_start]):
-            raise ValueError("SQLite writer produced non-zero unallocated page bytes")
-        seen = set()
-        offset = first_freeblock
-        while offset:
-            if offset in seen or not content_start <= offset <= _PAGE_SIZE - 4:
-                raise ValueError("SQLite writer produced an invalid freeblock chain")
-            seen.add(offset)
-            next_offset = int.from_bytes(page[offset:offset + 2], "big")
-            size = int.from_bytes(page[offset + 2:offset + 4], "big")
-            if size < 4 or offset + size > _PAGE_SIZE:
-                raise ValueError("SQLite writer produced an invalid freeblock size")
-            if any(page[offset + 4:offset + size]):
-                raise ValueError("SQLite writer produced non-zero freeblock body bytes")
-            offset = next_offset
-    return data
 
 
-def _mark(con) -> None:
-    """A reserved table naming ArtifactForge, so the file discloses itself.
-
-    Real forensic queries never touch it and `strings` cannot miss it. A schema a genuine
-    macOS database would not have is exactly the point: this must not be mistakable for one.
-    """
-    con.execute(f"CREATE TABLE {RESERVED_NAME} (marker TEXT, notice TEXT)")
-    con.execute(f"INSERT INTO {RESERVED_NAME} VALUES (?, ?)", (MARKER, NOTICE))
-
-
-def _sqlite_bytes(build, *, expected_page_types: tuple[int, ...]) -> bytes:
-    # sqlite3 needs a pathname. Keep an exclusive inode open inside a private directory while
-    # SQLite opens that same name. If the name is swapped before SQLite opens it, our retained
-    # inode stays empty and validation fails; if it is swapped later, we still read the inode
-    # SQLite wrote. Never unlink and then reopen an attacker-replaceable name.
-    with tempfile.TemporaryDirectory(prefix="artifactforge-sqlite-") as directory:
-        fd, path = tempfile.mkstemp(prefix="artifact-", suffix=".db", dir=directory)
-        try:
-            before = os.fstat(fd)
-            if (
-                not stat.S_ISREG(before.st_mode)
-                or before.st_nlink != 1
-                or before.st_size != 0
-            ):
-                raise ValueError("SQLite writer output is not one private regular inode")
-            con = sqlite3.connect(path)
-            try:
-                con.execute("PRAGMA page_size=4096")
-                con.execute("PRAGMA legacy_file_format=ON")
-                con.execute("PRAGMA journal_mode=DELETE")
-                build(con)
-                _mark(con)
-                con.commit()
-            finally:
-                con.close()
-
-            expected_size = len(expected_page_types) * _PAGE_SIZE
-            written = os.fstat(fd)
-            if (
-                (written.st_dev, written.st_ino) != (before.st_dev, before.st_ino)
-                or written.st_size != expected_size
-            ):
-                raise ValueError(
-                    f"SQLite writer output size {written.st_size} != {expected_size}"
-                )
-            os.lseek(fd, 0, os.SEEK_SET)
-            chunks = []
-            remaining = expected_size + 1
-            while remaining:
-                chunk = os.read(fd, min(remaining, 64 * 1024))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            data = b"".join(chunks)
-            after = os.fstat(fd)
-            if (
-                (written.st_dev, written.st_ino, written.st_size, written.st_mtime_ns)
-                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-            ):
-                raise ValueError("SQLite writer output changed while it was being read")
-        finally:
-            os.close(fd)
-        return _assert_sqlite_leaf_profile(data, expected_page_types)
+def _knowledgec_uuid_v2(identity_seed: bytes, rowid: int, bundle_id: str) -> str:
+    digest = bytearray(
+        hashlib.sha256(
+            _KNOWLEDGEC_IDENTITY_DOMAIN_V2
+            + identity_seed
+            + b"\0"
+            + str(rowid).encode("ascii")
+            + b"\0"
+            + bundle_id.encode("ascii")
+        ).digest()[:16]
+    )
+    digest[6] = (digest[6] & 0x0F) | 0x40
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    value = digest.hex().upper()
+    return (
+        f"{value[:8]}-{value[8:12]}-{value[12:16]}-"
+        f"{value[16:20]}-{value[20:32]}"
+    )
 
 
-def build_knowledgec(entries) -> bytes:
+def build_knowledgec(entries, *, identity_seed: bytes | None = None) -> bytes:
     """/private/var/db/CoreDuet/Knowledge/knowledgeC.db — app-in-focus usage.
 
     `entries` is a sequence of (bundle_id, start_mac, end_mac). A real knowledgeC holds
     weeks of every app a user touched, so "which app was used" is only a question when
     several were.
+
+    The emitted schema is :data:`SQLITE_CONSUMER_PROFILE`, a deliberately bounded
+    query-compatible subset rather than a captured CoreData schema.  It carries every table,
+    join key and selected column used by APOLLO's macOS 11--14 app-in-focus query.  Gate 1
+    checks the foreign keys and derived fields as well as parser agreement; this does not
+    assert OS-version fidelity for unmodelled knowledgeC tables or columns.
     """
     entries = _rows(entries, where="knowledgeC", width=3)
     validated = []
-    bundles = set()
     for index, (bundle_id, start_mac, end_mac) in enumerate(entries):
         bundle_id = _text(
             bundle_id, where=f"knowledgeC row {index} bundle_id", max_bytes=128
@@ -273,19 +198,94 @@ def build_knowledgec(entries) -> bytes:
         end = _finite_number(end_mac, where=f"knowledgeC row {index} end")
         if end <= start:
             raise ValueError(f"knowledgeC row {index} end must be after start")
-        if bundle_id in bundles:
-            raise ValueError(f"knowledgeC bundle_id is duplicated: {bundle_id!r}")
-        bundles.add(bundle_id)
         validated.append((bundle_id, start, end))
 
-    def build(con):
-        con.execute(
-            "CREATE TABLE ZOBJECT (Z_PK INTEGER PRIMARY KEY, ZSTREAMNAME TEXT, "
-            "ZVALUESTRING TEXT, ZSTARTDATE REAL, ZENDDATE REAL)")
-        for i, (bundle_id, start_mac, end_mac) in enumerate(validated, start=1):
-            con.execute("INSERT INTO ZOBJECT VALUES (?, '/app/inFocus', ?, ?, ?)",
-                        (i, bundle_id, float(start_mac), float(end_mac)))
-    return _sqlite_bytes(build, expected_page_types=(0x0D, 0x0D, 0x0D))
+    if identity_seed is not None and (
+        type(identity_seed) is not bytes or len(identity_seed) != 32
+    ):
+        raise ValueError("knowledgeC identity_seed must be exactly 32 bytes or None")
+
+    object_rows = []
+    metadata_rows = []
+    for i, (bundle_id, start_mac, end_mac) in enumerate(validated, start=1):
+        # 1970-01-01 was Thursday (5 in knowledgeC's Sunday=1 convention).
+        unix_day = math.floor((start_mac + 978_307_200) / 86_400)
+        day_of_week = ((unix_day + 4) % 7) + 1
+        if identity_seed is None:
+            uuid = f"00000000-0000-4000-8000-{i:012X}"
+            metadata_hash = hashlib.sha256(
+                b"artifactforge::knowledgec-metadata\x00" + bundle_id.encode("ascii")
+            ).hexdigest()
+        else:
+            uuid = _knowledgec_uuid_v2(identity_seed, i, bundle_id)
+            metadata_hash = hashlib.sha256(
+                _KNOWLEDGEC_METADATA_DOMAIN_V2
+                + uuid.encode("ascii")
+                + b"\0"
+                + bundle_id.encode("ascii")
+            ).hexdigest()
+        metadata_rows.append((i, 0, "UNUSED", "UNUSED", metadata_hash))
+        object_rows.append(
+            (
+                i,
+                "/app/inFocus",
+                bundle_id,
+                float(start_mac),
+                float(end_mac),
+                day_of_week,
+                0,
+                float(start_mac),
+                uuid,
+                i,
+                1,
+            )
+        )
+
+    return build_sqlite(
+        (
+            TableSpec(
+                "ZOBJECT",
+                (
+                    ColumnSpec("Z_PK", "INTEGER", primary_key=True),
+                    ColumnSpec("ZSTREAMNAME", "TEXT"),
+                    ColumnSpec("ZVALUESTRING", "TEXT"),
+                    ColumnSpec("ZSTARTDATE", "REAL"),
+                    ColumnSpec("ZENDDATE", "REAL"),
+                    ColumnSpec("ZSTARTDAYOFWEEK", "INTEGER"),
+                    ColumnSpec("ZSECONDSFROMGMT", "INTEGER"),
+                    ColumnSpec("ZCREATIONDATE", "REAL"),
+                    ColumnSpec("ZUUID", "TEXT"),
+                    ColumnSpec("ZSTRUCTUREDMETADATA", "INTEGER"),
+                    ColumnSpec("ZSOURCE", "INTEGER"),
+                ),
+                tuple(object_rows),
+            ),
+            TableSpec(
+                "ZSTRUCTUREDMETADATA",
+                (
+                    ColumnSpec("Z_PK", "INTEGER", primary_key=True),
+                    ColumnSpec(
+                        "Z_DKAPPLICATIONMETADATAKEY__LAUNCHREASON", "INTEGER"
+                    ),
+                    ColumnSpec(
+                        "Z_DKAPPLICATIONMETADATAKEY__EXTENSIONCONTAININGBUNDLEIDENTIFIER",
+                        "TEXT",
+                    ),
+                    ColumnSpec(
+                        "Z_DKAPPLICATIONMETADATAKEY__EXTENSIONHOSTIDENTIFIER", "TEXT"
+                    ),
+                    ColumnSpec("ZMETADATAHASH", "TEXT"),
+                ),
+                tuple(metadata_rows),
+            ),
+            TableSpec(
+                "ZSOURCE",
+                (ColumnSpec("Z_PK", "INTEGER", primary_key=True),),
+                ((1,),),
+            ),
+            _marker_table(),
+        )
+    )
 
 
 def build_tcc(rows) -> bytes:
@@ -300,10 +300,15 @@ def build_tcc(rows) -> bytes:
 
     auth_value 2 is allowed, 0 is denied; a database containing only grants would make
     "which app was allowed" a lookup rather than a question.
+
+    The emitted schema is :data:`SQLITE_CONSUMER_PROFILE`, not a complete captured TCC
+    schema.  It includes the macOS 11+ fields selected by mac_apt, including
+    ``indirect_object_identifier``; unmodelled code-signing blobs and policy tables are
+    outside this profile and no OS-version-fidelity claim follows from query success.
     """
     rows = _rows(rows, where="TCC", width=4)
     validated = []
-    clients = set()
+    identities = set()
     for index, (client, service, auth_value, last_modified) in enumerate(rows):
         client = _text(client, where=f"TCC row {index} client", max_bytes=128)
         service = _text(service, where=f"TCC row {index} service", max_bytes=96)
@@ -315,19 +320,33 @@ def build_tcc(rows) -> bytes:
         )
         if last_modified <= 0:
             raise ValueError(f"TCC row {index} last_modified must be positive Unix time")
-        if client in clients:
-            raise ValueError(f"TCC client is duplicated: {client!r}")
-        clients.add(client)
+        identity = service, client
+        if identity in identities:
+            raise ValueError(f"TCC service/client identity is duplicated: {identity!r}")
+        identities.add(identity)
         validated.append((client, service, auth_value, last_modified))
 
-    def build(con):
-        con.execute(
-            "CREATE TABLE access (service TEXT, client TEXT, client_type INTEGER, "
-            "auth_value INTEGER, auth_reason INTEGER, last_modified INTEGER)")
-        for client, service, auth_value, last_modified in validated:
-            con.execute("INSERT INTO access VALUES (?, ?, 0, ?, 3, ?)",
-                        (service, client, auth_value, last_modified))
-    return _sqlite_bytes(build, expected_page_types=(0x0D, 0x0D, 0x0D))
+    return build_sqlite(
+        (
+            TableSpec(
+                "access",
+                (
+                    ColumnSpec("service", "TEXT"),
+                    ColumnSpec("client", "TEXT"),
+                    ColumnSpec("client_type", "INTEGER"),
+                    ColumnSpec("auth_value", "INTEGER"),
+                    ColumnSpec("auth_reason", "INTEGER"),
+                    ColumnSpec("indirect_object_identifier", "TEXT"),
+                    ColumnSpec("last_modified", "INTEGER"),
+                ),
+                tuple(
+                    (service, client, 0, auth_value, 3, "UNUSED", last_modified)
+                    for client, service, auth_value, last_modified in validated
+                ),
+            ),
+            _marker_table(),
+        )
+    )
 
 
 def build_quarantine_events(events) -> bytes:
@@ -363,16 +382,26 @@ def build_quarantine_events(events) -> bytes:
             raise ValueError(f"quarantine row {index} timestamp must be non-negative Mac time")
         validated.append((uuid, agent, data_url, origin_url, timestamp))
 
-    def build(con):
-        con.execute(
-            "CREATE TABLE LSQuarantineEvent (LSQuarantineEventIdentifier TEXT PRIMARY KEY, "
-            "LSQuarantineTimeStamp REAL, LSQuarantineAgentName TEXT, "
-            "LSQuarantineDataURLString TEXT, LSQuarantineOriginURLString TEXT)")
-        for uuid, agent, data_url, origin_url, timestamp_mac in validated:
-            con.execute("INSERT INTO LSQuarantineEvent VALUES (?, ?, ?, ?, ?)",
-                        (uuid, float(timestamp_mac), agent, data_url, origin_url))
-    return _sqlite_bytes(
-        build, expected_page_types=(0x0D, 0x0D, 0x0A, 0x0D)
+    return build_sqlite(
+        (
+            TableSpec(
+                "LSQuarantineEvent",
+                (
+                    ColumnSpec(
+                        "LSQuarantineEventIdentifier", "TEXT", primary_key=True
+                    ),
+                    ColumnSpec("LSQuarantineTimeStamp", "REAL"),
+                    ColumnSpec("LSQuarantineAgentName", "TEXT"),
+                    ColumnSpec("LSQuarantineDataURLString", "TEXT"),
+                    ColumnSpec("LSQuarantineOriginURLString", "TEXT"),
+                ),
+                tuple(
+                    (uuid, float(timestamp_mac), agent, data_url, origin_url)
+                    for uuid, agent, data_url, origin_url, timestamp_mac in validated
+                ),
+            ),
+            _marker_table(),
+        )
     )
 
 

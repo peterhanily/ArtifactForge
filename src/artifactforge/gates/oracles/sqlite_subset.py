@@ -15,6 +15,7 @@ It must not import SQLite or ArtifactForge's database writers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import math
 import os
 import re
@@ -34,7 +35,7 @@ _CREATE_TABLE = re.compile(
     r"^CREATE TABLE ([A-Za-z_][A-Za-z0-9_]*) \((.*)\)$"
 )
 _COLUMN = re.compile(
-    r"^([A-Za-z_][A-Za-z0-9_]*) (INTEGER|TEXT|REAL)( PRIMARY KEY)?$"
+    r"^([A-Za-z_][A-Za-z0-9_]*) (INTEGER|TEXT|REAL|BLOB)( PRIMARY KEY)?$"
 )
 
 
@@ -61,6 +62,16 @@ class SQLiteLimits:
 
 
 DEFAULT_SQLITE_LIMITS = SQLiteLimits()
+
+
+class SQLiteWireProfile(str, Enum):
+    """Closed header/value profiles; callers cannot manufacture a weaker policy."""
+
+    SQLITE_RUNTIME_V1 = "sqlite-runtime-leaf-v1"
+    ARTIFACTFORGE_OWNED_V1 = "artifactforge-owned-sqlite-leaf-v1"
+
+
+DEFAULT_SQLITE_WIRE_PROFILE = SQLiteWireProfile.SQLITE_RUNTIME_V1
 
 
 @dataclass(frozen=True)
@@ -147,8 +158,9 @@ class SQLiteDatabase:
         data: bytes | bytearray | memoryview,
         *,
         limits: SQLiteLimits = DEFAULT_SQLITE_LIMITS,
+        wire_profile: SQLiteWireProfile = DEFAULT_SQLITE_WIRE_PROFILE,
     ) -> SQLiteDatabase:
-        return loads_sqlite(data, limits=limits)
+        return loads_sqlite(data, limits=limits, wire_profile=wire_profile)
 
     def table(self, name: str) -> Table:
         matches = [table for table in self.tables if table.name == name]
@@ -278,11 +290,17 @@ class _Cell:
 
 
 class _Reader:
-    def __init__(self, data: bytes, limits: SQLiteLimits = DEFAULT_SQLITE_LIMITS):
+    def __init__(
+        self,
+        data: bytes,
+        limits: SQLiteLimits = DEFAULT_SQLITE_LIMITS,
+        wire_profile: SQLiteWireProfile = DEFAULT_SQLITE_WIRE_PROFILE,
+    ):
         if not isinstance(data, bytes):
             raise TypeError("SQLite database input must be bytes")
         self.data = data
         self.limits = limits
+        self.wire_profile = wire_profile
         self.header = self._read_header()
 
     def _u32(self, offset: int) -> int:
@@ -326,8 +344,18 @@ class _Reader:
         _error(self._u32(92) == change_counter and change_counter > 0,
                "SQLite version-valid-for does not equal the change counter")
         sqlite_version = self._u32(96)
-        _error(3_000_000 <= sqlite_version < 4_000_000,
-               "SQLite library version number is not a SQLite 3 release")
+        if self.wire_profile is SQLiteWireProfile.SQLITE_RUNTIME_V1:
+            _error(
+                3_000_000 <= sqlite_version < 4_000_000,
+                "SQLite library version number is not a SQLite 3 release",
+            )
+        elif self.wire_profile is SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1:
+            _error(
+                sqlite_version == 0,
+                "owned SQLite writer sentinel at header offset 96 is not zero",
+            )
+        else:  # pragma: no cover - public entry points enforce the closed enum.
+            raise TypeError("wire_profile must be a SQLiteWireProfile")
         return SQLiteHeader(
             page_size, page_count, change_counter, schema_cookie, sqlite_version
         )
@@ -484,6 +512,10 @@ class _Reader:
             assert column_match is not None
             declared_type = column_match.group(2)
             primary_key = column_match.group(3) is not None
+            _error(
+                not (primary_key and declared_type == "BLOB"),
+                f"column declaration {piece!r} uses an unsupported BLOB PRIMARY KEY",
+            )
             columns.append(Column(
                 column_match.group(1),
                 declared_type,
@@ -499,6 +531,12 @@ class _Reader:
     def _normalize_affinity(
         self, table: str, column: Column, value: SQLiteValue
     ) -> SQLiteValue:
+        if value is None and not column.rowid_alias:
+            _error(
+                self.wire_profile is SQLiteWireProfile.ARTIFACTFORGE_OWNED_V1,
+                f"{table}.{column.name} is NULL outside the runtime-written emitted profile",
+            )
+            return None
         if column.rowid_alias:
             _error(isinstance(value, int) and not isinstance(value, bool),
                    f"{table}.{column.name} INTEGER PRIMARY KEY was not recovered")
@@ -515,6 +553,8 @@ class _Reader:
             value = float(value)
         elif column.declared_type == "TEXT":
             _error(isinstance(value, str), f"{table}.{column.name} is not stored as TEXT")
+        elif column.declared_type == "BLOB":
+            _error(type(value) is bytes, f"{table}.{column.name} is not stored as BLOB")
         return value
 
     def _table(self, schema: SchemaObject) -> Table:
@@ -640,10 +680,13 @@ def loads_sqlite(
     data: bytes | bytearray | memoryview,
     *,
     limits: SQLiteLimits = DEFAULT_SQLITE_LIMITS,
+    wire_profile: SQLiteWireProfile = DEFAULT_SQLITE_WIRE_PROFILE,
 ) -> SQLiteDatabase:
     """Decode bounded SQLite bytes in the exact rollback-mode emitted subset."""
     if not isinstance(limits, SQLiteLimits):
         raise TypeError("limits must be a SQLiteLimits instance")
+    if not isinstance(wire_profile, SQLiteWireProfile):
+        raise TypeError("wire_profile must be a SQLiteWireProfile")
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise TypeError("SQLite database input must be bytes-like")
     input_size = data.nbytes if isinstance(data, memoryview) else len(data)
@@ -651,28 +694,32 @@ def loads_sqlite(
         raise SQLiteSubsetError(
             f"SQLite database exceeds the {limits.max_bytes}-byte limit"
         )
-    return _Reader(bytes(data), limits).read()
+    return _Reader(bytes(data), limits, wire_profile).read()
 
 
 def load_sqlite(
     path: str | os.PathLike[str],
     *,
     limits: SQLiteLimits = DEFAULT_SQLITE_LIMITS,
+    wire_profile: SQLiteWireProfile = DEFAULT_SQLITE_WIRE_PROFILE,
 ) -> SQLiteDatabase:
     """Read and decode one SQLite database without an unbounded path read."""
     if not isinstance(limits, SQLiteLimits):
         raise TypeError("limits must be a SQLiteLimits instance")
+    if not isinstance(wire_profile, SQLiteWireProfile):
+        raise TypeError("wire_profile must be a SQLiteWireProfile")
     try:
         with open(path, "rb") as handle:
             data = handle.read(limits.max_bytes + 1)
     except (OSError, TypeError) as exc:
         raise SQLiteSubsetError(f"cannot read SQLite database {path!r}: {exc}") from exc
-    return loads_sqlite(data, limits=limits)
+    return loads_sqlite(data, limits=limits, wire_profile=wire_profile)
 
 
 __all__ = [
     "Column",
     "DEFAULT_SQLITE_LIMITS",
+    "DEFAULT_SQLITE_WIRE_PROFILE",
     "Index",
     "IndexEntry",
     "SQLiteDatabase",
@@ -681,6 +728,7 @@ __all__ = [
     "SQLiteRecord",
     "SQLiteSubsetError",
     "SQLiteValue",
+    "SQLiteWireProfile",
     "SchemaObject",
     "Table",
     "TableRow",

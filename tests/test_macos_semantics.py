@@ -35,7 +35,7 @@ def _new_fails(before, after):
     return [failure for failure in after.fails if failure not in before.fails]
 
 
-def test_macos_gate_has_two_reads_and_two_semantic_checks_per_structured_artifact(tmp_path):
+def test_macos_gate_has_two_reads_plus_profile_consensus_and_sqlite_queries(tmp_path):
     task = _scene(tmp_path)
     report = validity.run(task.directory)
     assert report.ok, report.render()
@@ -43,8 +43,15 @@ def test_macos_gate_has_two_reads_and_two_semantic_checks_per_structured_artifac
     assert report.metrics == {
         "oracle_reads_passed": 32,
         "oracle_reads_total": 32,
-        "semantic_checks_passed": 22,
-        "semantic_checks_total": 22,
+        "semantic_checks_passed": 35,
+        "semantic_checks_total": 35,
+        "claim_scopes": {
+            "container_acceptance": {"passed": 32, "total": 32},
+            "semantic_extraction": {"passed": 32, "total": 32},
+            "independent_consensus": {"passed": 16, "total": 16},
+            "declared_profile_conformance": {"passed": 16, "total": 16},
+            "downstream_consumer_compatibility": {"passed": 3, "total": 3},
+        },
     }
 
 
@@ -262,7 +269,7 @@ def test_quarantine_control_byte_is_profile_red_while_both_readers_stay_green(tm
 
     after = validity.run(task.directory)
     new = _new_fails(before, after)
-    assert any("macos-sqlite-profile" in failure for failure in new), new
+    assert any("sqlite-profile" in failure for failure in new), new
     assert not any("sqlite-consensus" in failure or "rejected it" in failure for failure in new)
 
 
@@ -304,7 +311,7 @@ def test_huge_finite_sqlite_real_is_outside_the_exact_writer_profile(tmp_path):
 
     after = validity.run(task.directory)
     new = _new_fails(before, after)
-    assert any("macos-sqlite-profile" in failure for failure in new), new
+    assert any("sqlite-profile" in failure for failure in new), new
     assert not any("sqlite-consensus" in failure or "rejected it" in failure for failure in new)
 
 

@@ -645,6 +645,14 @@ def _is_linklike(path: Path, state: os.stat_result) -> bool:
 
 
 _STABLE_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+_STABLE_DIRECTORY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
 
 
 def _stat_fields_match(
@@ -659,48 +667,64 @@ def _inventory_path_state_matches(
     inventory: os.stat_result,
     current: os.stat_result,
 ) -> bool:
-    """Bind a directory-entry snapshot to a fresh path observation."""
+    """Bind a POSIX directory-entry snapshot to a fresh path observation."""
+    if sys.platform == "win32":
+        raise RuntimeError("cached Windows directory-entry metadata is not authoritative")
     if stat.S_IFMT(inventory.st_mode) != stat.S_IFMT(current.st_mode):
         return False
+    return _stat_fields_match(inventory, current, _STABLE_FILE_FIELDS)
+
+
+def _same_path_directory_state_matches(
+    first: os.stat_result,
+    second: os.stat_result,
+) -> bool:
+    """Compare fresh observations of one directory without using undefined size on Windows."""
+    if not stat.S_ISDIR(first.st_mode) or not stat.S_ISDIR(second.st_mode):
+        return False
     if sys.platform != "win32":
-        return _stat_fields_match(inventory, current, _STABLE_FILE_FIELDS)
-    # Windows DirEntry snapshots normally report zero device and inode values. If a
-    # runtime supplies real values, bind them instead of silently discarding them.
-    inventory_identity = tuple(
-        getattr(inventory, field, None) for field in ("st_dev", "st_ino")
+        return _stat_fields_match(first, second, _STABLE_DIRECTORY_FIELDS)
+    identities = tuple(
+        getattr(state, field, None)
+        for state in (first, second)
+        for field in ("st_dev", "st_ino")
     )
-    current_identity = tuple(getattr(current, field, None) for field in ("st_dev", "st_ino"))
-    if any(type(value) is not int for value in (*inventory_identity, *current_identity)):
+    if any(type(value) is not int or value <= 0 for value in identities):
         return False
-    if any(value <= 0 for value in current_identity):
-        return False
-    if inventory_identity != (0, 0) and (
-        any(value <= 0 for value in inventory_identity)
-        or inventory_identity != current_identity
+    first_creation = _windows_creation_time_ns(first)
+    second_creation = _windows_creation_time_ns(second)
+    if (
+        first_creation is None
+        or second_creation is None
+        or first_creation != second_creation
     ):
         return False
-    required_fields = ("st_file_attributes", "st_reparse_tag")
+    fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_mtime_ns",
+        "st_ctime_ns",
+        "st_file_attributes",
+        "st_reparse_tag",
+    )
     if any(
         type(getattr(state, field, None)) is not int
-        for state in (inventory, current)
-        for field in required_fields
+        for state in (first, second)
+        for field in fields
     ):
         return False
-    inventory_creation = _windows_creation_time_ns(inventory)
-    current_creation = _windows_creation_time_ns(current)
-    if (
-        inventory_creation is None
-        or current_creation is None
-        or inventory_creation != current_creation
-    ):
-        return False
-    # Windows DirEntry snapshots obtain size from WIN32_FIND_DATA, while a fresh
-    # path stat can obtain it from FILE_STAT_BASIC_INFORMATION. Neither API defines
-    # a meaningful size for directories, so bind size only for non-directories.
-    fields = ("st_mtime_ns", *required_fields)
-    if not stat.S_ISDIR(current.st_mode):
-        fields = ("st_size", *fields)
-    return _stat_fields_match(inventory, current, fields)
+    return _stat_fields_match(first, second, fields)
+
+
+def _listed_names(directory: Path, *, where: str) -> list[str]:
+    try:
+        names = os.listdir(directory)
+    except OSError as exc:
+        raise RuntimeError(f"cannot list {where}: {exc}") from exc
+    if any(type(name) is not str for name in names):
+        raise RuntimeError(f"{where} returned a non-text entry name")
+    return sorted(names)
 
 
 def _filesystem_identity(state: os.stat_result) -> dict:
@@ -758,42 +782,91 @@ def _regular_file_identity(path: Path, where: str) -> dict:
     return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 
-def _scene_capture(scene: Path) -> tuple[dict, dict[str, bytes]]:
+def _scene_capture(
+    scene: Path,
+    *,
+    expected_state: os.stat_result | None = None,
+) -> tuple[dict, dict[str, bytes]]:
     try:
         root_state = scene.lstat()
     except OSError as exc:
         raise RuntimeError(f"cannot inspect fixture artifacts: {exc}") from exc
     if _is_linklike(scene, root_state) or not stat.S_ISDIR(root_state.st_mode):
         raise RuntimeError("fixture artifacts must be a real directory, not a link")
+    if expected_state is not None and not _same_path_directory_state_matches(
+        expected_state,
+        root_state,
+    ):
+        raise RuntimeError("fixture artifacts root changed before capture")
     files: dict[str, bytes] = {}
     directories = []
 
-    def visit(directory: Path, parts: tuple[str, ...]) -> int:
+    def visit(
+        directory: Path,
+        parts: tuple[str, ...],
+        caller_state: os.stat_result,
+    ) -> int:
         if len(parts) > MAX_SCENE_DEPTH:
             raise RuntimeError(
                 f"fixture artifacts exceed the {MAX_SCENE_DEPTH}-component depth limit"
             )
-        before = directory.lstat()
+        relative_directory = "/".join(parts)
         try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            before = directory.lstat()
         except OSError as exc:
-            raise RuntimeError(f"cannot list fixture artifacts directory: {exc}") from exc
+            raise RuntimeError(f"cannot inspect fixture artifacts directory: {exc}") from exc
+        if _is_linklike(directory, before):
+            raise RuntimeError(f"fixture artifacts contain a link: {relative_directory!r}")
+        if not stat.S_ISDIR(before.st_mode):
+            raise RuntimeError(
+                f"fixture artifacts directory changed to a special file: {relative_directory!r}"
+            )
+        if not _same_path_directory_state_matches(caller_state, before):
+            raise RuntimeError(
+                f"fixture artifacts directory changed before traversal: {relative_directory!r}"
+            )
+        if sys.platform == "win32":
+            names = _listed_names(
+                directory,
+                where=f"fixture artifacts directory {relative_directory!r}",
+            )
+            entries_by_name: dict[str, os.DirEntry | None] = {name: None for name in names}
+        else:
+            try:
+                entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            except OSError as exc:
+                raise RuntimeError(f"cannot list fixture artifacts directory: {exc}") from exc
+            names = [entry.name for entry in entries]
+            entries_by_name = {entry.name: entry for entry in entries}
+        after_inventory = directory.lstat()
+        if (
+            _is_linklike(directory, after_inventory)
+            or not _same_path_directory_state_matches(before, after_inventory)
+        ):
+            raise RuntimeError(
+                f"fixture artifacts directory changed during inventory: {relative_directory!r}"
+            )
         below = 0
-        for entry in entries:
-            child_parts = (*parts, entry.name)
+        for name in names:
+            child_parts = (*parts, name)
             relative = validate_relative_path("/".join(child_parts))
-            path = Path(entry.path)
-            inventory_state = entry.stat(follow_symlinks=False)
+            path = directory / name
+            entry = entries_by_name[name]
+            if entry is not None:
+                inventory_state = entry.stat(follow_symlinks=False)
             state = path.lstat()
-            if not _inventory_path_state_matches(inventory_state, state):
+            if entry is not None and not _inventory_path_state_matches(inventory_state, state):
                 raise RuntimeError(
                     f"fixture artifact changed after directory inventory: {relative!r}"
                 )
-            if _is_linklike(path, inventory_state) or _is_linklike(path, state):
+            if (entry is not None and _is_linklike(path, inventory_state)) or _is_linklike(
+                path,
+                state,
+            ):
                 raise RuntimeError(f"fixture artifacts contain a link: {relative!r}")
             if stat.S_ISDIR(state.st_mode):
                 directories.append(relative)
-                nested = visit(path, child_parts)
+                nested = visit(path, child_parts, state)
                 if nested == 0:
                     raise RuntimeError(
                         f"fixture artifacts contain an empty directory: {relative!r}"
@@ -816,18 +889,35 @@ def _scene_capture(scene: Path) -> tuple[dict, dict[str, bytes]]:
             files[relative] = data
             below += 1
         after = directory.lstat()
-        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(before, field) != getattr(after, field) for field in stable):
-            raise RuntimeError("fixture artifacts directory changed during capture")
-        final_names = sorted(item.name for item in os.scandir(directory))
-        if [entry.name for entry in entries] != final_names:
-            raise RuntimeError("fixture artifacts directory entries changed during capture")
+        if _is_linklike(directory, after) or not _same_path_directory_state_matches(before, after):
+            raise RuntimeError(
+                f"fixture artifacts directory changed during capture: {relative_directory!r}"
+            )
+        final_names = _listed_names(
+            directory,
+            where=f"fixture artifacts directory {relative_directory!r}",
+        )
+        final_state = directory.lstat()
+        if _is_linklike(directory, final_state) or not _same_path_directory_state_matches(
+            before,
+            final_state,
+        ):
+            raise RuntimeError(
+                "fixture artifacts directory changed during final inventory: "
+                f"{relative_directory!r}"
+            )
+        if names != final_names:
+            raise RuntimeError(
+                "fixture artifacts directory entries changed during capture: "
+                f"{relative_directory!r}"
+            )
         return below
 
-    visit(scene, ())
+    visit(scene, (), root_state)
     root_after = scene.lstat()
-    if any(
-        getattr(root_state, field) != getattr(root_after, field) for field in ("st_dev", "st_ino")
+    if _is_linklike(scene, root_after) or not _same_path_directory_state_matches(
+        root_state,
+        root_after,
     ):
         raise RuntimeError("fixture artifacts root changed during capture")
     ordered_paths = canonical_relative_paths(files, require_sorted=False)
@@ -856,7 +946,13 @@ def _fixture_state(fixture: Path) -> tuple[dict, dict[str, bytes]]:
     root_before = fixture.lstat()
     if _is_linklike(fixture, root_before) or not stat.S_ISDIR(root_before.st_mode):
         raise RuntimeError("fixture root must be a real directory, not a link")
-    names = sorted(path.name for path in fixture.iterdir())
+    names = _listed_names(fixture, where="fixture root")
+    root_after_inventory = fixture.lstat()
+    if _is_linklike(fixture, root_after_inventory) or not _same_path_directory_state_matches(
+        root_before,
+        root_after_inventory,
+    ):
+        raise RuntimeError("fixture root changed during inventory")
     if names != ["artifacts", "fixture.json"]:
         raise RuntimeError(
             "fixture root inventory must be exactly artifacts/ and fixture.json; found "
@@ -875,17 +971,19 @@ def _fixture_state(fixture: Path) -> tuple[dict, dict[str, bytes]]:
         raise RuntimeError("Windows native attestation requires Fixture ABI v2")
     artifacts_path = fixture / "artifacts"
     artifacts_before = artifacts_path.lstat()
-    scene, captured = _scene_capture(artifacts_path)
+    scene, captured = _scene_capture(artifacts_path, expected_state=artifacts_before)
     artifacts_after = artifacts_path.lstat()
+    final_names = _listed_names(fixture, where="fixture root")
     root_after = fixture.lstat()
-    final_names = sorted(path.name for path in fixture.iterdir())
-    if names != final_names or any(
-        getattr(root_before, field) != getattr(root_after, field) for field in ("st_dev", "st_ino")
+    if (
+        names != final_names
+        or _is_linklike(fixture, root_after)
+        or not _same_path_directory_state_matches(root_before, root_after)
     ):
         raise RuntimeError("fixture root changed during capture")
-    if any(
-        getattr(artifacts_before, field) != getattr(artifacts_after, field)
-        for field in ("st_dev", "st_ino")
+    if (
+        _is_linklike(artifacts_path, artifacts_after)
+        or not _same_path_directory_state_matches(artifacts_before, artifacts_after)
     ):
         raise RuntimeError("fixture artifacts directory changed during capture")
     return {

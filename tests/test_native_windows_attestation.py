@@ -8,6 +8,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import os
 import runpy
 import shutil
 import stat
@@ -52,6 +53,7 @@ _require_microsoft_signature = _GLOBALS["_require_microsoft_signature"]
 _require_command_with_args_version = _GLOBALS["_require_command_with_args_version"]
 _run = _GLOBALS["_run"]
 _scene_capture = _GLOBALS["_scene_capture"]
+_same_path_directory_state_matches = _GLOBALS["_same_path_directory_state_matches"]
 _stat_fields_match = _GLOBALS["_stat_fields_match"]
 _timestamp = _GLOBALS["_timestamp"]
 _signed_positive_control = _GLOBALS["_signed_positive_control"]
@@ -140,6 +142,19 @@ def _mock_windows_reader_on_posix(monkeypatch) -> None:
             and _stat_fields_match(first, second, _STABLE_FILE_FIELDS)
         ),
     )
+    monkeypatch.setitem(
+        module,
+        "_same_path_directory_state_matches",
+        lambda first, second: (
+            stat.S_ISDIR(first.st_mode)
+            and stat.S_ISDIR(second.st_mode)
+            and _stat_fields_match(
+                first,
+                second,
+                ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns"),
+            )
+        ),
+    )
 
 
 def _four_v30_prefetches() -> dict[str, bytes]:
@@ -178,6 +193,26 @@ def _source() -> dict:
         "worktree_clean": True,
     }
     return {**base, "identity_sha256": _canonical_digest(base)}
+
+
+def _stat_view(state: os.stat_result, **updates: int) -> SimpleNamespace:
+    fields = (
+        "st_mode",
+        "st_ino",
+        "st_dev",
+        "st_nlink",
+        "st_uid",
+        "st_gid",
+        "st_size",
+        "st_atime_ns",
+        "st_mtime_ns",
+        "st_ctime_ns",
+        "st_birthtime_ns",
+        "st_file_attributes",
+        "st_reparse_tag",
+    )
+    values = {field: getattr(state, field) for field in fields if hasattr(state, field)}
+    return SimpleNamespace(**{**values, **updates})
 
 
 def _patch_source(monkeypatch) -> dict:
@@ -342,143 +377,117 @@ def test_windows_cross_api_state_uses_ctime_as_creation_time_on_python_311(monke
     assert not _cross_api_file_state_matches(path_state, unexpected_birth)
 
 
-def test_windows_file_inventory_binds_reliable_fields(monkeypatch):
+def test_posix_inventory_binds_cached_entry_to_fresh_path(monkeypatch):
     inventory = SimpleNamespace(
-        st_birthtime_ns=100,
         st_ctime_ns=100,
-        st_dev=0,
-        st_file_attributes=32,
-        st_ino=0,
+        st_dev=1,
+        st_ino=2,
         st_mode=stat.S_IFREG | 0o444,
         st_mtime_ns=200,
-        st_reparse_tag=0,
         st_size=300,
     )
-    current = SimpleNamespace(
-        **{
-            **vars(inventory),
-            "st_dev": 1,
-            "st_ino": 2,
-            "st_mode": stat.S_IFREG | 0o600,
-        }
-    )
+    current = SimpleNamespace(**{**vars(inventory), "st_mode": stat.S_IFREG | 0o600})
     module_sys = _inventory_path_state_matches.__globals__["sys"]
-    monkeypatch.setattr(module_sys, "platform", "win32")
-    monkeypatch.setattr(module_sys, "version_info", (3, 12, 0, "final", 0))
+    monkeypatch.setattr(module_sys, "platform", "linux")
 
     assert _inventory_path_state_matches(inventory, current)
-    for field in (
-        "st_birthtime_ns",
-        "st_file_attributes",
-        "st_mtime_ns",
-        "st_reparse_tag",
-        "st_size",
-    ):
+    for field in ("st_ctime_ns", "st_dev", "st_ino", "st_mtime_ns", "st_size"):
         mutated = SimpleNamespace(**{**vars(current), field: getattr(current, field) + 1})
         assert not _inventory_path_state_matches(inventory, mutated), field
     changed_type = SimpleNamespace(**{**vars(current), "st_mode": stat.S_IFDIR | 0o700})
     assert not _inventory_path_state_matches(inventory, changed_type)
-    for field in ("st_dev", "st_ino"):
-        zeroed = SimpleNamespace(**{**vars(current), field: 0})
-        assert not _inventory_path_state_matches(inventory, zeroed), field
-    matching_identity = SimpleNamespace(
-        **{**vars(inventory), "st_dev": current.st_dev, "st_ino": current.st_ino}
-    )
-    assert _inventory_path_state_matches(matching_identity, current)
-    mismatched_identity = SimpleNamespace(**{**vars(matching_identity), "st_ino": 3})
-    assert not _inventory_path_state_matches(mismatched_identity, current)
-    partial_identity = SimpleNamespace(**{**vars(inventory), "st_dev": current.st_dev})
-    assert not _inventory_path_state_matches(partial_identity, current)
-    for field in ("st_birthtime_ns", "st_file_attributes", "st_reparse_tag"):
-        for state in (inventory, current):
-            missing_values = vars(state).copy()
-            del missing_values[field]
-            missing = SimpleNamespace(**missing_values)
-            first, second = (missing, current) if state is inventory else (inventory, missing)
-            assert not _inventory_path_state_matches(first, second), field
-    zero_birth = SimpleNamespace(**{**vars(current), "st_birthtime_ns": 0})
-    assert not _inventory_path_state_matches(inventory, zero_birth)
 
 
-def test_windows_directory_inventory_ignores_only_undefined_size(monkeypatch):
-    inventory = SimpleNamespace(
+def test_windows_cached_inventory_metadata_is_never_authoritative(monkeypatch):
+    module_sys = _inventory_path_state_matches.__globals__["sys"]
+    monkeypatch.setattr(module_sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match="not authoritative"):
+        _inventory_path_state_matches(SimpleNamespace(), SimpleNamespace())
+
+
+def test_windows_fresh_directory_state_ignores_only_undefined_size(monkeypatch):
+    first = SimpleNamespace(
         st_birthtime_ns=100,
-        st_ctime_ns=100,
-        st_dev=0,
+        st_ctime_ns=150,
+        st_dev=1,
         st_file_attributes=16,
-        st_ino=0,
+        st_ino=2,
         st_mode=stat.S_IFDIR | 0o555,
         st_mtime_ns=200,
         st_reparse_tag=0,
         st_size=0,
     )
-    current = SimpleNamespace(
-        **{
-            **vars(inventory),
-            "st_dev": 1,
-            "st_ino": 2,
-            "st_mode": stat.S_IFDIR | 0o700,
-            "st_size": 4096,
-        }
-    )
-    module_sys = _inventory_path_state_matches.__globals__["sys"]
+    second = SimpleNamespace(**{**vars(first), "st_size": 4096})
+    module_sys = _same_path_directory_state_matches.__globals__["sys"]
     monkeypatch.setattr(module_sys, "platform", "win32")
     monkeypatch.setattr(module_sys, "version_info", (3, 12, 0, "final", 0))
 
-    assert _inventory_path_state_matches(inventory, current)
-    assert _inventory_path_state_matches(
-        SimpleNamespace(**{**vars(inventory), "st_size": 8192}),
-        current,
-    )
+    assert _same_path_directory_state_matches(first, second)
     for field in (
         "st_birthtime_ns",
+        "st_ctime_ns",
+        "st_dev",
         "st_file_attributes",
+        "st_ino",
+        "st_mode",
         "st_mtime_ns",
         "st_reparse_tag",
     ):
-        mutated = SimpleNamespace(**{**vars(current), field: getattr(current, field) + 1})
-        assert not _inventory_path_state_matches(inventory, mutated), field
-    changed_type = SimpleNamespace(**{**vars(current), "st_mode": stat.S_IFREG | 0o600})
-    assert not _inventory_path_state_matches(inventory, changed_type)
+        mutated = SimpleNamespace(**{**vars(second), field: getattr(second, field) + 1})
+        assert not _same_path_directory_state_matches(first, mutated), field
+    changed_type = SimpleNamespace(**{**vars(second), "st_mode": stat.S_IFREG | 0o600})
+    assert not _same_path_directory_state_matches(first, changed_type)
     for field in ("st_dev", "st_ino"):
-        zeroed = SimpleNamespace(**{**vars(current), field: 0})
-        assert not _inventory_path_state_matches(inventory, zeroed), field
-    matching_identity = SimpleNamespace(
-        **{**vars(inventory), "st_dev": current.st_dev, "st_ino": current.st_ino}
-    )
-    assert _inventory_path_state_matches(matching_identity, current)
-    changed_identity = SimpleNamespace(**{**vars(current), "st_ino": 3})
-    assert not _inventory_path_state_matches(matching_identity, changed_identity)
+        zeroed = SimpleNamespace(**{**vars(second), field: 0})
+        assert not _same_path_directory_state_matches(first, zeroed), field
+    for field in ("st_birthtime_ns", "st_file_attributes", "st_reparse_tag"):
+        missing_values = vars(second).copy()
+        del missing_values[field]
+        assert not _same_path_directory_state_matches(
+            first,
+            SimpleNamespace(**missing_values),
+        ), field
 
 
-def test_windows_directory_inventory_uses_ctime_as_creation_time_on_python_311(monkeypatch):
-    inventory = SimpleNamespace(
+def test_windows_fresh_directory_state_uses_ctime_as_creation_time_on_python_311(monkeypatch):
+    first = SimpleNamespace(
         st_ctime_ns=100,
-        st_dev=0,
-        st_file_attributes=32,
-        st_ino=0,
-        st_mode=stat.S_IFREG | 0o444,
+        st_dev=1,
+        st_file_attributes=16,
+        st_ino=2,
+        st_mode=stat.S_IFDIR | 0o555,
         st_mtime_ns=200,
         st_reparse_tag=0,
         st_size=300,
     )
-    current = SimpleNamespace(
-        **{
-            **vars(inventory),
-            "st_dev": 1,
-            "st_ino": 2,
-            "st_mode": stat.S_IFREG | 0o600,
-        }
-    )
-    module_sys = _inventory_path_state_matches.__globals__["sys"]
+    second = SimpleNamespace(**vars(first))
+    module_sys = _same_path_directory_state_matches.__globals__["sys"]
     monkeypatch.setattr(module_sys, "platform", "win32")
     monkeypatch.setattr(module_sys, "version_info", (3, 11, 9, "final", 0))
 
-    assert _inventory_path_state_matches(inventory, current)
-    changed = SimpleNamespace(**{**vars(current), "st_ctime_ns": 101})
-    assert not _inventory_path_state_matches(inventory, changed)
-    unexpected_birth = SimpleNamespace(**{**vars(current), "st_birthtime_ns": 100})
-    assert not _inventory_path_state_matches(inventory, unexpected_birth)
+    assert _same_path_directory_state_matches(first, second)
+    changed = SimpleNamespace(**{**vars(second), "st_ctime_ns": 101})
+    assert not _same_path_directory_state_matches(first, changed)
+    unexpected_birth = SimpleNamespace(**{**vars(second), "st_birthtime_ns": 100})
+    assert not _same_path_directory_state_matches(first, unexpected_birth)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows stat fields")
+def test_real_windows_fresh_directory_state_contract(tmp_path):
+    directory = tmp_path / "directory"
+    directory.mkdir()
+    first = directory.lstat()
+    second = directory.lstat()
+
+    assert _same_path_directory_state_matches(first, second)
+    for state in (first, second):
+        assert type(state.st_dev) is int and state.st_dev > 0
+        assert type(state.st_ino) is int and state.st_ino > 0
+        assert type(state.st_file_attributes) is int
+        assert type(state.st_reparse_tag) is int
+        creation_field = "st_birthtime_ns" if sys.version_info[:2] >= (3, 12) else "st_ctime_ns"
+        creation = getattr(state, creation_field)
+        assert type(creation) is int and creation > 0
 
 
 def test_complete_portable_verification_binds_windows_v2(windows_fixture):
@@ -660,6 +669,167 @@ def test_scene_capture_detects_same_size_mutation_and_rejects_links(tmp_path):
         _scene_capture(scene)
 
 
+def test_windows_scene_capture_uses_directory_names_only(tmp_path, monkeypatch):
+    scene = tmp_path / "scene"
+    nested = scene / "nested"
+    nested.mkdir(parents=True)
+    (nested / "artifact.bin").write_bytes(b"fixture bytes")
+    module = _scene_capture.__globals__
+    monkeypatch.setattr(module["sys"], "platform", "win32")
+    _mock_windows_reader_on_posix(monkeypatch)
+
+    def reject_scandir(_path):
+        raise AssertionError("Windows scene capture must not consume DirEntry metadata")
+
+    monkeypatch.setattr(module["os"], "scandir", reject_scandir)
+
+    observed, captured = _scene_capture(scene)
+    assert observed["file_count"] == 1
+    assert captured == {"nested/artifact.bin": b"fixture bytes"}
+
+
+def test_scene_capture_binds_callers_root_observation(tmp_path):
+    scene = tmp_path / "scene"
+    scene.mkdir()
+    (scene / "artifact.bin").write_bytes(b"fixture bytes")
+    state = scene.lstat()
+    replaced = _stat_view(state, st_ino=state.st_ino + 1)
+
+    with pytest.raises(RuntimeError, match="root changed before capture"):
+        _scene_capture(scene, expected_state=replaced)
+
+
+def test_scene_capture_binds_parent_observation_to_recursive_visit(tmp_path, monkeypatch):
+    scene = tmp_path / "scene"
+    nested = scene / "nested"
+    nested.mkdir(parents=True)
+    (nested / "artifact.bin").write_bytes(b"fixture bytes")
+    real_lstat = Path.lstat
+    nested_calls = 0
+
+    def changing_lstat(path):
+        nonlocal nested_calls
+        state = real_lstat(path)
+        if path == nested:
+            nested_calls += 1
+            if nested_calls == 2:
+                return _stat_view(state, st_ino=state.st_ino + 1)
+        return state
+
+    monkeypatch.setattr(Path, "lstat", changing_lstat)
+
+    with pytest.raises(RuntimeError, match="directory changed before traversal"):
+        _scene_capture(scene)
+    assert nested_calls == 2
+
+
+def test_windows_scene_capture_rejects_link_introduced_at_recursive_visit(
+    tmp_path,
+    monkeypatch,
+):
+    scene = tmp_path / "scene"
+    nested = scene / "nested"
+    nested.mkdir(parents=True)
+    (nested / "artifact.bin").write_bytes(b"fixture bytes")
+    module = _scene_capture.__globals__
+    monkeypatch.setattr(module["sys"], "platform", "win32")
+    _mock_windows_reader_on_posix(monkeypatch)
+    real_is_linklike = module["_is_linklike"]
+    nested_observations = 0
+
+    def changing_link_state(path, state):
+        nonlocal nested_observations
+        if path == nested:
+            nested_observations += 1
+            return nested_observations == 2
+        return real_is_linklike(path, state)
+
+    monkeypatch.setitem(module, "_is_linklike", changing_link_state)
+
+    with pytest.raises(RuntimeError, match="contain a link"):
+        _scene_capture(scene)
+    assert nested_observations == 2
+
+
+def test_scene_capture_rechecks_state_after_final_enumeration(tmp_path, monkeypatch):
+    scene = tmp_path / "scene"
+    scene.mkdir()
+    (scene / "artifact.bin").write_bytes(b"fixture bytes")
+    module_os = _scene_capture.__globals__["os"]
+    real_listdir = module_os.listdir
+    real_lstat = Path.lstat
+    final_scan_complete = False
+
+    def observed_listdir(path):
+        nonlocal final_scan_complete
+        names = real_listdir(path)
+        if Path(path) == scene:
+            final_scan_complete = True
+        return names
+
+    def changing_lstat(path):
+        state = real_lstat(path)
+        if path == scene and final_scan_complete:
+            return _stat_view(state, st_ino=state.st_ino + 1)
+        return state
+
+    monkeypatch.setattr(module_os, "listdir", observed_listdir)
+    monkeypatch.setattr(Path, "lstat", changing_lstat)
+
+    with pytest.raises(RuntimeError, match="changed during final inventory"):
+        _scene_capture(scene)
+
+
+def test_fixture_state_rechecks_root_after_final_inventory(windows_fixture, monkeypatch):
+    module_os = _fixture_state.__globals__["os"]
+    real_listdir = module_os.listdir
+    real_lstat = Path.lstat
+    root_scans = 0
+    final_scan_complete = False
+
+    def observed_listdir(path):
+        nonlocal final_scan_complete, root_scans
+        names = real_listdir(path)
+        if Path(path) == windows_fixture:
+            root_scans += 1
+            final_scan_complete = root_scans == 2
+        return names
+
+    def changing_lstat(path):
+        state = real_lstat(path)
+        if path == windows_fixture and final_scan_complete:
+            return _stat_view(state, st_ino=state.st_ino + 1)
+        return state
+
+    monkeypatch.setattr(module_os, "listdir", observed_listdir)
+    monkeypatch.setattr(Path, "lstat", changing_lstat)
+
+    with pytest.raises(RuntimeError, match="fixture root changed during capture"):
+        _fixture_state(windows_fixture)
+    assert root_scans == 2
+
+
+def test_fixture_state_binds_artifacts_observation_to_scene_capture(windows_fixture, monkeypatch):
+    artifacts = windows_fixture / "artifacts"
+    real_lstat = Path.lstat
+    artifact_calls = 0
+
+    def changing_lstat(path):
+        nonlocal artifact_calls
+        state = real_lstat(path)
+        if path == artifacts:
+            artifact_calls += 1
+            if artifact_calls == 2:
+                return _stat_view(state, st_ino=state.st_ino + 1)
+        return state
+
+    monkeypatch.setattr(Path, "lstat", changing_lstat)
+
+    with pytest.raises(RuntimeError, match="artifacts root changed before capture"):
+        _fixture_state(windows_fixture)
+    assert artifact_calls == 2
+
+
 def test_scene_capture_retains_link_control_after_inventory_match(tmp_path, monkeypatch):
     scene = tmp_path / "scene"
     nested = scene / "nested"
@@ -686,23 +856,23 @@ def test_scene_capture_rejects_final_name_set_drift(tmp_path, monkeypatch):
     scene = tmp_path / "scene"
     scene.mkdir()
     (scene / "artifact.bin").write_bytes(b"fixture bytes")
-    real_scandir = _scene_capture.__globals__["os"].scandir
+    module_os = _scene_capture.__globals__["os"]
+    real_listdir = module_os.listdir
     calls = 0
 
-    def changing_scandir(path):
+    def changing_listdir(path):
         nonlocal calls
-        with real_scandir(path) as iterator:
-            entries = list(iterator)
-        calls += 1
-        if calls == 2:
-            entries.append(SimpleNamespace(name="late.bin"))
-        return iter(entries)
+        names = real_listdir(path)
+        if Path(path) == scene:
+            calls += 1
+            names.append("late.bin")
+        return names
 
-    monkeypatch.setattr(_scene_capture.__globals__["os"], "scandir", changing_scandir)
+    monkeypatch.setattr(module_os, "listdir", changing_listdir)
 
     with pytest.raises(RuntimeError, match="directory entries changed during capture"):
         _scene_capture(scene)
-    assert calls == 2
+    assert calls == 1
 
 
 def test_portable_prerequisite_is_canonical_and_mutation_closed(

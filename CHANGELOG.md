@@ -156,8 +156,8 @@ file ID, size, modification time and creation time. Same-API ctime comparisons r
 without treating ctime as cross-API comparable. Python 3.11 supplies creation time through
 `st_ctime`; Python 3.12 and newer use the explicit birth-time field. Missing or zero creation
 times, unavailable file identity, and unavailable reparse metadata are rejected. Directory
-capture also binds reliable cached-entry fields to a fresh, nonzero path identity instead of
-trusting the zero device and inode values returned by `DirEntry.stat()` on Windows.
+capture uses fresh path observations with nonzero identity on Windows. Cached directory-entry
+metadata is not part of that trust decision.
 
 The path-to-handle comparison now lives in the shared filesystem inventory layer. Detached
 Benchmark v3 report verification, Fixture Core path ingress and the publish rehearsal use the
@@ -175,11 +175,16 @@ raised before the native report exists is preserved in a canonical schema-v5 fai
 instead of being replaced by an invalid-envelope error from the stale schema-v4 fallback. An
 exception type supplies the diagnostic when the exception itself has no message.
 
-Windows native scene capture no longer compares directory `st_size` between a cached
-`DirEntry` snapshot and a fresh path stat. CPython can obtain those values from different
-Windows structures, and neither Python nor Win32 defines directory size as meaningful.
-Regular-file size, identity, type, creation time, modification time, file attributes,
-reparse metadata, directory name sets and same-domain observations remain strict.
+Windows native scene enumeration now contributes names only. It no longer treats cached
+`DirEntry` metadata as evidence because Windows directory searches may return stale metadata.
+Every directory is bound through fresh path observations before traversal, after traversal and
+after the final name scan. Recursive visits must match the state observed by their parent, and
+the fixture root and artifacts root use the same rule. Type, nonzero identity, creation and
+modification times, the same-API ctime value, mode, file attributes, reparse metadata and exact
+name sets remain strict. Directory `st_size` remains excluded because neither Python nor Win32
+defines it as meaningful. POSIX capture retains its cached-entry-to-fresh-path comparison.
+This remains a pathname-based mutation check, not an atomic filesystem snapshot. Defending
+against an adversarial temporary replacement would require a native handle-pinned traversal.
 
 ### Security
 

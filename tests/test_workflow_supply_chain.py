@@ -679,7 +679,7 @@ def _audit_external_actions(
 
 
 def _audit_runner_labels(workflows: Path = WORKFLOWS) -> None:
-    allowed = {"ubuntu-24.04", "macos-15", "windows-2025"}
+    allowed = {"ubuntu-24.04", "macos-15", "windows-2025-vs2026"}
     for path in _workflow_paths(workflows):
         data, _uses, _lines = _load_yaml(path)
         jobs = data.get("jobs")

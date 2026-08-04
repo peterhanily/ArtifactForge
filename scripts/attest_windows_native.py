@@ -13,9 +13,10 @@ those primitives exist in native CPython on Windows would weaken the claim.
 
 The Windows stage copies only manifest-bound default streams into a private temporary tree.
 It never executes an emitted PE. PowerShell observes every PE with Get-FileHash and
-Get-AuthenticodeSignature using LiteralPath, Microsoft's dumpbin reads /HEADERS, and a bounded
-byte parser verifies that the sole executable section and entry point are exactly ``ret`` plus
-zero padding. The four MAM algorithm-4 Prefetch records are decompressed through ntdll's
+Get-AuthenticodeSignature using LiteralPath, Microsoft's LINK parser reads
+``/DUMP /HEADERS``, and a bounded byte parser verifies that the sole executable section and
+entry point are exactly ``ret`` plus zero padding. The four MAM algorithm-4 Prefetch records
+are decompressed through ntdll's
 RtlGetCompressionWorkSpaceSize/RtlDecompressBufferEx interface and compared with an independent
 exact-output decode. The one disabled task XML is accepted only by an in-memory TaskDefinition
 made with TaskService.Connect/NewTask/XmlText; it is never registered. The one Shell Link is
@@ -82,8 +83,8 @@ from artifactforge.inventory import (
 
 PORTABLE_SCHEMA_ID = "artifactforge-native-windows-portable-prerequisite-v1"
 PORTABLE_SCHEMA_VERSION = 1
-SCHEMA_ID = "artifactforge-native-windows-attestation-v5"
-SCHEMA_VERSION = 5
+SCHEMA_ID = "artifactforge-native-windows-attestation-v6"
+SCHEMA_VERSION = 6
 CANONICALIZATION = "UTF-8 JSON, sorted keys, compact separators, no NaN, one trailing LF"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PORTABLE_DISTRIBUTIONS = (
@@ -101,6 +102,18 @@ _PORTABLE_DISTRIBUTIONS = (
 _POWERSHELL = "pwsh"
 _MIN_POWERSHELL_COMMAND_WITH_ARGS = (7, 5, 0)
 _POWERSHELL_VERSION = re.compile(r"^PowerShell\s+([0-9]+)\.([0-9]+)\.([0-9]+)$")
+_TOOL_FILE_VERSION_LABEL = "FileVersionInfo-GetVersionInfo-LiteralPath"
+_TOOL_FILE_VERSION_FIELDS = (
+    "FileMajorPart",
+    "FileMinorPart",
+    "FileBuildPart",
+    "FilePrivatePart",
+    "ProductMajorPart",
+    "ProductMinorPart",
+    "ProductBuildPart",
+    "ProductPrivatePart",
+)
+_LINK_CONTROL_ENVIRONMENT = frozenset({"link", "_link_", "link_repro"})
 _ZONE_STREAM = "Zone.Identifier"
 _PE_MAGIC = b"MZ"
 _HEX_40 = re.compile(r"^[0-9a-f]{40}$")
@@ -2317,6 +2330,27 @@ $shortcut = $shell.CreateShortcut($TargetPath)
 } | ConvertTo-Json -Compress
 """.strip()
 
+_TOOL_FILE_VERSION_SCRIPT = r"""
+param(
+  [Parameter(Mandatory = $true, Position = 0)]
+  [ValidateNotNullOrEmpty()]
+  [string]$TargetPath
+)
+$ErrorActionPreference = 'Stop'
+if ($args.Count -ne 0) { throw 'unexpected trailing target arguments' }
+$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($TargetPath)
+[ordered]@{
+  FileMajorPart = [int]$version.FileMajorPart
+  FileMinorPart = [int]$version.FileMinorPart
+  FileBuildPart = [int]$version.FileBuildPart
+  FilePrivatePart = [int]$version.FilePrivatePart
+  ProductMajorPart = [int]$version.ProductMajorPart
+  ProductMinorPart = [int]$version.ProductMinorPart
+  ProductBuildPart = [int]$version.ProductBuildPart
+  ProductPrivatePart = [int]$version.ProductPrivatePart
+} | ConvertTo-Json -Compress
+""".strip()
+
 _PLATFORM_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 [ordered]@{
@@ -2716,22 +2750,109 @@ def _require_command_with_args_version(record: Mapping[str, object]) -> tuple[in
     return version
 
 
-def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str], dict]:
+def _command_diagnostic(record: Mapping[str, object]) -> str:
+    fields = [f"returncode={record.get('returncode')!r}"]
+    for name in ("stdout", "stderr"):
+        value = record.get(name)
+        if type(value) is not str:
+            fields.append(f"{name}_type={type(value).__name__}")
+            continue
+        encoded = value.encode()
+        fields.extend(
+            (
+                f"{name}_size={len(encoded)}",
+                f"{name}_sha256={hashlib.sha256(encoded).hexdigest()}",
+            )
+        )
+    return "; ".join(fields)
+
+
+def _link_invocation_policy() -> dict:
+    return {
+        "cleared_environment_variables": ["LINK", "LINK_REPRO", "_LINK_"],
+        "pdb_lookup": "disabled with /NOPDB",
+        "process": "authenticated link.exe invoked directly with /DUMP",
+    }
+
+
+def _link_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.casefold() not in _LINK_CONTROL_ENVIRONMENT
+    }
+
+
+def _validate_tool_file_version_result(value: object, where: str) -> None:
+    if type(value) is not dict or set(value) != set(_TOOL_FILE_VERSION_FIELDS):
+        raise RuntimeError(f"{where} returned an unexpected fixed version record")
+    if any(type(value[name]) is not int or not 0 <= value[name] <= 0xFFFF for name in value):
+        raise RuntimeError(f"{where} returned an invalid fixed version component")
+    file_version = tuple(value[name] for name in _TOOL_FILE_VERSION_FIELDS[:4])
+    product_version = tuple(value[name] for name in _TOOL_FILE_VERSION_FIELDS[4:])
+    if not any(file_version) or not any(product_version):
+        raise RuntimeError(f"{where} returned an all-zero fixed version")
+
+
+def _tool_file_version_evidence(
+    path: Path,
+    initial: Mapping[str, object],
+    powershell: str,
+    command_runner: CommandRunner,
+) -> dict:
+    value, observation = _powershell_json(
+        powershell,
+        _TOOL_FILE_VERSION_SCRIPT,
+        _TOOL_FILE_VERSION_LABEL,
+        command_runner,
+        target=path,
+    )
+    _validate_tool_file_version_result(value, "FileVersionInfo")
+    post = _file_identity(path, "native tool version postcondition")
+    unchanged = all(
+        post[field] == initial.get(field)
+        for field in ("filesystem_identity", "resolved_path", "sha256", "size")
+    )
+    if not unchanged:
+        raise RuntimeError("native tool changed during its FileVersionInfo observation")
+    return {
+        "observation": observation,
+        "post_observation": {**post, "unchanged": True},
+        "result": value,
+    }
+
+
+def _native_tools(
+    command_runner: CommandRunner = _run,
+    *,
+    evidence_sink: dict | None = None,
+) -> tuple[dict[str, str], dict]:
+    if evidence_sink is not None and (type(evidence_sink) is not dict or evidence_sink):
+        raise ValueError("native tool evidence sink must be an empty dictionary")
+    evidence = {} if evidence_sink is None else evidence_sink
     powershell = _find_powershell()
     vswhere = _find_vswhere()
     initial = {
         "powershell": _file_identity(powershell),
         "vswhere": _file_identity(vswhere),
     }
-    trust = {
-        name: _independent_trust_observation(path, initial[name], f"native tool {name}")
-        for name, path in (("powershell", powershell), ("vswhere", vswhere))
-    }
+    evidence.update({name: dict(value) for name, value in initial.items()})
+    trust = {}
+    for name, path in (("powershell", powershell), ("vswhere", vswhere)):
+        trust[name] = _independent_trust_observation(
+            path,
+            initial[name],
+            f"native tool {name}",
+        )
+        evidence[name]["winverifytrust"] = trust[name]
     powershell_version = command_runner(
         [str(powershell), "--version"],
         recorded_argv=["<powershell>", "--version"],
     )
-    _require_command_with_args_version(powershell_version)
+    try:
+        _require_command_with_args_version(powershell_version)
+    except RuntimeError as exc:
+        raise RuntimeError(f"{exc}: {_command_diagnostic(powershell_version)}") from exc
     authenticode = {}
     for name, path in (("powershell", powershell), ("vswhere", vswhere)):
         signature, observation = _authenticode(path, str(powershell), command_runner)
@@ -2741,6 +2862,22 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
             independent_trust=trust[name],
         )
         authenticode[name] = {"observation": observation, "result": signature}
+        evidence[name]["authenticode"] = authenticode[name]
+    evidence["powershell"].update(
+        {
+            "version_observation": powershell_version,
+            "version_stdout": powershell_version["stdout"],
+            "version_stdout_sha256": hashlib.sha256(
+                powershell_version["stdout"].encode()
+            ).hexdigest(),
+        }
+    )
+    evidence["vswhere"]["file_version"] = _tool_file_version_evidence(
+        vswhere,
+        initial["vswhere"],
+        str(powershell),
+        command_runner,
+    )
     discovery = command_runner(
         [
             str(vswhere),
@@ -2763,12 +2900,30 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
             "installationPath",
         ],
     )
-    if discovery["returncode"] != 0 or not discovery["stdout"].strip():
-        raise RuntimeError("vswhere could not locate Visual C++ tools: " + discovery["stderr"])
+    discovery_record = {
+        "argv": discovery.get("argv"),
+        "reported_path": discovery.get("stdout"),
+        "returncode": discovery.get("returncode"),
+        "stderr_sha256": hashlib.sha256(str(discovery.get("stderr", "")).encode()).hexdigest(),
+        "stderr_size": len(str(discovery.get("stderr", "")).encode()),
+        "stdout_sha256": hashlib.sha256(str(discovery.get("stdout", "")).encode()).hexdigest(),
+        "stdout_size": len(str(discovery.get("stdout", "")).encode()),
+    }
+    evidence["discovery"] = {"installation": discovery_record}
+    if (
+        discovery["returncode"] != 0
+        or discovery["stderr"] != ""
+        or type(discovery["stdout"]) is not str
+        or not discovery["stdout"].strip()
+    ):
+        raise RuntimeError(
+            "vswhere could not locate Visual C++ tools: " + _command_diagnostic(discovery)
+        )
     installation_lines = discovery["stdout"].splitlines()
     if len(installation_lines) != 1:
         raise RuntimeError("vswhere returned an ambiguous Visual Studio installation path")
     installation = Path(installation_lines[0]).resolve(strict=True)
+    discovery_record["resolved_path"] = str(installation)
     if sys.platform == "win32":
         allowed_roots = [
             Path(value).resolve(strict=True)
@@ -2779,38 +2934,48 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
             raise RuntimeError(
                 "vswhere returned a Visual Studio installation outside Program Files"
             )
-    dumpbin_candidates = list(installation.glob("VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"))
-    if not dumpbin_candidates:
-        raise RuntimeError("the selected Visual Studio installation has no x64 dumpbin.exe")
-    if len(dumpbin_candidates) > 32:
-        raise RuntimeError("unexpectedly many dumpbin.exe candidates")
+    link_candidates = list(installation.glob("VC/Tools/MSVC/*/bin/Hostx64/x64/link.exe"))
+    if not link_candidates:
+        raise RuntimeError("the selected Visual Studio installation has no x64 link.exe")
+    if len(link_candidates) > 32:
+        raise RuntimeError("unexpectedly many link.exe candidates")
 
-    def toolset_key(candidate: Path) -> tuple[tuple[int, ...], str]:
+    def toolset_key(candidate: Path) -> tuple[int, ...]:
         version = candidate.parents[3].name
         components = version.split(".")
-        numeric = (
-            tuple(int(component) for component in components)
-            if components and all(component.isdigit() for component in components)
-            else ()
-        )
-        return numeric, version
+        if not 3 <= len(components) <= 4 or not all(
+            component.isdigit() and 0 <= int(component) <= 999_999
+            for component in components
+        ):
+            raise RuntimeError(f"Visual C++ toolset directory is not numeric: {version!r}")
+        return tuple(int(component) for component in components)
 
-    dumpbin = max(dumpbin_candidates, key=toolset_key).resolve(strict=True)
-    if not _inside(dumpbin, installation):
-        raise RuntimeError("the selected dumpbin.exe resolves outside Visual Studio")
-    initial["dumpbin"] = _file_identity(dumpbin)
-    trust["dumpbin"] = _independent_trust_observation(
-        dumpbin,
-        initial["dumpbin"],
-        "native tool dumpbin",
+    link = max(link_candidates, key=toolset_key).resolve(strict=True)
+    if not _inside(link, installation):
+        raise RuntimeError("the selected link.exe resolves outside Visual Studio")
+    initial["link"] = _file_identity(link)
+    evidence["link"] = dict(initial["link"])
+    evidence["link"]["invocation_policy"] = _link_invocation_policy()
+    trust["link"] = _independent_trust_observation(
+        link,
+        initial["link"],
+        "native tool link",
     )
-    signature, observation = _authenticode(dumpbin, str(powershell), command_runner)
+    evidence["link"]["winverifytrust"] = trust["link"]
+    signature, observation = _authenticode(link, str(powershell), command_runner)
     _require_microsoft_signature(
         signature,
-        "native tool dumpbin",
-        independent_trust=trust["dumpbin"],
+        "native tool link",
+        independent_trust=trust["link"],
     )
-    authenticode["dumpbin"] = {"observation": observation, "result": signature}
+    authenticode["link"] = {"observation": observation, "result": signature}
+    evidence["link"]["authenticode"] = authenticode["link"]
+    evidence["link"]["file_version"] = _tool_file_version_evidence(
+        link,
+        initial["link"],
+        str(powershell),
+        command_runner,
+    )
 
     toolchain_version = command_runner(
         [
@@ -2834,47 +2999,33 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
             "installationVersion",
         ],
     )
-    if toolchain_version["returncode"] != 0 or not toolchain_version["stdout"]:
-        raise RuntimeError("vswhere could not report the Visual Studio installation version")
-
-    version_commands = {
-        "powershell": [str(powershell), "--version"],
-        "vswhere": [str(vswhere), "-?"],
-        "dumpbin": [str(dumpbin), "/?"],
-    }
-    evidence = {}
-    for name, command in version_commands.items():
-        record = (
-            powershell_version
-            if name == "powershell"
-            else command_runner(
-                command,
-                recorded_argv=[f"<{name}>", *command[1:]],
-            )
+    if (
+        toolchain_version["returncode"] != 0
+        or toolchain_version["stderr"] != ""
+        or type(toolchain_version["stdout"]) is not str
+        or not toolchain_version["stdout"]
+    ):
+        raise RuntimeError(
+            "vswhere could not report the Visual Studio installation version: "
+            + _command_diagnostic(toolchain_version)
         )
-        if record["returncode"] != 0 or not record["stdout"]:
-            raise RuntimeError(f"cannot obtain {name} version evidence: {record['stderr']}")
-        evidence[name] = {
-            **initial[name],
-            "authenticode": authenticode[name],
-            "version_observation": record,
-            "version_stdout": record["stdout"],
-            "version_stdout_sha256": hashlib.sha256(record["stdout"].encode()).hexdigest(),
-            "winverifytrust": trust[name],
+    evidence["discovery"].update(
+        {
+            "installation_version": {
+                "argv": toolchain_version["argv"],
+                "returncode": toolchain_version["returncode"],
+                "stderr": toolchain_version["stderr"],
+                "stdout": toolchain_version["stdout"],
+                "stdout_sha256": hashlib.sha256(
+                    toolchain_version["stdout"].encode()
+                ).hexdigest(),
+            },
+            "selected_toolset": link.parents[3].name,
         }
-    evidence["discovery"] = {
-        "argv": discovery["argv"],
-        "installation_version": toolchain_version["stdout"],
-        "installation_version_argv": toolchain_version["argv"],
-        "installation_version_stdout_sha256": hashlib.sha256(
-            toolchain_version["stdout"].encode()
-        ).hexdigest(),
-        "returncode": discovery["returncode"],
-        "selected_toolchain": installation.name,
-        "stdout_sha256": hashlib.sha256(discovery["stdout"].encode()).hexdigest(),
-    }
+    )
+    _validate_tool_discovery_evidence(evidence["discovery"], evidence["link"])
     return {
-        "dumpbin": str(dumpbin),
+        "link": str(link),
         "powershell": str(powershell),
         "vswhere": str(vswhere),
     }, evidence
@@ -2883,7 +3034,12 @@ def _native_tools(command_runner: CommandRunner = _run) -> tuple[dict[str, str],
 def _tools_postcondition(tools: Mapping[str, str], initial: Mapping[str, dict]) -> dict:
     evidence = {}
     unchanged = True
-    for name in ("dumpbin", "powershell", "vswhere"):
+    names = tuple(
+        name
+        for name in ("link", "powershell", "vswhere")
+        if name in tools and name in initial
+    )
+    for name in names:
         try:
             final = _file_identity(Path(tools[name]))
             matched = all(
@@ -3005,7 +3161,7 @@ def _native_file_hash(
     return value["Hash"].lower(), {"result": value, "observation": command}
 
 
-def _dumpbin_markers(stdout: str) -> dict[str, bool]:
+def _pe_header_markers(stdout: str) -> dict[str, bool]:
     output = stdout.lower()
     return {
         "amd64_machine": "8664 machine" in output,
@@ -3015,23 +3171,32 @@ def _dumpbin_markers(stdout: str) -> dict[str, bool]:
     }
 
 
-def _dumpbin_headers(path: Path, dumpbin: str, command_runner: CommandRunner) -> dict:
+def _link_dump_headers(path: Path, link: str, command_runner: CommandRunner) -> dict:
     target = str(path)
     record = command_runner(
-        [dumpbin, "/NOLOGO", "/HEADERS", target],
-        recorded_argv=["<dumpbin>", "/NOLOGO", "/HEADERS", "<target>"],
+        [link, "/DUMP", "/NOLOGO", "/NOPDB", "/HEADERS", target],
+        recorded_argv=[
+            "<link>",
+            "/DUMP",
+            "/NOLOGO",
+            "/NOPDB",
+            "/HEADERS",
+            "<target>",
+        ],
         redactions={target: "<target>"},
+        env=_link_environment(),
     )
-    if record["returncode"] != 0:
+    if record["returncode"] != 0 or record["stderr"] != "":
         raise RuntimeError(
-            f"dumpbin /HEADERS failed with exit {record['returncode']}: {record['stderr']}"
+            "LINK /DUMP /HEADERS failed: " + _command_diagnostic(record)
         )
-    markers = _dumpbin_markers(record["stdout"])
+    markers = _pe_header_markers(record["stdout"])
     if not all(markers.values()):
         missing = ", ".join(name for name, present in markers.items() if not present)
-        raise RuntimeError(f"dumpbin /HEADERS omitted required PE markers: {missing}")
+        raise RuntimeError(f"LINK /DUMP /HEADERS omitted required PE markers: {missing}")
     stdout_bytes = record["stdout"].encode()
     return {
+        "engine": "Microsoft LINK /DUMP",
         "markers": markers,
         "observation": {
             "argv": record["argv"],
@@ -3137,7 +3302,7 @@ def _pe_attestation(
         raise RuntimeError(f"unsigned synthetic PE {relative!r} reported a signer")
     evidence = {
         "byte_profile": _pe_inert_profile(data),
-        "dumpbin_headers": _dumpbin_headers(path, tools["dumpbin"], command_runner),
+        "pe_headers": _link_dump_headers(path, tools["link"], command_runner),
         "get_file_hash": hash_evidence,
         "path": relative,
         "sha256": expected_sha256,
@@ -3505,8 +3670,8 @@ def attest(
             "cross_host_boundary": portable["claim_scope"]["cross_host_boundary"],
             "emitted_pe_execution": False,
             "native_observations": (
-                "Get-FileHash, Get-AuthenticodeSignature, dumpbin /HEADERS, Task Scheduler's "
-                "in-memory XmlText parser, WScript.Shell's shortcut reader, and ntdll's "
+                "Get-FileHash, Get-AuthenticodeSignature, LINK /DUMP /HEADERS, Task "
+                "Scheduler's in-memory XmlText parser, WScript.Shell's shortcut reader, and ntdll's "
                 "RtlGetCompressionWorkSpaceSize/RtlDecompressBufferEx are parse-only "
                 "observations. Byte parsing, not process execution or disassembly, proves the "
                 "one-RET executable profile; portable strict readers prove the Task/LNK byte "
@@ -3537,19 +3702,26 @@ def attest(
     tool_evidence: dict | None = None
     control_path: Path | None = None
     control_initial: dict | None = None
+    staged_tool_evidence: dict = {}
     try:
         with _private_scene(captured, initial_state["scene"]) as (
             private_root,
             private_initial,
         ):
             report["private_scene"] = {"initial": private_initial}
+            report["tools"] = {"initial": staged_tool_evidence}
             try:
-                tools, tool_evidence = _native_tools(command_runner)
-                report["tools"] = {"initial": tool_evidence}
+                tools, tool_evidence = _native_tools(
+                    command_runner,
+                    evidence_sink=staged_tool_evidence,
+                )
+                report["tools"]["initial"] = tool_evidence
                 report["host"] = _platform_evidence(tools["powershell"], command_runner)
                 _validate_powershell_version_evidence(
                     tool_evidence["powershell"], report["host"]
                 )
+                _validate_tool_file_version_evidence(tool_evidence["link"], "link")
+                _validate_tool_file_version_evidence(tool_evidence["vswhere"], "vswhere")
                 positive_control, control_path = _signed_positive_control(
                     tools["powershell"], command_runner
                 )
@@ -3644,8 +3816,19 @@ def attest(
                 }
             if not private_unchanged:
                 report["failures"].append("private default-stream snapshot changed")
-            if tools is not None and tool_evidence is not None:
-                tool_post = _tools_postcondition(tools, tool_evidence)
+            post_tools = tools
+            post_initial = tool_evidence
+            if post_tools is None:
+                post_initial = staged_tool_evidence
+                post_tools = {
+                    name: value["resolved_path"]
+                    for name, value in staged_tool_evidence.items()
+                    if name in {"link", "powershell", "vswhere"}
+                    and type(value) is dict
+                    and type(value.get("resolved_path")) is str
+                }
+            if post_tools and post_initial:
+                tool_post = _tools_postcondition(post_tools, post_initial)
                 report["tools"]["post_observation"] = tool_post
                 if not tool_post["unchanged"]:
                     report["failures"].append("native tool bytes changed during observation")
@@ -3760,6 +3943,157 @@ def _validate_powershell_version_evidence(tool: object, host: object) -> None:
         or stdout != f"PowerShell {native['PowerShellVersion']}"
     ):
         raise RuntimeError("PowerShell version probes disagree")
+
+
+def _validate_tool_file_version_evidence(tool: object, where: str) -> None:
+    if type(tool) is not dict:
+        raise RuntimeError(
+            f"passing native attestation has invalid {where} FileVersionInfo evidence"
+        )
+    evidence = tool.get("file_version")
+    if type(evidence) is not dict or set(evidence) != {
+        "observation",
+        "post_observation",
+        "result",
+    }:
+        raise RuntimeError(
+            f"passing native attestation has invalid {where} FileVersionInfo evidence"
+        )
+    result = evidence["result"]
+    try:
+        _validate_tool_file_version_result(result, f"reported native tool {where}")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"passing native attestation has invalid {where} FileVersionInfo evidence: {exc}"
+        ) from exc
+    _validate_powershell_observation(
+        evidence["observation"],
+        f"{where} FileVersionInfo",
+        label=_TOOL_FILE_VERSION_LABEL,
+        result=result,
+    )
+    post = evidence["post_observation"]
+    if (
+        type(post) is not dict
+        or set(post)
+        != {
+            "filesystem_identity",
+            "path",
+            "resolved_path",
+            "sha256",
+            "size",
+            "unchanged",
+        }
+        or post["unchanged"] is not True
+        or any(
+            post.get(field) != tool.get(field)
+            for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
+        )
+    ):
+        raise RuntimeError(
+            f"passing native attestation does not bind {where} FileVersionInfo post-state"
+        )
+
+
+def _validate_tool_discovery_evidence(discovery: object, link: object) -> None:
+    if (
+        type(discovery) is not dict
+        or set(discovery) != {"installation", "installation_version", "selected_toolset"}
+        or type(link) is not dict
+    ):
+        raise RuntimeError("passing native attestation has invalid tool discovery evidence")
+    installation = discovery["installation"]
+    expected_installation_argv = [
+        "<vswhere>",
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property",
+        "installationPath",
+    ]
+    empty_sha256 = hashlib.sha256(b"").hexdigest()
+    if (
+        type(installation) is not dict
+        or set(installation)
+        != {
+            "argv",
+            "reported_path",
+            "resolved_path",
+            "returncode",
+            "stderr_sha256",
+            "stderr_size",
+            "stdout_sha256",
+            "stdout_size",
+        }
+        or installation["argv"] != expected_installation_argv
+        or installation["returncode"] != 0
+        or installation["stderr_size"] != 0
+        or installation["stderr_sha256"] != empty_sha256
+        or type(installation["reported_path"]) is not str
+        or type(installation["resolved_path"]) is not str
+        or type(installation["stdout_size"]) is not int
+        or not 1 <= installation["stdout_size"] <= MAX_COMMAND_OUTPUT_BYTES
+        or installation["stdout_size"] != len(installation["reported_path"].encode())
+        or installation["stdout_sha256"]
+        != hashlib.sha256(installation["reported_path"].encode()).hexdigest()
+    ):
+        raise RuntimeError("passing native attestation has invalid installation discovery")
+    version = discovery["installation_version"]
+    expected_version_argv = [
+        *expected_installation_argv[:-1],
+        "installationVersion",
+    ]
+    if (
+        type(version) is not dict
+        or set(version) != {"argv", "returncode", "stderr", "stdout", "stdout_sha256"}
+        or version["argv"] != expected_version_argv
+        or version["returncode"] != 0
+        or version["stderr"] != ""
+        or type(version["stdout"]) is not str
+        or not 1 <= len(version["stdout"].encode()) <= 256
+        or version["stdout_sha256"]
+        != hashlib.sha256(version["stdout"].encode()).hexdigest()
+    ):
+        raise RuntimeError("passing native attestation has invalid installation version evidence")
+    installation_version_components = version["stdout"].split(".")
+    if not 3 <= len(installation_version_components) <= 4 or not all(
+        component.isdigit() and 0 <= int(component) <= 999_999
+        for component in installation_version_components
+    ):
+        raise RuntimeError("passing native attestation has invalid installation version evidence")
+    selected = discovery["selected_toolset"]
+    if type(selected) is not str:
+        raise RuntimeError("passing native attestation has invalid selected toolset")
+    components = selected.split(".")
+    if not 3 <= len(components) <= 4 or not all(
+        component.isdigit() and 0 <= int(component) <= 999_999 for component in components
+    ):
+        raise RuntimeError("passing native attestation has invalid selected toolset")
+    link_path = link.get("resolved_path")
+    match = (
+        re.search(
+            r"(?:^|[\\/])VC[\\/]Tools[\\/]MSVC[\\/]([^\\/]+)[\\/]bin[\\/]"
+            r"Hostx64[\\/]x64[\\/]link\.exe$",
+            link_path,
+            flags=re.IGNORECASE,
+        )
+        if type(link_path) is str
+        else None
+    )
+    if match is None or match.group(1) != selected:
+        raise RuntimeError("passing native attestation does not bind the selected toolset")
+    normalized_reported = installation["reported_path"].replace("\\", "/").rstrip("/").casefold()
+    normalized_resolved = installation["resolved_path"].replace("\\", "/").rstrip("/").casefold()
+    normalized_link_root = re.split(
+        r"/vc/tools/msvc/",
+        link_path.replace("\\", "/"),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].rstrip("/").casefold()
+    if normalized_reported != normalized_resolved or normalized_resolved != normalized_link_root:
+        raise RuntimeError("passing native attestation does not bind the Visual Studio root")
 
 
 def _validate_native_hash_evidence(evidence: object, expected_sha256: str, where: str) -> None:
@@ -3906,33 +4240,34 @@ def _validate_pe_byte_profile(profile: object, file_size: int, where: str) -> No
         raise RuntimeError(f"passing native attestation has inconsistent {where} .text profile")
 
 
-def _validate_dumpbin_evidence(evidence: object, where: str) -> None:
-    if type(evidence) is not dict or set(evidence) != {"markers", "observation"}:
-        raise RuntimeError(f"passing native attestation has invalid {where} dumpbin evidence")
+def _validate_pe_header_evidence(evidence: object, where: str) -> None:
+    if type(evidence) is not dict or set(evidence) != {"engine", "markers", "observation"}:
+        raise RuntimeError(f"passing native attestation has invalid {where} PE-header evidence")
     expected_markers = {
         "amd64_machine": True,
         "entry_point_0x1000": True,
         "pe32_plus_magic": True,
         "text_section": True,
     }
-    if evidence["markers"] != expected_markers:
-        raise RuntimeError(f"passing native attestation has incomplete {where} dumpbin markers")
+    if evidence["engine"] != "Microsoft LINK /DUMP" or evidence["markers"] != expected_markers:
+        raise RuntimeError(f"passing native attestation has incomplete {where} PE-header markers")
     observation = evidence["observation"]
     if (
         type(observation) is not dict
         or set(observation)
         != {"argv", "returncode", "stderr", "stdout", "stdout_sha256", "stdout_size"}
-        or observation["argv"] != ["<dumpbin>", "/NOLOGO", "/HEADERS", "<target>"]
+        or observation["argv"]
+        != ["<link>", "/DUMP", "/NOLOGO", "/NOPDB", "/HEADERS", "<target>"]
         or observation["returncode"] != 0
-        or type(observation["stderr"]) is not str
+        or observation["stderr"] != ""
         or type(observation["stdout"]) is not str
         or observation["stdout_size"] != len(observation["stdout"].encode())
         or not 1 <= observation["stdout_size"] <= MAX_COMMAND_OUTPUT_BYTES
         or observation["stdout_sha256"]
         != hashlib.sha256(observation["stdout"].encode()).hexdigest()
-        or _dumpbin_markers(observation["stdout"]) != expected_markers
+        or _pe_header_markers(observation["stdout"]) != expected_markers
     ):
-        raise RuntimeError(f"passing native attestation has inconsistent {where} dumpbin output")
+        raise RuntimeError(f"passing native attestation has inconsistent {where} PE-header output")
 
 
 def _embedded_windows_expectations(portable_record: dict) -> tuple[dict, dict[str, bytes]]:
@@ -4448,7 +4783,7 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
             set(pe)
             != {
                 "byte_profile",
-                "dumpbin_headers",
+                "pe_headers",
                 "get_file_hash",
                 "path",
                 "sha256",
@@ -4461,7 +4796,7 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
         ):
             raise RuntimeError(f"passing native attestation does not bind PE {pe['path']!r}")
         _validate_pe_byte_profile(pe["byte_profile"], expected["size"], pe["path"])
-        _validate_dumpbin_evidence(pe["dumpbin_headers"], pe["path"])
+        _validate_pe_header_evidence(pe["pe_headers"], pe["path"])
         _validate_native_hash_evidence(pe["get_file_hash"], expected["sha256"], pe["path"])
         _validate_unsigned_signature_evidence(pe["signature"], pe["path"])
     for zone in artifacts["zone_identifier"]:
@@ -4811,19 +5146,58 @@ def _validate_native_report(report: object) -> None:
     ):
         raise RuntimeError("passing native attestation report has invalid host evidence")
     tool_record = report.get("tools", {})
-    tool_initial = tool_record.get("initial")
-    tool_post = tool_record.get("post_observation", {}).get("tools")
-    if type(tool_initial) is not dict or type(tool_post) is not dict:
+    if type(tool_record) is not dict:
         raise RuntimeError("passing native attestation report has invalid tool evidence")
-    for name in ("dumpbin", "powershell", "vswhere"):
+    tool_initial = tool_record.get("initial")
+    tool_post_record = tool_record.get("post_observation")
+    tool_post = tool_post_record.get("tools") if type(tool_post_record) is dict else None
+    if (
+        set(tool_record) != {"initial", "post_observation"}
+        or type(tool_initial) is not dict
+        or set(tool_initial) != {"discovery", "link", "powershell", "vswhere"}
+        or type(tool_post_record) is not dict
+        or set(tool_post_record) != {"tools", "unchanged"}
+        or tool_post_record["unchanged"] is not True
+        or type(tool_post) is not dict
+        or set(tool_post) != {"link", "powershell", "vswhere"}
+    ):
+        raise RuntimeError("passing native attestation report has invalid tool evidence")
+    common_tool_fields = {
+        "authenticode",
+        "filesystem_identity",
+        "path",
+        "resolved_path",
+        "sha256",
+        "size",
+        "winverifytrust",
+    }
+    for name in ("link", "powershell", "vswhere"):
         initial = tool_initial.get(name)
         final = tool_post.get(name)
+        expected_fields = common_tool_fields | (
+            {"file_version", "invocation_policy"}
+            if name == "link"
+            else {"file_version"}
+            if name == "vswhere"
+            else {"version_observation", "version_stdout", "version_stdout_sha256"}
+        )
         if (
             type(initial) is not dict
+            or set(initial) != expected_fields
             or type(final) is not dict
+            or set(final)
+            != {
+                "filesystem_identity",
+                "path",
+                "resolved_path",
+                "sha256",
+                "size",
+                "unchanged",
+            }
+            or final["unchanged"] is not True
             or any(
                 final.get(field) != initial.get(field)
-                for field in ("filesystem_identity", "resolved_path", "sha256", "size")
+                for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
             )
         ):
             raise RuntimeError(f"passing native attestation report does not bind {name}")
@@ -4835,7 +5209,15 @@ def _validate_native_report(report: object) -> None:
             f"reported native tool {name}",
             independent_trust=initial.get("winverifytrust"),
         )
+    if tool_initial["link"]["invocation_policy"] != _link_invocation_policy():
+        raise RuntimeError("passing native attestation has invalid LINK invocation policy")
+    _validate_tool_discovery_evidence(
+        tool_initial.get("discovery"),
+        tool_initial.get("link"),
+    )
     _validate_powershell_version_evidence(tool_initial.get("powershell"), host)
+    _validate_tool_file_version_evidence(tool_initial.get("link"), "link")
+    _validate_tool_file_version_evidence(tool_initial.get("vswhere"), "vswhere")
     positive = report.get("positive_control")
     if type(positive) is not dict:
         raise RuntimeError("passing native attestation has invalid positive-control evidence")

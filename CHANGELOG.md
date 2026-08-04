@@ -126,6 +126,27 @@ and all active technical guides received the same claim-boundary and plain-langu
 
 ### Fixed
 
+The Windows-native PE observer now binds and invokes the parser that actually reads the
+files. Microsoft's Raymond Chen identifies `dumpbin.exe` as a wrapper around
+`link.exe /DUMP`. The bounded process harness correctly reaps descendants when a parent exits,
+so the wrapper could finish before its child wrote output. ArtifactForge now discovers the
+numeric-highest x64 toolset,
+hashes and independently authenticates its exact `link.exe`, reads fixed numeric VERSIONINFO
+fields through signed PowerShell, and calls `LINK /DUMP /NOLOGO /NOPDB /HEADERS` directly.
+Each call clears the documented `LINK` and `_LINK_` option controls plus `LINK_REPRO`. This
+keeps the descendant-reaping boundary intact, prevents PDB lookup or repro output, and binds
+the bytes of the parser rather than its launcher. PE evidence now names the engine and records
+a truthful `pe_headers` observation.
+
+The same fixed VERSIONINFO evidence now binds `vswhere.exe`, replacing its help-text version
+probe. Both version records have strict 16-bit component schemas, immediate byte-identity
+postconditions and mutation checks. Failed native observations retain any tool discovery,
+trust and version stages completed before the error, with bounded stream sizes and digests for
+discovery failures. The hosted lane explicitly selects the Windows 2025 Visual Studio 2026
+image. The attestor is the first component to execute the selected LINK parser, after its trust
+and identity checks pass. These contract changes advance the Windows native report from schema
+v5 to v6.
+
 Windows-native observations now use PowerShell's argument-aware `-CommandWithArgs` boundary
 whenever a target path is supplied. The previous `-Command` invocation treated the target as
 additional PowerShell source, so a valid filename containing an apostrophe failed before the

@@ -37,6 +37,8 @@ _find_powershell = _GLOBALS["_find_powershell"]
 _fixture_state = _GLOBALS["_fixture_state"]
 _inventory_path_state_matches = _GLOBALS["_inventory_path_state_matches"]
 _load_prerequisite = _GLOBALS["_load_prerequisite"]
+_link_dump_headers = _GLOBALS["_link_dump_headers"]
+_link_invocation_policy = _GLOBALS["_link_invocation_policy"]
 _logical_zone_map = _GLOBALS["_logical_zone_map"]
 _native_file_hash = _GLOBALS["_native_file_hash"]
 _native_tools = _GLOBALS["_native_tools"]
@@ -56,7 +58,9 @@ _scene_capture = _GLOBALS["_scene_capture"]
 _same_path_directory_state_matches = _GLOBALS["_same_path_directory_state_matches"]
 _stat_fields_match = _GLOBALS["_stat_fields_match"]
 _timestamp = _GLOBALS["_timestamp"]
+_tool_file_version_evidence = _GLOBALS["_tool_file_version_evidence"]
 _signed_positive_control = _GLOBALS["_signed_positive_control"]
+_validate_tool_file_version_result = _GLOBALS["_validate_tool_file_version_result"]
 _verified_fixture_evidence = _GLOBALS["_verified_fixture_evidence"]
 _validate_native_report = _GLOBALS["_validate_native_report"]
 _write_new_output = _GLOBALS["_write_new_output"]
@@ -64,6 +68,7 @@ _zone_attestation = _GLOBALS["_zone_attestation"]
 main = _GLOBALS["main"]
 _SHELL_LINK_SCRIPT = _GLOBALS["_SHELL_LINK_SCRIPT"]
 _TASK_XML_SCRIPT = _GLOBALS["_TASK_XML_SCRIPT"]
+_TOOL_FILE_VERSION_LABEL = _GLOBALS["_TOOL_FILE_VERSION_LABEL"]
 attest = _GLOBALS["attest"]
 prepare = _GLOBALS["prepare"]
 
@@ -105,6 +110,61 @@ def _powershell_observation(result: object, label: str) -> dict:
         "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
         "stdout_size": len(stdout),
     }
+
+
+def _valid_file_version() -> dict:
+    return {
+        "FileMajorPart": 14,
+        "FileMinorPart": 51,
+        "FileBuildPart": 36231,
+        "FilePrivatePart": 0,
+        "ProductMajorPart": 14,
+        "ProductMinorPart": 51,
+        "ProductBuildPart": 36231,
+        "ProductPrivatePart": 0,
+    }
+
+
+def _native_tool_runner(
+    powershell: Path,
+    installation: Path,
+    *,
+    installation_version: str = "18.8.12023.21",
+) -> tuple[object, list]:
+    observed = []
+
+    def runner(command, **kwargs):
+        observed.append((command, kwargs))
+        if "installationPath" in command:
+            stdout = str(installation)
+        elif "installationVersion" in command:
+            stdout = installation_version
+        elif "-CommandWithArgs" in command and "Get-AuthenticodeSignature" in command[-3]:
+            stdout = json.dumps(
+                {
+                    "Status": "Valid",
+                    "StatusMessage": "valid",
+                    "SignerThumbprint": "A" * 40,
+                    "SignerSubject": "CN=Microsoft Corporation",
+                    "SignerIssuer": "CN=Microsoft Root",
+                    "SignatureType": "Authenticode",
+                    "IsOSBinary": False,
+                }
+            )
+        elif "-CommandWithArgs" in command and "FileVersionInfo" in command[-3]:
+            stdout = json.dumps(_valid_file_version())
+        elif command[0] == str(powershell):
+            stdout = "PowerShell 7.6.3"
+        else:
+            raise AssertionError(f"unexpected command: {command!r}")
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": stdout,
+        }
+
+    return runner, observed
 
 
 def _fake_prefetch_decompressor(payload: bytes, output_capacity: int) -> dict:
@@ -1216,10 +1276,150 @@ def test_tool_discovery_uses_vswhere_and_numeric_latest_toolset(tmp_path, monkey
     installation = tmp_path / "Visual Studio"
     powershell.write_bytes(b"powershell")
     vswhere.write_bytes(b"vswhere")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
     for version in ("14.9.1", "14.10.2"):
-        dumpbin = installation / f"VC/Tools/MSVC/{version}/bin/Hostx64/x64/dumpbin.exe"
-        dumpbin.parent.mkdir(parents=True)
-        dumpbin.write_bytes(version.encode())
+        link = installation / f"VC/Tools/MSVC/{version}/bin/Hostx64/x64/link.exe"
+        link.parent.mkdir(parents=True)
+        link.write_bytes(version.encode())
+    monkeypatch.setitem(_native_tools.__globals__, "_find_powershell", lambda: powershell)
+    monkeypatch.setitem(_native_tools.__globals__, "_find_vswhere", lambda: vswhere)
+    monkeypatch.setitem(
+        _native_tools.__globals__,
+        "_winverifytrust",
+        lambda _path: _valid_wintrust(),
+    )
+
+    runner, observed = _native_tool_runner(
+        powershell,
+        installation,
+        installation_version="17.14.37502.11",
+    )
+
+    tools, evidence = _native_tools(runner)
+    assert Path(tools["link"]).parents[3].name == "14.10.2"
+    assert evidence["discovery"]["selected_toolset"] == "14.10.2"
+    assert evidence["discovery"]["installation_version"]["stdout"] == "17.14.37502.11"
+    assert evidence["powershell"]["version_stdout"] == "PowerShell 7.6.3"
+    assert evidence["link"]["file_version"]["result"] == _valid_file_version()
+    assert evidence["vswhere"]["file_version"]["result"] == _valid_file_version()
+    assert evidence["link"]["sha256"] == hashlib.sha256(b"14.10.2").hexdigest()
+    assert all(command[0] != tools["link"] for command, _kwargs in observed)
+    version_calls = [
+        (command, kwargs)
+        for command, kwargs in observed
+        if "-CommandWithArgs" in command and "FileVersionInfo" in command[-3]
+    ]
+    assert len(version_calls) == 2
+    for command, kwargs in version_calls:
+        assert command[-2] == "--"
+        assert kwargs["recorded_argv"][-2:] == ["--", "<target>"]
+
+
+def test_invalid_installation_version_keeps_complete_staged_tool_evidence(
+    tmp_path, monkeypatch
+):
+    powershell = tmp_path / "pwsh.exe"
+    vswhere = tmp_path / "vswhere.exe"
+    installation = tmp_path / "Visual Studio"
+    link = installation / "VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/link.exe"
+    link.parent.mkdir(parents=True)
+    powershell.write_bytes(b"powershell")
+    vswhere.write_bytes(b"vswhere")
+    link.write_bytes(b"link")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.setitem(_native_tools.__globals__, "_find_powershell", lambda: powershell)
+    monkeypatch.setitem(_native_tools.__globals__, "_find_vswhere", lambda: vswhere)
+    monkeypatch.setitem(
+        _native_tools.__globals__,
+        "_winverifytrust",
+        lambda _path: _valid_wintrust(),
+    )
+    runner, _observed = _native_tool_runner(
+        powershell,
+        installation,
+        installation_version="unknown",
+    )
+    staged = {}
+    with pytest.raises(RuntimeError, match="invalid installation version evidence"):
+        _native_tools(runner, evidence_sink=staged)
+    assert set(staged) == {"discovery", "link", "powershell", "vswhere"}
+    assert staged["discovery"]["installation_version"]["stdout"] == "unknown"
+    assert staged["link"]["file_version"]["result"] == _valid_file_version()
+    assert staged["link"]["authenticode"]["result"]["Status"] == "Valid"
+
+
+def test_tool_file_version_uses_fixed_literal_target_and_binds_post_state(tmp_path):
+    powershell = tmp_path / "pwsh.exe"
+    target = tmp_path / "link o'brien ; literal.exe"
+    powershell.write_bytes(b"powershell")
+    target.write_bytes(b"link")
+    initial = _file_identity(target)
+    expected = _valid_file_version()
+
+    def runner(command, **kwargs):
+        assert command[0] == str(powershell)
+        assert command[-3].startswith("param(")
+        assert command[-2:] == ["--", str(target)]
+        assert kwargs["recorded_argv"][-2:] == ["--", "<target>"]
+        assert kwargs["redactions"] == {str(target): "<target>"}
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(expected, separators=(",", ":")),
+        }
+
+    evidence = _tool_file_version_evidence(target, initial, str(powershell), runner)
+    assert evidence["result"] == expected
+    assert evidence["observation"]["argv"][-2:] == ["--", "<target>"]
+    assert evidence["post_observation"]["unchanged"] is True
+    assert evidence["post_observation"]["sha256"] == initial["sha256"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.pop("ProductPrivatePart"),
+        lambda value: value.update({"Extra": 1}),
+        lambda value: value.update({"FileMajorPart": True}),
+        lambda value: value.update({"FileBuildPart": -1}),
+        lambda value: value.update({"ProductBuildPart": 65536}),
+        lambda value: value.update(dict.fromkeys(list(value)[:4], 0)),
+        lambda value: value.update(dict.fromkeys(list(value)[4:], 0)),
+    ],
+)
+def test_tool_file_version_rejects_malformed_fixed_fields(mutation):
+    value = _valid_file_version()
+    mutation(value)
+    with pytest.raises(RuntimeError, match="fixed version"):
+        _validate_tool_file_version_result(value, "control")
+
+
+def test_tool_file_version_rejects_tool_mutation_during_probe(tmp_path):
+    powershell = tmp_path / "pwsh.exe"
+    target = tmp_path / "link.exe"
+    powershell.write_bytes(b"powershell")
+    target.write_bytes(b"link-before")
+    initial = _file_identity(target)
+
+    def runner(_command, **kwargs):
+        target.write_bytes(b"link-after")
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(_valid_file_version()),
+        }
+
+    with pytest.raises(RuntimeError, match="changed during its FileVersionInfo"):
+        _tool_file_version_evidence(target, initial, str(powershell), runner)
+
+
+def test_native_tool_failure_retains_staged_discovery_digests(tmp_path, monkeypatch):
+    powershell = tmp_path / "pwsh.exe"
+    vswhere = tmp_path / "vswhere.exe"
+    powershell.write_bytes(b"powershell")
+    vswhere.write_bytes(b"vswhere")
     monkeypatch.setitem(_native_tools.__globals__, "_find_powershell", lambda: powershell)
     monkeypatch.setitem(_native_tools.__globals__, "_find_vswhere", lambda: vswhere)
     monkeypatch.setitem(
@@ -1229,10 +1429,10 @@ def test_tool_discovery_uses_vswhere_and_numeric_latest_toolset(tmp_path, monkey
     )
 
     def runner(command, **kwargs):
+        returncode = 0
         if "installationPath" in command:
-            stdout = str(installation)
-        elif "installationVersion" in command:
-            stdout = "17.14.37502.11"
+            stdout = "unusable discovery output"
+            returncode = 1
         elif "-CommandWithArgs" in command and "Get-AuthenticodeSignature" in command[-3]:
             stdout = json.dumps(
                 {
@@ -1245,25 +1445,96 @@ def test_tool_discovery_uses_vswhere_and_numeric_latest_toolset(tmp_path, monkey
                     "IsOSBinary": False,
                 }
             )
-        elif command[0] == str(powershell):
-            stdout = "PowerShell 7.6.3"
-        elif command[0] == str(vswhere):
-            stdout = "Visual Studio Locator version 3.1.7"
+        elif "-CommandWithArgs" in command and "FileVersionInfo" in command[-3]:
+            stdout = json.dumps(_valid_file_version())
         else:
-            stdout = "Microsoft COFF/PE Dumper Version 14.10.2"
+            stdout = "PowerShell 7.6.3"
         return {
             "argv": kwargs["recorded_argv"],
-            "returncode": 0,
+            "returncode": returncode,
             "stderr": "",
             "stdout": stdout,
         }
 
-    tools, evidence = _native_tools(runner)
-    assert Path(tools["dumpbin"]).parents[3].name == "14.10.2"
-    assert evidence["discovery"]["installation_version"] == "17.14.37502.11"
-    assert evidence["powershell"]["version_stdout"] == "PowerShell 7.6.3"
-    assert evidence["vswhere"]["version_stdout"].startswith("Visual Studio Locator")
-    assert evidence["dumpbin"]["sha256"] == hashlib.sha256(b"14.10.2").hexdigest()
+    staged = {}
+    with pytest.raises(RuntimeError, match=r"returncode=1; stdout_size=25"):
+        _native_tools(runner, evidence_sink=staged)
+    assert set(staged) == {"discovery", "powershell", "vswhere"}
+    discovery = staged["discovery"]["installation"]
+    assert discovery["returncode"] == 1
+    assert discovery["stdout_size"] == len(b"unusable discovery output")
+    assert discovery["stdout_sha256"] == hashlib.sha256(
+        b"unusable discovery output"
+    ).hexdigest()
+    assert staged["vswhere"]["file_version"]["result"] == _valid_file_version()
+
+
+def test_link_dump_headers_uses_direct_bounded_literal_invocation(tmp_path, monkeypatch):
+    link = tmp_path / "link.exe"
+    target = tmp_path / "target o'brien ; literal.exe"
+    link.write_bytes(b"link")
+    target.write_bytes(b"MZ")
+    monkeypatch.setenv("LINK", "/OUT:hostile.exe")
+    monkeypatch.setenv("_LINK_", "/RELEASE")
+    monkeypatch.setenv("link_repro", str(tmp_path / "repro"))
+
+    def runner(command, **kwargs):
+        assert command == [
+            str(link),
+            "/DUMP",
+            "/NOLOGO",
+            "/NOPDB",
+            "/HEADERS",
+            str(target),
+        ]
+        assert kwargs["recorded_argv"] == [
+            "<link>",
+            "/DUMP",
+            "/NOLOGO",
+            "/NOPDB",
+            "/HEADERS",
+            "<target>",
+        ]
+        assert kwargs["redactions"] == {str(target): "<target>"}
+        assert not {
+            name.casefold() for name in kwargs["env"]
+        }.intersection({"link", "_link_", "link_repro"})
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "8664 machine\n1000 entry point\n20B magic\n.text name",
+        }
+
+    evidence = _link_dump_headers(target, str(link), runner)
+    assert evidence["engine"] == "Microsoft LINK /DUMP"
+    assert all(evidence["markers"].values())
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "stdout", "message"),
+    [
+        (1, "", "8664 machine\n1000 entry point\n20B magic\n.text name", "failed"),
+        (0, "unexpected", "8664 machine\n1000 entry point\n20B magic\n.text name", "failed"),
+        (0, "", "8664 machine\n20B magic\n.text name", "omitted required PE markers"),
+    ],
+)
+def test_link_dump_headers_rejects_failed_or_incomplete_output(
+    tmp_path, returncode, stderr, stdout, message
+):
+    target = tmp_path / "target.exe"
+    target.write_bytes(b"MZ")
+
+    def runner(_command, **kwargs):
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": returncode,
+            "stderr": stderr,
+            "stdout": stdout,
+        }
+
+    with pytest.raises(RuntimeError, match=message):
+        _link_dump_headers(target, "link.exe", runner)
 
 
 def test_synthetic_pe_rejects_a_valid_signature(windows_fixture, tmp_path, monkeypatch):
@@ -1295,7 +1566,7 @@ def test_synthetic_pe_rejects_a_valid_signature(windows_fixture, tmp_path, monke
             relative,
             path,
             data,
-            {"dumpbin": "dumpbin.exe", "powershell": "pwsh.exe"},
+            {"link": "link.exe", "powershell": "pwsh.exe"},
             lambda *_args, **_kwargs: {},
         )
 
@@ -1432,8 +1703,14 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         "SignerThumbprint": "A" * 40,
         "SignerSubject": "CN=Microsoft Corporation",
     }
-    for name in ("dumpbin", "powershell", "vswhere"):
-        path = tmp_path / f"{name}.exe"
+    for name in ("link", "powershell", "vswhere"):
+        path = (
+            tmp_path
+            / "Visual Studio/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/link.exe"
+            if name == "link"
+            else tmp_path / f"{name}.exe"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(name.encode())
         tools[name] = str(path)
         tool_evidence[name] = {
@@ -1461,8 +1738,55 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
             "version_stdout_sha256": hashlib.sha256(powershell_version.encode()).hexdigest(),
         }
     )
-    tool_evidence["discovery"] = {"returncode": 0}
-    monkeypatch.setitem(attest.__globals__, "_native_tools", lambda _runner: (tools, tool_evidence))
+    for name in ("link", "vswhere"):
+        identity = {
+            field: tool_evidence[name][field]
+            for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
+        }
+        version = _valid_file_version()
+        tool_evidence[name]["file_version"] = {
+            "observation": _powershell_observation(version, _TOOL_FILE_VERSION_LABEL),
+            "post_observation": {**identity, "unchanged": True},
+            "result": version,
+        }
+    tool_evidence["link"]["invocation_policy"] = _link_invocation_policy()
+    installation_stdout = str(tmp_path / "Visual Studio")
+    installation_argv = [
+        "<vswhere>",
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property",
+        "installationPath",
+    ]
+    installation_version = "18.8.12023.21"
+    tool_evidence["discovery"] = {
+        "installation": {
+            "argv": installation_argv,
+            "reported_path": installation_stdout,
+            "resolved_path": installation_stdout,
+            "returncode": 0,
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_size": 0,
+            "stdout_sha256": hashlib.sha256(installation_stdout.encode()).hexdigest(),
+            "stdout_size": len(installation_stdout.encode()),
+        },
+        "installation_version": {
+            "argv": [*installation_argv[:-1], "installationVersion"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": installation_version,
+            "stdout_sha256": hashlib.sha256(installation_version.encode()).hexdigest(),
+        },
+        "selected_toolset": "14.51.36231",
+    }
+    monkeypatch.setitem(
+        attest.__globals__,
+        "_native_tools",
+        lambda _runner, **_kwargs: (tools, tool_evidence),
+    )
     host = {
         "native": {
             "OSVersion": "mocked Windows",
@@ -1517,6 +1841,9 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     )
 
     observed_commands = []
+    monkeypatch.setenv("LINK", "/OUT:hostile.exe")
+    monkeypatch.setenv("_LINK_", "/RELEASE")
+    monkeypatch.setenv("LiNk_RePrO", str(tmp_path / "hostile-repro"))
 
     def runner(command, **kwargs):
         observed_commands.append(command)
@@ -1579,6 +1906,9 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
                 raise AssertionError("unexpected PowerShell script")
             stdout = json.dumps(value, separators=(",", ":"))
         elif "/HEADERS" in command:
+            assert not {
+                name.casefold() for name in kwargs["env"]
+            }.intersection({"link", "_link_", "link_repro"})
             stdout = "8664 machine\n1000 entry point\n20B magic\n.text name"
         else:
             raise AssertionError(f"unexpected native command: {command!r}")
@@ -1655,16 +1985,52 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
-    hostile["artifacts"]["pe"][0]["dumpbin_headers"]["markers"]["amd64_machine"] = False
-    with pytest.raises(RuntimeError, match="dumpbin markers"):
+    hostile["artifacts"]["pe"][0]["pe_headers"]["markers"]["amd64_machine"] = False
+    with pytest.raises(RuntimeError, match="PE-header markers"):
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
-    dumpbin = hostile["artifacts"]["pe"][0]["dumpbin_headers"]["observation"]
-    dumpbin["stdout"] = "invented passing dumpbin output"
-    dumpbin["stdout_size"] = len(dumpbin["stdout"].encode())
-    dumpbin["stdout_sha256"] = hashlib.sha256(dumpbin["stdout"].encode()).hexdigest()
-    with pytest.raises(RuntimeError, match="dumpbin output"):
+    link = hostile["artifacts"]["pe"][0]["pe_headers"]["observation"]
+    link["stdout"] = "invented passing LINK output"
+    link["stdout_size"] = len(link["stdout"].encode())
+    link["stdout_sha256"] = hashlib.sha256(link["stdout"].encode()).hexdigest()
+    with pytest.raises(RuntimeError, match="PE-header output"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["initial"]["link"]["file_version"]["result"][
+        "FileBuildPart"
+    ] += 1
+    with pytest.raises(RuntimeError, match="link FileVersionInfo observation"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["initial"]["vswhere"]["file_version"]["result"][
+        "ProductMajorPart"
+    ] = True
+    with pytest.raises(RuntimeError, match="vswhere FileVersionInfo evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["initial"]["link"]["invocation_policy"][
+        "cleared_environment_variables"
+    ].remove("LINK")
+    with pytest.raises(RuntimeError, match="LINK invocation policy"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["initial"]["discovery"]["selected_toolset"] = "14.50.0"
+    with pytest.raises(RuntimeError, match="does not bind the selected toolset"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["post_observation"]["tools"]["link"]["unchanged"] = False
+    with pytest.raises(RuntimeError, match="does not bind link"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["post_observation"]["tools"]["link"]["path"] += ".moved"
+    with pytest.raises(RuntimeError, match="does not bind link"):
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
@@ -1872,7 +2238,7 @@ def test_output_creation_is_exclusive_and_outside_protected_roots(tmp_path):
         ("", "RuntimeError"),
     ],
 )
-def test_observe_main_preserves_a_native_failure_in_a_v5_envelope(
+def test_observe_main_preserves_a_native_failure_in_the_current_envelope(
     tmp_path,
     monkeypatch,
     capsys,
@@ -1923,7 +2289,7 @@ def test_observe_main_preserves_a_native_failure_in_a_v5_envelope(
         "failures": [expected_failure],
         "generated_at_utc": "2026-08-04T13:08:13Z",
         "schema": main.__globals__["SCHEMA_ID"],
-        "schema_version": 5,
+        "schema_version": main.__globals__["SCHEMA_VERSION"],
         "verdict": "fail",
     }
     assert captured["destination"] == output

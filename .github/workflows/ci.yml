@@ -963,12 +963,13 @@ jobs:
           if-no-files-found: error
 
   # This job never executes an emitted PE. It requires the exact portable-assurance bundle,
-  # matches source/manifest/default-stream digests, then lets signed PowerShell and dumpbin
-  # inspect private copies. Zone.Identifier streams exist only for a bounded readback in that
-  # private tree and are removed before every post-state check.
+  # matches source/manifest/default-stream digests, then lets signed PowerShell and the
+  # authenticated Microsoft LINK /DUMP engine inspect private copies. Zone.Identifier streams
+  # exist only for a bounded readback in that private tree and are removed before every
+  # post-state check.
   windows-native:
     needs: windows-native-prepare
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -994,7 +995,7 @@ jobs:
           & $uv sync --frozen --extra dev --python 3.12
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Require PowerShell and Visual C++ inspection tools
+      - name: Require PowerShell and the fixed Visual Studio locator
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1005,13 +1006,6 @@ jobs:
           if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
             throw "vswhere.exe is unavailable"
           }
-          $dumpbin = & $vswhere -latest -products "*" `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe"
-          if ($LASTEXITCODE -ne 0 -or -not $dumpbin) {
-            throw "x64 dumpbin.exe is unavailable"
-          }
-          $dumpbin
 
       - name: Windows-safe attestation and benchmark platform contracts
         shell: pwsh
@@ -1019,7 +1013,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           uv run pytest -q -rs tests/test_native_windows_attestation.py `
-            -k powershell_observations_pass_target_separately_and_use_literal_path
+            -k "powershell_observations_pass_target_separately_and_use_literal_path or tool_discovery_uses_vswhere_and_numeric_latest_toolset"
           uv run pytest -q -rs `
             tests/test_benchmark_attempt_platform.py `
             tests/test_benchmark_attempt_verify_cli.py `
@@ -1060,8 +1054,8 @@ jobs:
               sort_keys=True,
           ) + "\n").encode()
           assert raw == canonical
-          assert report["schema"] == "artifactforge-native-windows-attestation-v5"
-          assert report["schema_version"] == 5
+          assert report["schema"] == "artifactforge-native-windows-attestation-v6"
+          assert report["schema_version"] == 6
           assert report["verdict"] == "pass", report["failures"]
           assert report["claim_scope"]["emitted_pe_execution"] is False
           assert report["producer"]["source"]["worktree_clean"] is True
@@ -1094,7 +1088,18 @@ jobs:
           tools = report["tools"]
           assert tools["post_observation"]["unchanged"] is True
           assert all(len(tools["initial"][name]["sha256"]) == 64
-                     for name in ("dumpbin", "powershell", "vswhere"))
+                     for name in ("link", "powershell", "vswhere"))
+          for name in ("link", "vswhere"):
+              fixed = tools["initial"][name]["file_version"]["result"]
+              assert all(type(value) is int and 0 <= value <= 65535
+                         for value in fixed.values())
+              assert any(fixed[key] for key in (
+                  "FileMajorPart", "FileMinorPart", "FileBuildPart", "FilePrivatePart"
+              ))
+              assert any(fixed[key] for key in (
+                  "ProductMajorPart", "ProductMinorPart", "ProductBuildPart",
+                  "ProductPrivatePart"
+              ))
           control = report["positive_control"]
           assert control["verdict"] == "pass"
           assert control["selected"]["signature"]["Status"] == "Valid"
@@ -1125,7 +1130,8 @@ jobs:
                   {"bytes": "c3", "instruction": "ret"},
               ]
               assert pe["byte_profile"]["zero_padding_bytes"] == 511
-              assert all(pe["dumpbin_headers"]["markers"].values())
+              assert pe["pe_headers"]["engine"] == "Microsoft LINK /DUMP"
+              assert all(pe["pe_headers"]["markers"].values())
           tasks = report["artifacts"]["scheduled_task_xml"]
           links = report["artifacts"]["shell_link"]
           assert len(tasks) == len(links) == 1

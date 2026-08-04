@@ -159,8 +159,9 @@ successful run is required before describing any subject as hosted-attested.
 
 All third-party actions are pinned by immutable commit. Dependabot may propose reviewed updates
 to those pins; it does not make an update trustworthy or merge it automatically. The hosted
-runner labels are also fixed (`ubuntu-24.04`, `macos-15`, and `windows-2025`), but a label is not
-an immutable machine image, so retained host/tool evidence remains part of each native claim.
+runner labels are also explicit (`ubuntu-24.04`, `macos-15`, and
+`windows-2025-vs2026`), but a label is not an immutable machine image. Retained host and tool
+evidence therefore remains part of each native claim.
 
 | Action | Reviewed release | Immutable commit |
 |---|---|---|
@@ -185,9 +186,17 @@ wheel tags alone are not promotion evidence.
 ### Windows-native evidence
 
 The Windows-native implementation prepares a byte-bound portable prerequisite on Ubuntu and
-observes private copies on fixed `windows-2025` with Microsoft-signed PowerShell and Visual C++
-inspection tools. Target-bearing observations require PowerShell 7.5 or later and use
-`-CommandWithArgs` so literal paths stay separate from PowerShell source. The signed-tool
-version record must agree with the in-process `$PSVersionTable` observation. It never executes
-an emitted PE. Its first successful hosted Windows run is still required evidence; unit and
-mutation tests on another host do not substitute for that observation.
+observes private copies on `windows-2025-vs2026`. It authenticates PowerShell, `vswhere.exe`
+and the selected x64 `link.exe`. PE inspection calls the real parser directly as
+`LINK /DUMP /NOLOGO /NOPDB /HEADERS`. A
+[Microsoft implementation note](https://devblogs.microsoft.com/oldnewthing/20240617-00/?p=109905)
+identifies this as the engine behind `dumpbin.exe`, so the wrapper is not part of the trust
+boundary. The observer removes LINK option and repro environment controls before each call.
+
+Target-bearing PowerShell observations require version 7.5 or later and use
+`-CommandWithArgs`, so literal paths stay separate from PowerShell source. Fixed numeric
+VERSIONINFO records bind `vswhere.exe` and `link.exe` to their already hashed and authenticated
+bytes. The PowerShell command version must agree with the in-process `$PSVersionTable`
+observation. No emitted PE is executed. A successful hosted Windows run is still required
+before making a native acceptance claim; unit and mutation tests on another host do not
+substitute for that observation.

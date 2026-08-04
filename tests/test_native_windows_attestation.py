@@ -53,6 +53,7 @@ _read_regular = _GLOBALS["_read_regular"]
 _require_related_github_runs = _GLOBALS["_require_related_github_runs"]
 _require_microsoft_signature = _GLOBALS["_require_microsoft_signature"]
 _require_command_with_args_version = _GLOBALS["_require_command_with_args_version"]
+_validate_source_identity = _GLOBALS["_validate_source_identity"]
 _run = _GLOBALS["_run"]
 _scene_capture = _GLOBALS["_scene_capture"]
 _same_path_directory_state_matches = _GLOBALS["_same_path_directory_state_matches"]
@@ -91,19 +92,21 @@ def _valid_wintrust(*, publisher: str = "Microsoft Corporation") -> dict:
     }
 
 
-def _powershell_observation(result: object, label: str) -> dict:
+def _powershell_observation(result: object, label: str, *, target: bool = True) -> dict:
     stdout = _canonical_json_bytes(result)
+    command_switch = "-CommandWithArgs" if target else "-Command"
+    argv = [
+        "<pwsh>",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        command_switch,
+        f"<fixed:{label}>",
+    ]
+    if target:
+        argv.extend(["--", "<target>"])
     return {
-        "argv": [
-            "<pwsh>",
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-CommandWithArgs",
-            f"<fixed:{label}>",
-            "--",
-            "<target>",
-        ],
+        "argv": argv,
         "result_sha256": _canonical_digest(result),
         "returncode": 0,
         "stderr": "",
@@ -984,6 +987,67 @@ def test_portable_prerequisite_is_canonical_and_mutation_closed(
     with pytest.raises(RuntimeError, match="GitHub Actions provenance"):
         _load_prerequisite(arbitrary_run_path)
 
+    boolean_schema = json.loads(path.read_bytes())
+    boolean_schema["schema_version"] = True
+    boolean_schema_path = tmp_path / "boolean-schema.json"
+    boolean_schema_path.write_bytes(_canonical_json_bytes(boolean_schema))
+    with pytest.raises(RuntimeError, match="passing supported record"):
+        _load_prerequisite(boolean_schema_path)
+
+    extra_claim = json.loads(path.read_bytes())
+    extra_claim["claim_scope"]["complete_native_assurance"] = True
+    extra_claim_path = tmp_path / "extra-claim.json"
+    extra_claim_path.write_bytes(_canonical_json_bytes(extra_claim))
+    with pytest.raises(RuntimeError, match="claim scope"):
+        _load_prerequisite(extra_claim_path)
+
+    for name, value in (("unexpected", True), ("machine", False)):
+        hostile_host = json.loads(path.read_bytes())
+        host_record = hostile_host["host"]
+        host_record[name] = value
+        host_record["identity_sha256"] = _canonical_digest(
+            {field: item for field, item in host_record.items() if field != "identity_sha256"}
+        )
+        hostile_host_path = tmp_path / f"host-{name}.json"
+        hostile_host_path.write_bytes(_canonical_json_bytes(hostile_host))
+        with pytest.raises(RuntimeError, match="host evidence"):
+            _load_prerequisite(hostile_host_path)
+
+    extra_environment_field = json.loads(path.read_bytes())
+    environment_python = extra_environment_field["fixture"]["portable_verification"]["environment"][
+        "python"
+    ]
+    environment_python["unexpected"] = True
+    extra_environment_path = tmp_path / "extra-environment-field.json"
+    extra_environment_path.write_bytes(_canonical_json_bytes(extra_environment_field))
+    with pytest.raises(RuntimeError, match="verifier environment"):
+        _load_prerequisite(extra_environment_path)
+
+    boolean_gate = json.loads(path.read_bytes())
+    boolean_gate["fixture"]["portable_verification"]["reports"][0]["gate"] = True
+    boolean_gate_path = tmp_path / "boolean-gate.json"
+    boolean_gate_path.write_bytes(_canonical_json_bytes(boolean_gate))
+    with pytest.raises(RuntimeError, match="passing assurance gates"):
+        _load_prerequisite(boolean_gate_path)
+
+    loose_filesystem = json.loads(path.read_bytes())
+    loose_filesystem["fixture"]["filesystem_identity"]["artifacts"]["device"] = 0
+    loose_filesystem["fixture"]["post_preparation"]["filesystem_identity"]["artifacts"][
+        "device"
+    ] = False
+    loose_filesystem_path = tmp_path / "loose-filesystem-identity.json"
+    loose_filesystem_path.write_bytes(_canonical_json_bytes(loose_filesystem))
+    with pytest.raises(RuntimeError, match="fixture postcondition"):
+        _load_prerequisite(loose_filesystem_path)
+
+    float_manifest_size = json.loads(path.read_bytes())
+    manifest_file = float_manifest_size["fixture"]["manifest_file"]
+    manifest_file["size"] = float(manifest_file["size"])
+    float_manifest_size_path = tmp_path / "float-manifest-size.json"
+    float_manifest_size_path.write_bytes(_canonical_json_bytes(float_manifest_size))
+    with pytest.raises(RuntimeError, match="manifest identity"):
+        _load_prerequisite(float_manifest_size_path)
+
     false_clean = json.loads(path.read_bytes())
     source = false_clean["producer"]["source"]
     source["status_porcelain_sha256"] = hashlib.sha256(b"unreported change").hexdigest()
@@ -995,6 +1059,13 @@ def test_portable_prerequisite_is_canonical_and_mutation_closed(
     false_clean_path.write_bytes(_canonical_json_bytes(false_clean))
     with pytest.raises(RuntimeError, match="self-inconsistent source evidence"):
         _load_prerequisite(false_clean_path)
+
+    loose_boolean = json.loads(path.read_bytes())
+    loose_boolean["producer"]["source_post_preparation"]["worktree_clean"] = 1
+    loose_boolean_path = tmp_path / "loose-source-boolean.json"
+    loose_boolean_path.write_bytes(_canonical_json_bytes(loose_boolean))
+    with pytest.raises(RuntimeError, match="source evidence.*self-inconsistent"):
+        _load_prerequisite(loose_boolean_path)
 
 
 def test_cross_job_github_provenance_requires_the_same_run():
@@ -1080,9 +1151,7 @@ def test_powershell_observations_pass_target_separately_and_use_literal_path(tmp
         powershell = shutil.which("pwsh.exe") or shutil.which("pwsh")
         assert powershell, "hosted Windows native lane requires pwsh"
         literal = tmp_path / "literal [brackets] & apostrophe' space.exe"
-        payload = build_pe_stub(
-            hashlib.sha256(b"windows-hostile-literal-path-control").digest()
-        )
+        payload = build_pe_stub(hashlib.sha256(b"windows-hostile-literal-path-control").digest())
         logical = b"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://artifactforge.invalid/\r\n"
         literal.write_bytes(payload)
         real_digest, _ = _native_file_hash(literal, powershell, _run)
@@ -1141,6 +1210,22 @@ def test_powershell_without_target_keeps_command_as_the_final_switch():
             noisy_runner,
         )
 
+    def boolean_runner(_command, **boolean_kwargs):
+        return {
+            "argv": boolean_kwargs["recorded_argv"],
+            "returncode": False,
+            "stderr": "",
+            "stdout": '{"Ok":true}',
+        }
+
+    with pytest.raises(RuntimeError, match="failed with exit False"):
+        _powershell_json(
+            "pwsh.exe",
+            "[ordered]@{Ok = $true} | ConvertTo-Json -Compress",
+            "boolean-returncode-control",
+            boolean_runner,
+        )
+
 
 def test_command_with_args_requires_supported_powershell_version():
     assert _require_command_with_args_version(
@@ -1161,6 +1246,28 @@ def test_command_with_args_requires_supported_powershell_version():
         _require_command_with_args_version(
             {"returncode": 0, "stdout": "PowerShell 7.7.0-preview.1", "stderr": ""}
         )
+    with pytest.raises(RuntimeError, match="cannot obtain"):
+        _require_command_with_args_version(
+            {"returncode": False, "stdout": "PowerShell 7.6.4", "stderr": ""}
+        )
+    with pytest.raises(RuntimeError, match="cannot obtain"):
+        _require_command_with_args_version(
+            {"returncode": 0, "stdout": "PowerShell 7.6.4", "stderr": "unexpected"}
+        )
+    for malformed in (None, [], "", 0, False):
+        with pytest.raises(RuntimeError, match="cannot obtain"):
+            _require_command_with_args_version(malformed)
+
+
+def test_source_identity_rejects_digest_shaped_non_strings():
+    for field, digits in (("git_commit", 40), ("git_tree", 40), ("status_porcelain_sha256", 64)):
+        source = _source()
+        source[field] = int("1" * digits)
+        source["identity_sha256"] = _canonical_digest(
+            {name: value for name, value in source.items() if name != "identity_sha256"}
+        )
+        with pytest.raises(RuntimeError, match="source evidence"):
+            _validate_source_identity(source, "test source")
 
 
 def test_task_and_shell_link_native_scripts_have_no_activation_surface():
@@ -1261,6 +1368,15 @@ def test_publisher_policy_uses_verified_leaf_identity_not_a_microsoft_substring(
             independent_trust=mismatched_certificate,
         )
 
+    numeric_certificate = _valid_wintrust()
+    numeric_certificate["signer_certificate_sha1"] = int("1" * 40)
+    with pytest.raises(RuntimeError, match="independently trusted"):
+        _require_microsoft_signature(
+            signature,
+            "control",
+            independent_trust=numeric_certificate,
+        )
+
     unsupported_type = {**signature, "SignatureType": "Embedded"}
     with pytest.raises(RuntimeError, match="valid Microsoft-signed"):
         _require_microsoft_signature(
@@ -1315,9 +1431,7 @@ def test_tool_discovery_uses_vswhere_and_numeric_latest_toolset(tmp_path, monkey
         assert kwargs["recorded_argv"][-2:] == ["--", "<target>"]
 
 
-def test_invalid_installation_version_keeps_complete_staged_tool_evidence(
-    tmp_path, monkeypatch
-):
+def test_invalid_installation_version_keeps_complete_staged_tool_evidence(tmp_path, monkeypatch):
     powershell = tmp_path / "pwsh.exe"
     vswhere = tmp_path / "vswhere.exe"
     installation = tmp_path / "Visual Studio"
@@ -1463,9 +1577,7 @@ def test_native_tool_failure_retains_staged_discovery_digests(tmp_path, monkeypa
     discovery = staged["discovery"]["installation"]
     assert discovery["returncode"] == 1
     assert discovery["stdout_size"] == len(b"unusable discovery output")
-    assert discovery["stdout_sha256"] == hashlib.sha256(
-        b"unusable discovery output"
-    ).hexdigest()
+    assert discovery["stdout_sha256"] == hashlib.sha256(b"unusable discovery output").hexdigest()
     assert staged["vswhere"]["file_version"]["result"] == _valid_file_version()
 
 
@@ -1496,9 +1608,9 @@ def test_link_dump_headers_uses_direct_bounded_literal_invocation(tmp_path, monk
             "<target>",
         ]
         assert kwargs["redactions"] == {str(target): "<target>"}
-        assert not {
-            name.casefold() for name in kwargs["env"]
-        }.intersection({"link", "_link_", "link_repro"})
+        assert not {name.casefold() for name in kwargs["env"]}.intersection(
+            {"link", "_link_", "link_repro"}
+        )
         return {
             "argv": kwargs["recorded_argv"],
             "returncode": 0,
@@ -1572,46 +1684,94 @@ def test_synthetic_pe_rejects_a_valid_signature(windows_fixture, tmp_path, monke
 
 
 def test_authenticode_positive_control_requires_valid_signed_bytes(tmp_path, monkeypatch):
-    control = tmp_path / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    control.parent.mkdir(parents=True)
+    control = tmp_path / "pwsh.exe"
     control.write_bytes(b"signed-control")
-    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    identity = _file_identity(control)
     valid = {
-        "IsOSBinary": True,
+        "IsOSBinary": False,
         "SignerIssuer": "CN=Microsoft Root",
         "SignatureType": "Authenticode",
         "Status": "Valid",
         "StatusMessage": "valid",
         "SignerThumbprint": "A" * 40,
-        "SignerSubject": "CN=Microsoft Windows",
+        "SignerSubject": "CN=Microsoft Corporation",
+    }
+    trust = _valid_wintrust()
+    authenticode = {
+        "observation": _powershell_observation(
+            valid,
+            "Get-AuthenticodeSignature-LiteralPath",
+        ),
+        "result": valid,
+    }
+    powershell_evidence = {
+        **identity,
+        "authenticode": authenticode,
+        "winverifytrust": trust,
     }
     monkeypatch.setitem(
         _signed_positive_control.__globals__,
         "_winverifytrust",
-        lambda _path: _valid_wintrust(publisher="Microsoft Windows"),
+        lambda *_args: pytest.fail("the completed WinVerifyTrust evidence must be reused"),
     )
     monkeypatch.setitem(
         _signed_positive_control.__globals__,
         "_authenticode",
-        lambda *_args: (valid, {"argv": ["<positive-control>"]}),
+        lambda *_args: pytest.fail("the completed Authenticode evidence must be reused"),
     )
-    monkeypatch.setitem(
-        _signed_positive_control.__globals__,
-        "_native_file_hash",
-        lambda path, *_args: (hashlib.sha256(path.read_bytes()).hexdigest(), {}),
+
+    def runner(command, **kwargs):
+        assert "Get-FileHash" in command[-3]
+        result = {
+            "Algorithm": "SHA256",
+            "Hash": identity["sha256"].upper(),
+        }
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(result, separators=(",", ":")),
+        }
+
+    evidence, selected = _signed_positive_control(
+        str(control),
+        powershell_evidence,
+        runner,
     )
-    evidence, selected = _signed_positive_control("pwsh.exe", lambda *_args: {})
     assert selected == control
+    assert evidence["attempts"] == [evidence["selected"]]
+    assert evidence["selected"]["label"] == "PowerShell7"
+    assert evidence["selected"]["identity"] == identity
+    assert evidence["selected"]["observation"] == authenticode["observation"]
+    assert evidence["selected"]["signature"] == valid
+    assert evidence["selected"]["winverifytrust"] == trust
     assert evidence["selected"]["signature"]["Status"] == "Valid"
 
     unsigned = {**valid, "Status": "NotSigned", "SignerThumbprint": ""}
-    monkeypatch.setitem(
-        _signed_positive_control.__globals__,
-        "_authenticode",
-        lambda *_args: (unsigned, {}),
-    )
-    with pytest.raises(RuntimeError, match="no fixed Windows positive control"):
-        _signed_positive_control("pwsh.exe", lambda *_args: {})
+    unsigned_evidence = {
+        **powershell_evidence,
+        "authenticode": {**authenticode, "result": unsigned},
+    }
+    with pytest.raises(RuntimeError, match="not a valid Microsoft-signed binary"):
+        _signed_positive_control(str(control), unsigned_evidence, runner)
+
+    changed = {**powershell_evidence, "sha256": "0" * 64}
+    with pytest.raises(RuntimeError, match="bytes changed"):
+        _signed_positive_control(str(control), changed, runner)
+
+    wrong_hash = {**identity, "sha256": "f" * 64}
+
+    def wrong_hash_runner(_command, **kwargs):
+        result = {"Algorithm": "SHA256", "Hash": wrong_hash["sha256"].upper()}
+        return {
+            "argv": kwargs["recorded_argv"],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(result, separators=(",", ":")),
+        }
+
+    with pytest.raises(RuntimeError, match="Get-FileHash disagrees"):
+        _signed_positive_control(str(control), powershell_evidence, wrong_hash_runner)
 
 
 @pytest.mark.parametrize("corrupt_readback", [False, True])
@@ -1705,8 +1865,7 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     }
     for name in ("link", "powershell", "vswhere"):
         path = (
-            tmp_path
-            / "Visual Studio/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/link.exe"
+            tmp_path / "Visual Studio/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/link.exe"
             if name == "link"
             else tmp_path / f"{name}.exe"
         )
@@ -1787,59 +1946,36 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         "_native_tools",
         lambda _runner, **_kwargs: (tools, tool_evidence),
     )
+    host_native = {
+        "Culture": "en-US",
+        "Is64BitOperatingSystem": True,
+        "Is64BitProcess": True,
+        "OSVersion": "mocked Windows",
+        "PowerShellEdition": "Core",
+        "PowerShellVersion": "7.6.3",
+        "UICulture": "en-US",
+    }
     host = {
-        "native": {
-            "OSVersion": "mocked Windows",
-            "PowerShellVersion": "7.6.3",
-        }
+        "native": host_native,
+        "observation": _powershell_observation(host_native, "platform", target=False),
+        "python": {
+            "implementation": "CPython",
+            "machine": "AMD64",
+            "platform": "mocked Windows",
+            "version": "3.12.0",
+        },
+        "runner_image": {
+            "ImageOS": "win25",
+            "ImageVersion": "mocked",
+            "RUNNER_ARCH": "X64",
+            "RUNNER_OS": "Windows",
+        },
     }
     monkeypatch.setitem(
         attest.__globals__,
         "_platform_evidence",
         lambda _powershell, _runner: {**host, "identity_sha256": _canonical_digest(host)},
     )
-    control = tmp_path / "signed-control.exe"
-    control.write_bytes(b"signed-control")
-    control_identity = _file_identity(control, "control")
-    control_signature = {
-        **valid_tool_signature,
-        "IsOSBinary": True,
-        "SignerSubject": "CN=Microsoft Windows",
-    }
-    control_selected = {
-        "identity": control_identity,
-        "label": "WindowsPowerShell",
-        "observation": _powershell_observation(
-            control_signature,
-            "Get-AuthenticodeSignature-LiteralPath",
-        ),
-        "signature": control_signature,
-        "winverifytrust": _valid_wintrust(publisher="Microsoft Windows"),
-    }
-    control_hash = {
-        "Algorithm": "SHA256",
-        "Hash": control_identity["sha256"].upper(),
-    }
-    monkeypatch.setitem(
-        attest.__globals__,
-        "_signed_positive_control",
-        lambda _powershell, _runner: (
-            {
-                "attempts": [control_selected],
-                "hash": {
-                    "observation": _powershell_observation(
-                        control_hash,
-                        "Get-FileHash-LiteralPath-SHA256",
-                    ),
-                    "result": control_hash,
-                },
-                "selected": control_selected,
-                "verdict": "pass",
-            },
-            control,
-        ),
-    )
-
     observed_commands = []
     monkeypatch.setenv("LINK", "/OUT:hostile.exe")
     monkeypatch.setenv("_LINK_", "/RELEASE")
@@ -1906,9 +2042,9 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
                 raise AssertionError("unexpected PowerShell script")
             stdout = json.dumps(value, separators=(",", ":"))
         elif "/HEADERS" in command:
-            assert not {
-                name.casefold() for name in kwargs["env"]
-            }.intersection({"link", "_link_", "link_repro"})
+            assert not {name.casefold() for name in kwargs["env"]}.intersection(
+                {"link", "_link_", "link_repro"}
+            )
             stdout = "8664 machine\n1000 entry point\n20B magic\n.text name"
         else:
             raise AssertionError(f"unexpected native command: {command!r}")
@@ -1949,11 +2085,134 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     assert report["private_scene"]["post_observation"]["unchanged"] is True
     assert report["tools"]["post_observation"]["unchanged"] is True
     assert report["positive_control"]["post_observation"]["unchanged"] is True
+    control = report["positive_control"]
+    powershell_tool = report["tools"]["initial"]["powershell"]
+    assert control["attempts"] == [control["selected"]]
+    assert control["selected"]["label"] == "PowerShell7"
+    assert control["selected"]["signature"]["IsOSBinary"] is False
+    assert control["selected"]["signature"] == powershell_tool["authenticode"]["result"]
+    assert control["selected"]["observation"] == powershell_tool["authenticode"]["observation"]
+    assert control["selected"]["winverifytrust"] == powershell_tool["winverifytrust"]
     assert observed_commands
     assert all(command[0] in tools.values() for command in observed_commands)
     assert json.loads(_canonical_json_bytes(report)) == report
+
+    def rebind_portable_prerequisite(candidate):
+        portable = candidate["portable_prerequisite"]
+        portable_bytes = _canonical_json_bytes(portable["record"])
+        portable_sha256 = hashlib.sha256(portable_bytes).hexdigest()
+        for identity_name in ("identity", "local_initial", "post_observation"):
+            portable[identity_name]["sha256"] = portable_sha256
+            portable[identity_name]["size"] = len(portable_bytes)
+
+    for field in (
+        "fixture",
+        "private_scene",
+        "portable_prerequisite",
+        "producer",
+        "tools",
+        "positive_control",
+        "prefetch_positive_control",
+    ):
+        for malformed in (None, [], "", 1):
+            hostile = json.loads(_canonical_json_bytes(report))
+            hostile[field] = malformed
+            with pytest.raises(RuntimeError, match="invalid structured evidence"):
+                _validate_native_report(hostile)
+
+    for field in ("manifest_file", "filesystem_identity", "scene"):
+        hostile = json.loads(_canonical_json_bytes(report))
+        hostile["fixture"]["post_observation"][field] = None
+        with pytest.raises(RuntimeError, match="manifest identity|fixture post-state"):
+            _validate_native_report(hostile)
+
+    for field in ("manifest_file", "scene"):
+        hostile = json.loads(_canonical_json_bytes(report))
+        hostile["fixture"]["post_observation"][field]["unchanged"] = False
+        with pytest.raises(RuntimeError, match="manifest identity|fixture post-state"):
+            _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    private_initial = hostile["private_scene"]["initial"]
+    private_post = hostile["private_scene"]["post_observation"]
+    private_initial["directory_count"] = float(private_initial["directory_count"])
+    private_post["directory_count"] = float(private_post["directory_count"])
+    with pytest.raises(RuntimeError, match="private-scene state"):
+        _validate_native_report(hostile)
+
+    for false_digest in ("0" * 64, int("1" * 64)):
+        hostile = json.loads(_canonical_json_bytes(report))
+        prerequisite = hostile["portable_prerequisite"]
+        for manifest_file in (
+            prerequisite["record"]["fixture"]["manifest_file"],
+            hostile["fixture"]["manifest_file"],
+            hostile["fixture"]["post_observation"]["manifest_file"],
+        ):
+            manifest_file["sha256"] = false_digest
+        prerequisite_bytes = _canonical_json_bytes(prerequisite["record"])
+        prerequisite_sha256 = hashlib.sha256(prerequisite_bytes).hexdigest()
+        for identity_name in ("identity", "local_initial", "post_observation"):
+            prerequisite[identity_name]["sha256"] = prerequisite_sha256
+            prerequisite[identity_name]["size"] = len(prerequisite_bytes)
+        with pytest.raises(RuntimeError, match="manifest identity|fixture post-state"):
+            _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["producer"]["source_post_observation"]["worktree_clean"] = 1
+    with pytest.raises(RuntimeError, match="source post-state"):
+        _validate_native_report(hostile)
+
+    for field, value in (("Is64BitOperatingSystem", False), ("OSVersion", False)):
+        hostile = json.loads(_canonical_json_bytes(report))
+        hostile_host = hostile["host"]
+        hostile_host["native"][field] = value
+        hostile_host["identity_sha256"] = _canonical_digest(
+            {name: item for name, item in hostile_host.items() if name != "identity_sha256"}
+        )
+        with pytest.raises(RuntimeError, match="host evidence"):
+            _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["portable_prerequisite"]["record"]["schema_version"] = True
+    rebind_portable_prerequisite(hostile)
+    with pytest.raises(RuntimeError, match="source post-state|passing supported record"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["portable_prerequisite"]["record"]["fixture"]["portable_verification"]["reports"][0][
+        "gate"
+    ] = True
+    rebind_portable_prerequisite(hostile)
+    with pytest.raises(RuntimeError, match="passing assurance gates"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["portable_prerequisite"]["record"]["fixture"]["portable_verification"]["payload"][
+        "metadata_blob_count"
+    ] = True
+    rebind_portable_prerequisite(hostile)
+    with pytest.raises(RuntimeError, match="payload counters"):
+        _validate_native_report(hostile)
+
+    for field, value in (("worktree_clean", 1), ("git_tree", int("1" * 40))):
+        hostile = json.loads(_canonical_json_bytes(report))
+        prerequisite = hostile["portable_prerequisite"]
+        prerequisite["record"]["producer"]["source_post_preparation"][field] = value
+        prerequisite_bytes = _canonical_json_bytes(prerequisite["record"])
+        prerequisite_sha256 = hashlib.sha256(prerequisite_bytes).hexdigest()
+        for identity_name in ("identity", "local_initial", "post_observation"):
+            prerequisite[identity_name]["sha256"] = prerequisite_sha256
+            prerequisite[identity_name]["size"] = len(prerequisite_bytes)
+        with pytest.raises(RuntimeError, match="source post-state"):
+            _validate_native_report(hostile)
+
     mutated = json.loads(_canonical_json_bytes(report))
     mutated["tools"]["initial"]["powershell"]["version_stdout"] = "PowerShell 7.6.2"
+    with pytest.raises(RuntimeError, match="PowerShell version evidence"):
+        _validate_native_report(mutated)
+
+    mutated = json.loads(_canonical_json_bytes(report))
+    mutated["tools"]["initial"]["powershell"]["version_observation"]["returncode"] = False
     with pytest.raises(RuntimeError, match="PowerShell version evidence"):
         _validate_native_report(mutated)
 
@@ -1979,6 +2238,46 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     with pytest.raises(RuntimeError, match="does not bind PE"):
         _validate_native_report(hostile)
 
+    scalar_type_mutations = (
+        (("schema_version",), float),
+        (("artifact_counts", "scheduled_task_xml"), lambda _value: True),
+        (("artifacts", "pe", 0, "size"), float),
+        (("artifacts", "pe", 0, "byte_profile", "executable_section_count"), lambda _value: True),
+        (("artifacts", "pe", 0, "pe_headers", "markers", "text_section"), lambda _value: 1),
+        (("artifacts", "prefetch", 0, "size"), float),
+        (("artifacts", "prefetch", 0, "wrapper", "algorithm"), float),
+        (("artifacts", "prefetch", 0, "inner_header", "version"), float),
+        (("artifacts", "prefetch", 0, "native_decompression", "compression_format"), float),
+        (("artifacts", "scheduled_task_xml", 0, "size"), float),
+        (("artifacts", "shell_link", 0, "size"), float),
+        (("artifacts", "zone_identifier", 0, "logical_stream", "size"), float),
+        (("prefetch_positive_control", "mutation", "payload_offset"), float),
+        (("prefetch_positive_control", "native_decompression", "compression_format"), float),
+    )
+    for path, transform in scalar_type_mutations:
+        hostile = json.loads(_canonical_json_bytes(report))
+        parent = hostile
+        for component in path[:-1]:
+            parent = parent[component]
+        leaf = path[-1]
+        parent[leaf] = transform(parent[leaf])
+        with pytest.raises(RuntimeError):
+            _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    carrier_records = (
+        hostile["portable_prerequisite"]["record"]["fixture"]["carrier"],
+        hostile["fixture"]["carrier"],
+        hostile["fixture"]["post_observation"]["scene"],
+        hostile["private_scene"]["initial"],
+        hostile["private_scene"]["post_observation"],
+    )
+    for carrier in carrier_records:
+        carrier["directory_count"] = float(carrier["directory_count"])
+    rebind_portable_prerequisite(hostile)
+    with pytest.raises(RuntimeError, match="carrier|fixture postcondition"):
+        _validate_native_report(hostile)
+
     hostile = json.loads(_canonical_json_bytes(report))
     hostile["artifacts"]["pe"][0]["byte_profile"]["zero_padding_bytes"] = 510
     with pytest.raises(RuntimeError, match="byte profile"):
@@ -1990,6 +2289,11 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
+    hostile["artifacts"]["pe"][0]["pe_headers"]["observation"]["returncode"] = False
+    with pytest.raises(RuntimeError, match="PE-header output"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
     link = hostile["artifacts"]["pe"][0]["pe_headers"]["observation"]
     link["stdout"] = "invented passing LINK output"
     link["stdout_size"] = len(link["stdout"].encode())
@@ -1998,16 +2302,12 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
-    hostile["tools"]["initial"]["link"]["file_version"]["result"][
-        "FileBuildPart"
-    ] += 1
+    hostile["tools"]["initial"]["link"]["file_version"]["result"]["FileBuildPart"] += 1
     with pytest.raises(RuntimeError, match="link FileVersionInfo observation"):
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
-    hostile["tools"]["initial"]["vswhere"]["file_version"]["result"][
-        "ProductMajorPart"
-    ] = True
+    hostile["tools"]["initial"]["vswhere"]["file_version"]["result"]["ProductMajorPart"] = True
     with pytest.raises(RuntimeError, match="vswhere FileVersionInfo evidence"):
         _validate_native_report(hostile)
 
@@ -2024,6 +2324,16 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["initial"]["discovery"]["installation"]["returncode"] = False
+    with pytest.raises(RuntimeError, match="installation discovery"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["tools"]["initial"]["discovery"]["installation_version"]["returncode"] = False
+    with pytest.raises(RuntimeError, match="installation version evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
     hostile["tools"]["post_observation"]["tools"]["link"]["unchanged"] = False
     with pytest.raises(RuntimeError, match="does not bind link"):
         _validate_native_report(hostile)
@@ -2031,6 +2341,136 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
     hostile = json.loads(_canonical_json_bytes(report))
     hostile["tools"]["post_observation"]["tools"]["link"]["path"] += ".moved"
     with pytest.raises(RuntimeError, match="does not bind link"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    powershell_initial = hostile["tools"]["initial"]["powershell"]
+    powershell_final = hostile["tools"]["post_observation"]["tools"]["powershell"]
+    control_selected = hostile["positive_control"]["selected"]
+    control_attempt = hostile["positive_control"]["attempts"][0]
+    control_final = hostile["positive_control"]["post_observation"]
+    for identity in (
+        powershell_initial,
+        powershell_final,
+        control_selected["identity"],
+        control_attempt["identity"],
+        control_final,
+    ):
+        identity["filesystem_identity"]["device"] = False
+    with pytest.raises(RuntimeError, match="invalid.*filesystem identity"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["positive_control"]["selected"]["label"] = "kernel32"
+    hostile["positive_control"]["attempts"][0]["label"] = "kernel32"
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["positive_control"]["attempts"].append(hostile["positive_control"]["selected"])
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["positive_control"]["attempts"][0]["signature"]["IsOSBinary"] = 0
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["observation"]["returncode"] = False
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    tool_observation = hostile["tools"]["initial"]["powershell"]["authenticode"]["observation"]
+    tool_observation["returncode"] = False
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["observation"]["returncode"] = False
+    with pytest.raises(RuntimeError, match="Authenticode observation"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    numeric_digest = int("1" * 64)
+    tool_observation = hostile["tools"]["initial"]["powershell"]["authenticode"]["observation"]
+    tool_observation["stdout_sha256"] = numeric_digest
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["observation"]["stdout_sha256"] = numeric_digest
+    with pytest.raises(RuntimeError, match="Authenticode observation"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["identity"]["path"] += ".substituted"
+    hostile["positive_control"]["post_observation"]["path"] += ".substituted"
+    with pytest.raises(RuntimeError, match="positive-control post-state"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["positive_control"]["post_observation"]["path"] += ".substituted"
+    with pytest.raises(RuntimeError, match="positive-control post-state"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["positive_control"]["post_observation"]["unchanged"] = False
+    with pytest.raises(RuntimeError, match="failed postcondition"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["signature"]["StatusMessage"] = "substituted"
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    tool_trust = hostile["tools"]["initial"]["powershell"]["winverifytrust"]
+    tool_trust["status"] = False
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["winverifytrust"]["status"] = False
+    with pytest.raises(RuntimeError, match="independently trusted"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["observation"]["result_sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    for selected in (
+        hostile["positive_control"]["selected"],
+        hostile["positive_control"]["attempts"][0],
+    ):
+        selected["winverifytrust"]["status"] = 1
+        selected["winverifytrust"]["status_hex"] = "0x00000001"
+        selected["winverifytrust"]["verdict"] = "invalid"
+    with pytest.raises(RuntimeError, match="invalid positive-control evidence"):
+        _validate_native_report(hostile)
+
+    hostile = json.loads(_canonical_json_bytes(report))
+    hostile["positive_control"]["hash"]["result"]["Hash"] = "0" * 64
+    with pytest.raises(RuntimeError, match="inconsistent.*hash"):
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))
@@ -2163,7 +2603,10 @@ def test_full_native_report_with_mocked_windows_observers(windows_fixture, tmp_p
         identity = hostile["portable_prerequisite"][identity_name]
         identity["sha256"] = hashlib.sha256(mutated_prerequisite).hexdigest()
         identity["size"] = len(mutated_prerequisite)
-    with pytest.raises(RuntimeError, match="fixture carrier"):
+    with pytest.raises(
+        RuntimeError,
+        match="fixture carrier|fixture postcondition|default streams|payload manifest",
+    ):
         _validate_native_report(hostile)
 
     hostile = json.loads(_canonical_json_bytes(report))

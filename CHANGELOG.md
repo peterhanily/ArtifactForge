@@ -126,6 +126,20 @@ and all active technical guides received the same claim-boundary and plain-langu
 
 ### Fixed
 
+The first hosted schema-v6 Windows report exposed a bad Authenticode control boundary. The
+attestor searched inbox Windows binaries. Three candidates returned `TRUST_E_NOSIGNATURE`
+through its file-only WinVerifyTrust path. PowerShell reported `kernel32.dll` as `Valid`, but
+that candidate failed the composite control predicate. The failed report did not retain enough
+candidate evidence to identify the remaining subcondition, so no narrower cause is claimed.
+The control now uses the exact PowerShell 7 executable already authenticated as a native tool.
+Its identity, WinVerifyTrust result and Authenticode observation must equal the tool record;
+Get-FileHash must agree with the same SHA-256; and the exact path and bytes must be unchanged
+afterward. `IsOSBinary` remains recorded evidence, not a signature-validity test. The report
+validator and hosted assertions reject alternate labels, extra attempts, substituted tool
+evidence and incomplete post-state records. The publication gate also revalidates the embedded
+portable prerequisite from its canonical bytes and enforces exact scalar types, record shapes,
+derived manifest identities, cross-record postconditions and the 64-bit host contract.
+
 The Windows-native PE observer now binds and invokes the parser that actually reads the
 files. Microsoft's Raymond Chen identifies `dumpbin.exe` as a wrapper around
 `link.exe /DUMP`. The bounded process harness correctly reaps descendants when a parent exits,

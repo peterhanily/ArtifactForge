@@ -193,6 +193,13 @@ and the selected x64 `link.exe`. PE inspection calls the real parser directly as
 identifies this as the engine behind `dumpbin.exe`, so the wrapper is not part of the trust
 boundary. The observer removes LINK option and repro environment controls before each call.
 
+The Authenticode positive control is the same PowerShell 7 executable already bound as a
+native tool. Python first verifies its Microsoft signature through WinVerifyTrust. PowerShell's
+`Get-AuthenticodeSignature` result must name the same signer certificate, and
+`Get-FileHash` must reproduce the recorded SHA-256. The control and tool records must carry the
+same identity and remain unchanged. `IsOSBinary` is retained as descriptive evidence only; it
+indicates OS-release membership, not whether a signature is valid.
+
 Target-bearing PowerShell observations require version 7.5 or later and use
 `-CommandWithArgs`, so literal paths stay separate from PowerShell source. Fixed numeric
 VERSIONINFO records bind `vswhere.exe` and `link.exe` to their already hashed and authenticated

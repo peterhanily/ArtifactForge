@@ -1102,8 +1102,18 @@ jobs:
               ))
           control = report["positive_control"]
           assert control["verdict"] == "pass"
+          assert control["attempts"] == [control["selected"]]
+          assert control["selected"]["label"] == "PowerShell7"
           assert control["selected"]["signature"]["Status"] == "Valid"
           assert len(control["selected"]["signature"]["SignerThumbprint"]) == 40
+          powershell = tools["initial"]["powershell"]
+          assert control["selected"]["identity"] == {
+              field: powershell[field]
+              for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
+          }
+          assert control["selected"]["signature"] == powershell["authenticode"]["result"]
+          assert control["selected"]["observation"] == powershell["authenticode"]["observation"]
+          assert control["selected"]["winverifytrust"] == powershell["winverifytrust"]
           assert control["post_observation"]["unchanged"] is True
           assert "post-size bits" in report["claim_scope"]["prefetch_scope"]
           prefetches = report["artifacts"]["prefetch"]

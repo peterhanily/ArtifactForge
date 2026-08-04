@@ -20,8 +20,9 @@ are decompressed through ntdll's
 RtlGetCompressionWorkSpaceSize/RtlDecompressBufferEx interface and compared with an independent
 exact-output decode. The one disabled task XML is accepted only by an in-memory TaskDefinition
 made with TaskService.Connect/NewTask/XmlText; it is never registered. The one Shell Link is
-opened from the private copy through WScript.Shell without Save, Resolve, or Run. A fixed set of
-signed Windows files is the mandatory Authenticode positive control. Each manifest-bound
+opened from the private copy through WScript.Shell without Save, Resolve, or Run. The exact
+independently authenticated PowerShell 7 binary is the mandatory Authenticode positive control.
+Each manifest-bound
 Zone.Identifier is projected only as an NTFS alternate stream on the private copy, read back
 with Get-Content -LiteralPath -Stream, removed, and checked against the manifest bytes. Source,
 fixture, prerequisite, private default streams, and tool binaries are hashed before and after
@@ -578,9 +579,14 @@ def _validate_source_identity(source: object, where: str) -> None:
         raise RuntimeError(f"{where} has invalid source evidence")
     base = {name: value for name, value in source.items() if name != "identity_sha256"}
     if (
-        _HEX_40.fullmatch(str(source["git_commit"])) is None
-        or _HEX_40.fullmatch(str(source["git_tree"])) is None
-        or _HEX_64.fullmatch(str(source["status_porcelain_sha256"])) is None
+        type(source["git_commit"]) is not str
+        or _HEX_40.fullmatch(source["git_commit"]) is None
+        or type(source["git_tree"]) is not str
+        or _HEX_40.fullmatch(source["git_tree"]) is None
+        or type(source["status_porcelain_sha256"]) is not str
+        or _HEX_64.fullmatch(source["status_porcelain_sha256"]) is None
+        or type(source["identity_sha256"]) is not str
+        or _HEX_64.fullmatch(source["identity_sha256"]) is None
         or source["status_porcelain_sha256"] != hashlib.sha256(b"").hexdigest()
         or source["identity_sha256"] != _canonical_digest(base)
         or source["worktree_clean"] is not True
@@ -698,19 +704,13 @@ def _same_path_directory_state_matches(
     if sys.platform != "win32":
         return _stat_fields_match(first, second, _STABLE_DIRECTORY_FIELDS)
     identities = tuple(
-        getattr(state, field, None)
-        for state in (first, second)
-        for field in ("st_dev", "st_ino")
+        getattr(state, field, None) for state in (first, second) for field in ("st_dev", "st_ino")
     )
     if any(type(value) is not int or value <= 0 for value in identities):
         return False
     first_creation = _windows_creation_time_ns(first)
     second_creation = _windows_creation_time_ns(second)
-    if (
-        first_creation is None
-        or second_creation is None
-        or first_creation != second_creation
-    ):
+    if first_creation is None or second_creation is None or first_creation != second_creation:
         return False
     fields = (
         "st_dev",
@@ -852,9 +852,8 @@ def _scene_capture(
             names = [entry.name for entry in entries]
             entries_by_name = {entry.name: entry for entry in entries}
         after_inventory = directory.lstat()
-        if (
-            _is_linklike(directory, after_inventory)
-            or not _same_path_directory_state_matches(before, after_inventory)
+        if _is_linklike(directory, after_inventory) or not _same_path_directory_state_matches(
+            before, after_inventory
         ):
             raise RuntimeError(
                 f"fixture artifacts directory changed during inventory: {relative_directory!r}"
@@ -994,9 +993,8 @@ def _fixture_state(fixture: Path) -> tuple[dict, dict[str, bytes]]:
         or not _same_path_directory_state_matches(root_before, root_after)
     ):
         raise RuntimeError("fixture root changed during capture")
-    if (
-        _is_linklike(artifacts_path, artifacts_after)
-        or not _same_path_directory_state_matches(artifacts_before, artifacts_after)
+    if _is_linklike(artifacts_path, artifacts_after) or not _same_path_directory_state_matches(
+        artifacts_before, artifacts_after
     ):
         raise RuntimeError("fixture artifacts directory changed during capture")
     return {
@@ -1299,7 +1297,8 @@ def _passing_ratio(passed: object, total: object) -> bool:
 def _valid_assurance_report(report: dict) -> bool:
     """Validate the two schema-v1 gate records, including their stated ratios."""
     if (
-        report["fails"] != []
+        type(report["gate"]) is not int
+        or report["fails"] != []
         or type(report["gaps"]) is not list
         or any(type(gap) is not str or not gap for gap in report["gaps"])
         or type(report["metrics"]) is not dict
@@ -1368,8 +1367,9 @@ def _valid_assurance_report(report: dict) -> bool:
     return False
 
 
-def _load_prerequisite(path: Path) -> tuple[dict, dict]:
-    data = _read_regular(path, where="portable prerequisite", maximum=MAX_RECORD_BYTES)
+def _validate_prerequisite_bytes(data: bytes) -> tuple[dict, dict]:
+    if type(data) is not bytes or len(data) > MAX_RECORD_BYTES:
+        raise RuntimeError("portable prerequisite has invalid bounded bytes")
     try:
         value = json.loads(data, object_pairs_hook=_strict_object_pairs)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -1395,6 +1395,7 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
         set(value) != expected_root
         or value.get("canonicalization") != CANONICALIZATION
         or value.get("schema") != PORTABLE_SCHEMA_ID
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != PORTABLE_SCHEMA_VERSION
         or value.get("verdict") != "pass"
         or value.get("failures") != []
@@ -1404,6 +1405,12 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
     claim_scope = value.get("claim_scope")
     if (
         type(claim_scope) is not dict
+        or set(claim_scope)
+        != {
+            "complete_portable_assurance",
+            "cross_host_boundary",
+            "native_windows_observations",
+        }
         or claim_scope.get("complete_portable_assurance") is not True
         or claim_scope.get("native_windows_observations") is not False
         or type(claim_scope.get("cross_host_boundary")) is not str
@@ -1411,12 +1418,40 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
     ):
         raise RuntimeError("portable prerequisite has an invalid claim scope")
     portable_host = value.get("host")
-    if type(portable_host) is not dict or type(portable_host.get("identity_sha256")) is not str:
+    expected_host_fields = {
+        "identity_sha256",
+        "machine",
+        "platform",
+        "python",
+        "release",
+        "runner_image",
+        "system",
+        "version",
+    }
+    if type(portable_host) is not dict or set(portable_host) != expected_host_fields:
         raise RuntimeError("portable prerequisite has invalid host evidence")
+    portable_python = portable_host["python"]
+    portable_runner = portable_host["runner_image"]
     portable_host_base = {
         name: item for name, item in portable_host.items() if name != "identity_sha256"
     }
-    if portable_host["identity_sha256"] != _canonical_digest(portable_host_base):
+    if (
+        any(
+            type(portable_host[name]) is not str
+            for name in ("machine", "platform", "release", "system", "version")
+        )
+        or any(not portable_host[name] for name in ("machine", "platform", "release", "system"))
+        or type(portable_python) is not dict
+        or set(portable_python) != {"implementation", "version"}
+        or portable_python["implementation"] != "CPython"
+        or type(portable_python["version"]) is not str
+        or not portable_python["version"]
+        or type(portable_runner) is not dict
+        or set(portable_runner) != {"ImageOS", "ImageVersion", "RUNNER_ARCH", "RUNNER_OS"}
+        or any(type(item) is not str for item in portable_runner.values())
+        or type(portable_host["identity_sha256"]) is not str
+        or portable_host["identity_sha256"] != _canonical_digest(portable_host_base)
+    ):
         raise RuntimeError("portable prerequisite host evidence is self-inconsistent")
     fixture = value.get("fixture")
     producer = value.get("producer")
@@ -1445,14 +1480,17 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
     _validate_source_identity(source, "portable prerequisite")
     if (
         producer.get("name") != "ArtifactForge"
-        or _HEX_40.fullmatch(str(source.get("git_commit", ""))) is None
-        or _HEX_40.fullmatch(str(source.get("git_tree", ""))) is None
-        or _HEX_64.fullmatch(str(source.get("status_porcelain_sha256", ""))) is None
+        or _HEX_40.fullmatch(source["git_commit"]) is None
+        or _HEX_40.fullmatch(source["git_tree"]) is None
+        or _HEX_64.fullmatch(source["status_porcelain_sha256"]) is None
         or source.get("identity_sha256") != _canonical_digest(source_base)
         or source.get("worktree_clean") is not True
         or type(source_post) is not dict
         or source_post.get("unchanged") is not True
-        or {name: value for name, value in source_post.items() if name != "unchanged"} != source
+        or not _typed_equal(
+            {name: value for name, value in source_post.items() if name != "unchanged"},
+            source,
+        )
     ):
         raise RuntimeError("portable prerequisite source evidence is self-inconsistent")
     _validate_github_identity(
@@ -1539,20 +1577,22 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
         "sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "size": len(manifest_bytes),
     }
-    if (
-        set(synthetic_state["manifest_file"] or {}) != {"sha256", "size"}
-        or synthetic_state["manifest_file"] != manifest_identity
+    if set(synthetic_state["manifest_file"] or {}) != {"sha256", "size"} or not _typed_equal(
+        synthetic_state["manifest_file"], manifest_identity
     ):
         raise RuntimeError("portable prerequisite manifest identity is self-inconsistent")
     payload = manifest.payload
-    if verification.get("payload") != {
-        "directory_count": payload.directory_count,
-        "file_count": payload.file_count,
-        "metadata_blob_bytes": payload.metadata_blob_bytes,
-        "metadata_blob_count": payload.metadata_blob_count,
-        "regular_file_bytes": payload.regular_file_bytes,
-        "total_bound_bytes": payload.total_bound_bytes,
-    }:
+    if not _typed_equal(
+        verification.get("payload"),
+        {
+            "directory_count": payload.directory_count,
+            "file_count": payload.file_count,
+            "metadata_blob_bytes": payload.metadata_blob_bytes,
+            "metadata_blob_count": payload.metadata_blob_count,
+            "regular_file_bytes": payload.regular_file_bytes,
+            "total_bound_bytes": payload.total_bound_bytes,
+        },
+    ):
         raise RuntimeError("portable prerequisite payload counters are self-inconsistent")
     environment = verification.get("environment")
     if (
@@ -1561,6 +1601,7 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
         or type(environment["distributions"]) is not dict
         or type(environment["python"]) is not dict
         or set(environment["distributions"]) != set(_PORTABLE_DISTRIBUTIONS)
+        or set(environment["python"]) != {"implementation", "version"}
         or any(type(item) is not str or not item for item in environment["distributions"].values())
         or environment["python"].get("implementation") != "CPython"
         or type(environment["python"].get("version")) is not str
@@ -1602,6 +1643,9 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
         )
     ):
         raise RuntimeError("portable prerequisite fixture filesystem identity is invalid")
+    post_filesystem = fixture_post.get("filesystem_identity")
+    post_manifest = fixture_post.get("manifest_file")
+    post_scene = fixture_post.get("scene")
     if (
         set(fixture_post)
         != {
@@ -1610,29 +1654,45 @@ def _load_prerequisite(path: Path) -> tuple[dict, dict]:
             "scene",
             "unchanged",
         }
-        or type(fixture_post.get("manifest_file")) is not dict
-        or type(fixture_post.get("scene")) is not dict
-        or type(fixture_post.get("filesystem_identity")) is not dict
-        or set(fixture_post["filesystem_identity"])
-        != {"artifacts", "fixture", "manifest", "unchanged"}
-        or fixture_post.get("manifest_file", {}).get("unchanged") is not True
-        or {name: fixture_post["manifest_file"].get(name) for name in ("sha256", "size")}
-        != manifest_identity
-        or fixture_post.get("scene", {}).get("unchanged") is not True
+        or type(post_manifest) is not dict
+        or set(post_manifest) != {"sha256", "size", "unchanged"}
+        or post_manifest["unchanged"] is not True
+        or not _typed_equal(
+            {name: value for name, value in post_manifest.items() if name != "unchanged"},
+            manifest_identity,
+        )
+        or type(post_scene) is not dict
+        or set(post_scene)
+        != {"directory_count", "file_count", "total_bytes", "tree_sha256", "unchanged"}
+        or post_scene["unchanged"] is not True
         or any(
-            fixture_post["scene"].get(name) != fixture["carrier"].get(name)
+            not _typed_equal(post_scene.get(name), fixture["carrier"].get(name))
             for name in ("directory_count", "file_count", "total_bytes", "tree_sha256")
         )
-        or fixture_post.get("filesystem_identity", {}).get("unchanged") is not True
-        or {
-            name: item
-            for name, item in fixture_post["filesystem_identity"].items()
-            if name != "unchanged"
-        }
-        != initial_filesystem
+        or type(post_filesystem) is not dict
+        or set(post_filesystem) != {"artifacts", "fixture", "manifest", "unchanged"}
+        or any(
+            type(post_filesystem[name]) is not dict
+            or set(post_filesystem[name]) != {"device", "inode"}
+            or any(
+                type(post_filesystem[name][field]) is not int or post_filesystem[name][field] < 0
+                for field in ("device", "inode")
+            )
+            for name in ("artifacts", "fixture", "manifest")
+        )
+        or post_filesystem["unchanged"] is not True
+        or not _typed_equal(
+            {name: item for name, item in post_filesystem.items() if name != "unchanged"},
+            initial_filesystem,
+        )
     ):
         raise RuntimeError("portable prerequisite fixture postcondition is self-inconsistent")
     return value, {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def _load_prerequisite(path: Path) -> tuple[dict, dict]:
+    data = _read_regular(path, where="portable prerequisite", maximum=MAX_RECORD_BYTES)
+    return _validate_prerequisite_bytes(data)
 
 
 @contextmanager
@@ -2366,7 +2426,7 @@ $ErrorActionPreference = 'Stop'
 
 
 def _json_stdout(record: dict, where: str) -> dict:
-    if record.get("returncode") != 0:
+    if type(record.get("returncode")) is not int or record.get("returncode") != 0:
         raise RuntimeError(
             f"{where} failed with exit {record.get('returncode')}: "
             f"stderr={record.get('stderr', '')!r}; stdout={record.get('stdout', '')!r}"
@@ -2670,7 +2730,9 @@ def _require_microsoft_wintrust(trust: object, where: str) -> None:
         or trust["policy"] != "WINTRUST_ACTION_GENERIC_VERIFY_V2"
         or type(trust["publisher"]) is not str
         or trust["publisher"].strip().casefold() not in _MICROSOFT_PUBLISHERS
-        or _HEX_40.fullmatch(str(trust["signer_certificate_sha1"])) is None
+        or type(trust["signer_certificate_sha1"]) is not str
+        or _HEX_40.fullmatch(trust["signer_certificate_sha1"]) is None
+        or type(trust["status"]) is not int
         or trust["status"] != 0
         or trust["status_hex"] != "0x00000000"
         or trust["verdict"] != "valid"
@@ -2738,8 +2800,14 @@ def _find_vswhere() -> Path:
     raise RuntimeError("vswhere.exe was not found in the fixed Visual Studio Installer location")
 
 
-def _require_command_with_args_version(record: Mapping[str, object]) -> tuple[int, int, int]:
-    if record.get("returncode") != 0 or type(record.get("stdout")) is not str:
+def _require_command_with_args_version(record: object) -> tuple[int, int, int]:
+    if (
+        type(record) is not dict
+        or type(record.get("returncode")) is not int
+        or record.get("returncode") != 0
+        or record.get("stderr") != ""
+        or type(record.get("stdout")) is not str
+    ):
         raise RuntimeError("cannot obtain PowerShell version evidence")
     match = _POWERSHELL_VERSION.fullmatch(record["stdout"].strip())
     if match is None:
@@ -2911,7 +2979,8 @@ def _native_tools(
     }
     evidence["discovery"] = {"installation": discovery_record}
     if (
-        discovery["returncode"] != 0
+        type(discovery["returncode"]) is not int
+        or discovery["returncode"] != 0
         or discovery["stderr"] != ""
         or type(discovery["stdout"]) is not str
         or not discovery["stdout"].strip()
@@ -2944,8 +3013,7 @@ def _native_tools(
         version = candidate.parents[3].name
         components = version.split(".")
         if not 3 <= len(components) <= 4 or not all(
-            component.isdigit() and 0 <= int(component) <= 999_999
-            for component in components
+            component.isdigit() and 0 <= int(component) <= 999_999 for component in components
         ):
             raise RuntimeError(f"Visual C++ toolset directory is not numeric: {version!r}")
         return tuple(int(component) for component in components)
@@ -3000,7 +3068,8 @@ def _native_tools(
         ],
     )
     if (
-        toolchain_version["returncode"] != 0
+        type(toolchain_version["returncode"]) is not int
+        or toolchain_version["returncode"] != 0
         or toolchain_version["stderr"] != ""
         or type(toolchain_version["stdout"]) is not str
         or not toolchain_version["stdout"]
@@ -3016,9 +3085,7 @@ def _native_tools(
                 "returncode": toolchain_version["returncode"],
                 "stderr": toolchain_version["stderr"],
                 "stdout": toolchain_version["stdout"],
-                "stdout_sha256": hashlib.sha256(
-                    toolchain_version["stdout"].encode()
-                ).hexdigest(),
+                "stdout_sha256": hashlib.sha256(toolchain_version["stdout"].encode()).hexdigest(),
             },
             "selected_toolset": link.parents[3].name,
         }
@@ -3035,9 +3102,7 @@ def _tools_postcondition(tools: Mapping[str, str], initial: Mapping[str, dict]) 
     evidence = {}
     unchanged = True
     names = tuple(
-        name
-        for name in ("link", "powershell", "vswhere")
-        if name in tools and name in initial
+        name for name in ("link", "powershell", "vswhere") if name in tools and name in initial
     )
     for name in names:
         try:
@@ -3083,7 +3148,9 @@ def _platform_evidence(powershell: str, command_runner: CommandRunner) -> dict:
             for name in ("ImageOS", "ImageVersion", "RUNNER_ARCH", "RUNNER_OS")
         },
     }
-    return {**result, "identity_sha256": _canonical_digest(result)}
+    evidence = {**result, "identity_sha256": _canonical_digest(result)}
+    _validate_platform_evidence_record(evidence)
+    return evidence
 
 
 def _authenticode(path: Path, powershell: str, command_runner: CommandRunner) -> tuple[dict, dict]:
@@ -3118,7 +3185,6 @@ def _require_microsoft_signature(
     where: str,
     *,
     independent_trust: object,
-    require_os_binary: bool = False,
 ) -> None:
     if (
         type(signature) is not dict
@@ -3136,7 +3202,6 @@ def _require_microsoft_signature(
         or thumbprint.casefold() != independent_trust["signer_certificate_sha1"].casefold()
         or not _subject_names_publisher(signature["SignerSubject"], publisher)
         or signature.get("SignatureType") not in _SIGNED_SIGNATURE_TYPES
-        or (require_os_binary and signature.get("IsOSBinary") is not True)
     ):
         raise RuntimeError(f"{where} is not a valid Microsoft-signed binary")
 
@@ -3186,10 +3251,8 @@ def _link_dump_headers(path: Path, link: str, command_runner: CommandRunner) -> 
         redactions={target: "<target>"},
         env=_link_environment(),
     )
-    if record["returncode"] != 0 or record["stderr"] != "":
-        raise RuntimeError(
-            "LINK /DUMP /HEADERS failed: " + _command_diagnostic(record)
-        )
+    if type(record["returncode"]) is not int or record["returncode"] != 0 or record["stderr"] != "":
+        raise RuntimeError("LINK /DUMP /HEADERS failed: " + _command_diagnostic(record))
     markers = _pe_header_markers(record["stdout"])
     if not all(markers.values()):
         missing = ", ".join(name for name, present in markers.items() if not present)
@@ -3209,64 +3272,46 @@ def _link_dump_headers(path: Path, link: str, command_runner: CommandRunner) -> 
     }
 
 
-def _signed_positive_control(powershell: str, command_runner: CommandRunner) -> tuple[dict, Path]:
-    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    candidates = (
-        ("WindowsPowerShell", system_root / "System32/WindowsPowerShell/v1.0/powershell.exe"),
-        ("notepad", system_root / "System32/notepad.exe"),
-        ("kernel32", system_root / "System32/kernel32.dll"),
-        ("cmd", system_root / "System32/cmd.exe"),
+def _signed_positive_control(
+    powershell: str,
+    powershell_evidence: Mapping[str, object],
+    command_runner: CommandRunner,
+) -> tuple[dict, Path]:
+    candidate = Path(powershell)
+    identity_fields = ("filesystem_identity", "path", "resolved_path", "sha256", "size")
+    if type(powershell_evidence) is not dict or any(
+        field not in powershell_evidence for field in identity_fields
+    ):
+        raise RuntimeError("authenticated PowerShell 7 evidence is incomplete")
+    identity = {field: powershell_evidence[field] for field in identity_fields}
+    current = _file_identity(candidate, "Authenticode positive control PowerShell7")
+    if current != identity:
+        raise RuntimeError("authenticated PowerShell 7 bytes changed before the positive control")
+    authenticode = powershell_evidence.get("authenticode")
+    trust = powershell_evidence.get("winverifytrust")
+    if type(authenticode) is not dict or set(authenticode) != {"observation", "result"}:
+        raise RuntimeError("authenticated PowerShell 7 Authenticode evidence is incomplete")
+    _require_microsoft_signature(
+        authenticode["result"],
+        "Authenticode positive control PowerShell7",
+        independent_trust=trust,
     )
-    attempts = []
-    for label, candidate in candidates:
-        try:
-            identity = _file_identity(candidate, f"Authenticode positive control {label}")
-            trust = _independent_trust_observation(
-                candidate,
-                identity,
-                f"Authenticode positive control {label}",
-            )
-            signature, observation = _authenticode(candidate, powershell, command_runner)
-            attempt = {
-                "identity": identity,
-                "label": label,
-                "observation": observation,
-                "signature": signature,
-                "winverifytrust": trust,
-            }
-            attempts.append(attempt)
-            try:
-                _require_microsoft_signature(
-                    signature,
-                    f"Authenticode positive control {label}",
-                    independent_trust=trust,
-                    require_os_binary=True,
-                )
-            except RuntimeError:
-                pass
-            else:
-                native_hash, hash_evidence = _native_file_hash(
-                    candidate, powershell, command_runner
-                )
-                if native_hash != identity["sha256"]:
-                    raise RuntimeError(
-                        "positive-control Get-FileHash disagrees with its bound bytes"
-                    )
-                return {
-                    "attempts": attempts,
-                    "hash": hash_evidence,
-                    "selected": attempt,
-                    "verdict": "pass",
-                }, candidate
-        except Exception as exc:  # noqa: BLE001 - retain each fixed-control failure
-            attempts.append({"error": str(exc), "label": label})
-    raise RuntimeError(
-        "no fixed Windows positive control produced a Valid Authenticode signature: "
-        + "; ".join(
-            f"{attempt['label']}={attempt.get('signature', {}).get('Status', attempt.get('error', 'invalid'))}"
-            for attempt in attempts
-        )
-    )
+    selected = {
+        "identity": identity,
+        "label": "PowerShell7",
+        "observation": authenticode["observation"],
+        "signature": authenticode["result"],
+        "winverifytrust": trust,
+    }
+    native_hash, hash_evidence = _native_file_hash(candidate, powershell, command_runner)
+    if native_hash != identity["sha256"]:
+        raise RuntimeError("positive-control Get-FileHash disagrees with its bound bytes")
+    return {
+        "attempts": [selected],
+        "hash": hash_evidence,
+        "selected": selected,
+        "verdict": "pass",
+    }, candidate
 
 
 def _positive_control_postcondition(path: Path, initial: dict) -> dict:
@@ -3717,13 +3762,11 @@ def attest(
                 )
                 report["tools"]["initial"] = tool_evidence
                 report["host"] = _platform_evidence(tools["powershell"], command_runner)
-                _validate_powershell_version_evidence(
-                    tool_evidence["powershell"], report["host"]
-                )
+                _validate_powershell_version_evidence(tool_evidence["powershell"], report["host"])
                 _validate_tool_file_version_evidence(tool_evidence["link"], "link")
                 _validate_tool_file_version_evidence(tool_evidence["vswhere"], "vswhere")
                 positive_control, control_path = _signed_positive_control(
-                    tools["powershell"], command_runner
+                    tools["powershell"], tool_evidence["powershell"], command_runner
                 )
                 control_initial = positive_control["selected"]["identity"]
                 report["positive_control"] = positive_control
@@ -3880,23 +3923,51 @@ def attest(
     return report
 
 
+def _validate_filesystem_identity_fields(record: object, where: str) -> None:
+    if (
+        type(record) is not dict
+        or set(record) != {"device", "inode"}
+        or any(type(record[field]) is not int or record[field] < 0 for field in ("device", "inode"))
+    ):
+        raise RuntimeError(f"passing native attestation has invalid {where} filesystem identity")
+
+
+def _validate_file_identity_fields(record: object, where: str) -> None:
+    filesystem_identity = record.get("filesystem_identity") if type(record) is dict else None
+    if (
+        type(record) is not dict
+        or type(record.get("path")) is not str
+        or not record["path"]
+        or type(record.get("resolved_path")) is not str
+        or not record["resolved_path"]
+        or type(record.get("sha256")) is not str
+        or _HEX_64.fullmatch(record["sha256"]) is None
+        or type(record.get("size")) is not int
+        or not 0 <= record["size"] <= MAX_SCENE_FILE_BYTES
+    ):
+        raise RuntimeError(f"passing native attestation has invalid {where} file identity")
+    _validate_filesystem_identity_fields(filesystem_identity, where)
+
+
 def _validate_powershell_observation(
     observation: object,
     where: str,
     *,
     label: str,
     result: object,
+    target: bool = True,
 ) -> None:
+    command_switch = "-CommandWithArgs" if target else "-Command"
     expected_argv = [
         "<pwsh>",
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-CommandWithArgs",
+        command_switch,
         f"<fixed:{label}>",
-        "--",
-        "<target>",
     ]
+    if target:
+        expected_argv.extend(["--", "<target>"])
     if (
         type(observation) is not dict
         or set(observation)
@@ -3910,13 +3981,62 @@ def _validate_powershell_observation(
         }
         or observation["argv"] != expected_argv
         or observation["result_sha256"] != _canonical_digest(result)
+        or type(observation["returncode"]) is not int
         or observation["returncode"] != 0
         or observation["stderr"] != ""
-        or _HEX_64.fullmatch(str(observation["stdout_sha256"])) is None
+        or type(observation["stdout_sha256"]) is not str
+        or _HEX_64.fullmatch(observation["stdout_sha256"]) is None
         or type(observation["stdout_size"]) is not int
         or not 1 <= observation["stdout_size"] <= MAX_COMMAND_OUTPUT_BYTES
     ):
         raise RuntimeError(f"passing native attestation has invalid {where} observation")
+
+
+def _validate_platform_evidence_record(host: object) -> None:
+    if type(host) is not dict or set(host) != {
+        "identity_sha256",
+        "native",
+        "observation",
+        "python",
+        "runner_image",
+    }:
+        raise RuntimeError("passing native attestation has invalid host evidence")
+    native = host["native"]
+    required_native = {
+        "Culture": str,
+        "Is64BitOperatingSystem": bool,
+        "Is64BitProcess": bool,
+        "OSVersion": str,
+        "PowerShellEdition": str,
+        "PowerShellVersion": str,
+        "UICulture": str,
+    }
+    python_record = host["python"]
+    runner_image = host["runner_image"]
+    base = {name: value for name, value in host.items() if name != "identity_sha256"}
+    if (
+        type(native) is not dict
+        or set(native) != set(required_native)
+        or any(type(native[name]) is not kind for name, kind in required_native.items())
+        or native["Is64BitOperatingSystem"] is not True
+        or native["Is64BitProcess"] is not True
+        or type(python_record) is not dict
+        or set(python_record) != {"implementation", "machine", "platform", "version"}
+        or any(type(value) is not str or not value for value in python_record.values())
+        or type(runner_image) is not dict
+        or set(runner_image) != {"ImageOS", "ImageVersion", "RUNNER_ARCH", "RUNNER_OS"}
+        or any(type(value) is not str for value in runner_image.values())
+        or type(host["identity_sha256"]) is not str
+        or host["identity_sha256"] != _canonical_digest(base)
+    ):
+        raise RuntimeError("passing native attestation has invalid host evidence")
+    _validate_powershell_observation(
+        host["observation"],
+        "platform",
+        label="platform",
+        result=native,
+        target=False,
+    )
 
 
 def _validate_powershell_version_evidence(tool: object, host: object) -> None:
@@ -3928,6 +4048,7 @@ def _validate_powershell_version_evidence(tool: object, host: object) -> None:
         type(observation) is not dict
         or set(observation) != {"argv", "returncode", "stderr", "stdout"}
         or observation["argv"] != ["<powershell>", "--version"]
+        or type(observation["returncode"]) is not int
         or observation["returncode"] != 0
         or observation["stderr"] != ""
         or type(stdout) is not str
@@ -3986,13 +4107,15 @@ def _validate_tool_file_version_evidence(tool: object, where: str) -> None:
         }
         or post["unchanged"] is not True
         or any(
-            post.get(field) != tool.get(field)
+            not _typed_equal(post.get(field), tool.get(field))
             for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
         )
     ):
         raise RuntimeError(
             f"passing native attestation does not bind {where} FileVersionInfo post-state"
         )
+    _validate_file_identity_fields(tool, f"reported native tool {where}")
+    _validate_file_identity_fields(post, f"reported native tool {where} FileVersionInfo")
 
 
 def _validate_tool_discovery_evidence(discovery: object, link: object) -> None:
@@ -4028,7 +4151,9 @@ def _validate_tool_discovery_evidence(discovery: object, link: object) -> None:
             "stdout_size",
         }
         or installation["argv"] != expected_installation_argv
+        or type(installation["returncode"]) is not int
         or installation["returncode"] != 0
+        or type(installation["stderr_size"]) is not int
         or installation["stderr_size"] != 0
         or installation["stderr_sha256"] != empty_sha256
         or type(installation["reported_path"]) is not str
@@ -4049,12 +4174,12 @@ def _validate_tool_discovery_evidence(discovery: object, link: object) -> None:
         type(version) is not dict
         or set(version) != {"argv", "returncode", "stderr", "stdout", "stdout_sha256"}
         or version["argv"] != expected_version_argv
+        or type(version["returncode"]) is not int
         or version["returncode"] != 0
         or version["stderr"] != ""
         or type(version["stdout"]) is not str
         or not 1 <= len(version["stdout"].encode()) <= 256
-        or version["stdout_sha256"]
-        != hashlib.sha256(version["stdout"].encode()).hexdigest()
+        or version["stdout_sha256"] != hashlib.sha256(version["stdout"].encode()).hexdigest()
     ):
         raise RuntimeError("passing native attestation has invalid installation version evidence")
     installation_version_components = version["stdout"].split(".")
@@ -4086,12 +4211,16 @@ def _validate_tool_discovery_evidence(discovery: object, link: object) -> None:
         raise RuntimeError("passing native attestation does not bind the selected toolset")
     normalized_reported = installation["reported_path"].replace("\\", "/").rstrip("/").casefold()
     normalized_resolved = installation["resolved_path"].replace("\\", "/").rstrip("/").casefold()
-    normalized_link_root = re.split(
-        r"/vc/tools/msvc/",
-        link_path.replace("\\", "/"),
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0].rstrip("/").casefold()
+    normalized_link_root = (
+        re.split(
+            r"/vc/tools/msvc/",
+            link_path.replace("\\", "/"),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        .rstrip("/")
+        .casefold()
+    )
     if normalized_reported != normalized_resolved or normalized_resolved != normalized_link_root:
         raise RuntimeError("passing native attestation does not bind the Visual Studio root")
 
@@ -4145,7 +4274,6 @@ def _validate_signed_signature_evidence(
     where: str,
     *,
     independent_trust: object,
-    require_os_binary: bool = False,
 ) -> None:
     if type(evidence) is not dict or set(evidence) != {"observation", "result"}:
         raise RuntimeError(f"passing native attestation has invalid {where} signature evidence")
@@ -4153,7 +4281,6 @@ def _validate_signed_signature_evidence(
         evidence["result"],
         where,
         independent_trust=independent_trust,
-        require_os_binary=require_os_binary,
     )
     _validate_powershell_observation(
         evidence["observation"],
@@ -4180,9 +4307,12 @@ def _validate_pe_byte_profile(profile: object, file_size: int, where: str) -> No
         }
         or profile["architecture"] != "AMD64"
         or profile["optional_header"] != "PE32+"
+        or type(profile["entry_point_rva"]) is not int
         or profile["entry_point_rva"] != 0x1000
+        or type(profile["executable_section_count"]) is not int
         or profile["executable_section_count"] != 1
         or profile["instruction_profile"] != [{"bytes": "c3", "instruction": "ret"}]
+        or type(profile["zero_padding_bytes"]) is not int
         or profile["zero_padding_bytes"] != 511
         or profile["executable_section_sha256"]
         != hashlib.sha256(b"\xc3" + b"\0" * 0x1FF).hexdigest()
@@ -4249,18 +4379,21 @@ def _validate_pe_header_evidence(evidence: object, where: str) -> None:
         "pe32_plus_magic": True,
         "text_section": True,
     }
-    if evidence["engine"] != "Microsoft LINK /DUMP" or evidence["markers"] != expected_markers:
+    if evidence["engine"] != "Microsoft LINK /DUMP" or not _typed_equal(
+        evidence["markers"], expected_markers
+    ):
         raise RuntimeError(f"passing native attestation has incomplete {where} PE-header markers")
     observation = evidence["observation"]
     if (
         type(observation) is not dict
         or set(observation)
         != {"argv", "returncode", "stderr", "stdout", "stdout_sha256", "stdout_size"}
-        or observation["argv"]
-        != ["<link>", "/DUMP", "/NOLOGO", "/NOPDB", "/HEADERS", "<target>"]
+        or observation["argv"] != ["<link>", "/DUMP", "/NOLOGO", "/NOPDB", "/HEADERS", "<target>"]
+        or type(observation["returncode"]) is not int
         or observation["returncode"] != 0
         or observation["stderr"] != ""
         or type(observation["stdout"]) is not str
+        or type(observation["stdout_size"]) is not int
         or observation["stdout_size"] != len(observation["stdout"].encode())
         or not 1 <= observation["stdout_size"] <= MAX_COMMAND_OUTPUT_BYTES
         or observation["stdout_sha256"]
@@ -4301,27 +4434,16 @@ def _embedded_windows_expectations(portable_record: dict) -> tuple[dict, dict[st
         for node in manifest.payload.files
     ]
     expected_directories = [node.served_path for node in manifest.payload.directories]
-    if (
-        type(carrier) is not dict
-        or set(carrier)
-        != {
-            "canonicalization",
-            "directories",
-            "directory_count",
-            "file_count",
-            "files",
-            "total_bytes",
-            "tree_sha256",
-        }
-        or carrier["canonicalization"] != CANONICALIZATION
-        or carrier["files"] != expected_files
-        or carrier["directories"] != expected_directories
-        or carrier["file_count"] != len(expected_files)
-        or carrier["directory_count"] != len(expected_directories)
-        or carrier["total_bytes"] != sum(item["size"] for item in expected_files)
-        or carrier["tree_sha256"]
-        != hashlib.sha256(_canonical_json_bytes({"files": expected_files})).hexdigest()
-    ):
+    expected_carrier = {
+        "canonicalization": CANONICALIZATION,
+        "directories": expected_directories,
+        "directory_count": len(expected_directories),
+        "file_count": len(expected_files),
+        "files": expected_files,
+        "total_bytes": sum(item["size"] for item in expected_files),
+        "tree_sha256": hashlib.sha256(_canonical_json_bytes({"files": expected_files})).hexdigest(),
+    }
+    if not _typed_equal(carrier, expected_carrier):
         raise RuntimeError("passing native attestation embeds an inconsistent fixture carrier")
     zones = {}
     for node in manifest.payload.files:
@@ -4400,7 +4522,7 @@ def _validate_scheduled_task_artifact(
         }
         or item["path"] != expected["path"]
         or item["sha256"] != expected["sha256"]
-        or item["size"] != expected["size"]
+        or not _typed_equal(item["size"], expected["size"])
         or item["verdict"] != "pass"
     ):
         raise RuntimeError(f"passing native attestation does not bind {where}")
@@ -4462,7 +4584,7 @@ def _validate_shell_link_artifact(
         }
         or item["path"] != expected["path"]
         or item["sha256"] != expected["sha256"]
-        or item["size"] != expected["size"]
+        or not _typed_equal(item["size"], expected["size"])
         or item["verdict"] != "pass"
     ):
         raise RuntimeError(f"passing native attestation does not bind {where}")
@@ -4531,6 +4653,7 @@ def _validate_prefetch_native_record(
     returned_size = observation["returned_output_size"]
     if (
         observation["api_sequence"] != _PREFETCH_NATIVE_API_SEQUENCE
+        or type(observation["compression_format"]) is not int
         or observation["compression_format"] != _COMPRESSION_FORMAT_XPRESS_HUFF
         or observation["workspace_query_ntstatus"] != "0x00000000"
         or type(compress_workspace) is not int
@@ -4611,7 +4734,7 @@ def _validate_prefetch_artifact(
         }
         or item["path"] != expected["path"]
         or item["sha256"] != expected["sha256"]
-        or item["size"] != expected["size"]
+        or not _typed_equal(item["size"], expected["size"])
         or item["verdict"] != "pass"
     ):
         raise RuntimeError(f"passing native attestation does not bind {where}")
@@ -4627,14 +4750,17 @@ def _validate_prefetch_artifact(
         or type(payload) is not bytes
     ):
         raise RuntimeError(f"passing native attestation has invalid {where} parse state")
-    if item["wrapper"] != {
-        "algorithm": _COMPRESSION_FORMAT_XPRESS_HUFF,
-        "compressed_payload_size": len(payload),
-        "declared_uncompressed_size": declared_size,
-        "magic_hex": _MAM_XPRESS_HUFFMAN_MAGIC.hex(),
-    }:
+    if not _typed_equal(
+        item["wrapper"],
+        {
+            "algorithm": _COMPRESSION_FORMAT_XPRESS_HUFF,
+            "compressed_payload_size": len(payload),
+            "declared_uncompressed_size": declared_size,
+            "magic_hex": _MAM_XPRESS_HUFFMAN_MAGIC.hex(),
+        },
+    ):
         raise RuntimeError(f"passing native attestation has invalid {where} wrapper")
-    if item["inner_header"] != parsed["inner_header"]:
+    if not _typed_equal(item["inner_header"], parsed["inner_header"]):
         raise RuntimeError(f"passing native attestation has invalid {where} inner header")
     _validate_prefetch_native_record(
         item["native_decompression"],
@@ -4687,7 +4813,7 @@ def _validate_prefetch_corruption_control(
         "wrapper_offset": _MAM_HEADER_BYTES + _PREFETCH_CONTROL_TABLE_OFFSET,
     }
     if (
-        control["mutation"] != expected_mutation
+        not _typed_equal(control["mutation"], expected_mutation)
         or control["expected_output_sha256"] != expected_sha256
     ):
         raise RuntimeError("passing native attestation has unbound Prefetch control mutation")
@@ -4792,7 +4918,7 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
                 "verdict",
             }
             or pe["sha256"] != expected["sha256"]
-            or pe["size"] != expected["size"]
+            or not _typed_equal(pe["size"], expected["size"])
         ):
             raise RuntimeError(f"passing native attestation does not bind PE {pe['path']!r}")
         _validate_pe_byte_profile(pe["byte_profile"], expected["size"], pe["path"])
@@ -4812,10 +4938,13 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
             "private_projection",
             "readback",
             "verdict",
-        } or zone["logical_stream"] != {
-            "sha256": hashlib.sha256(logical).hexdigest(),
-            "size": len(logical),
-        }:
+        } or not _typed_equal(
+            zone["logical_stream"],
+            {
+                "sha256": hashlib.sha256(logical).hexdigest(),
+                "size": len(logical),
+            },
+        ):
             raise RuntimeError(f"passing native attestation does not bind stream {path!r}")
         default = zone["default_stream_postcondition"]
         if (
@@ -4832,10 +4961,11 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
             }
             or default.get("sha256") != expected["sha256"]
             or default.get("native_sha256") != expected["sha256"]
-            or default.get("size") != expected["size"]
+            or not _typed_equal(default.get("size"), expected["size"])
             or default.get("unchanged") is not True
         ):
             raise RuntimeError(f"passing native attestation does not bind {path!r} default stream")
+        _validate_file_identity_fields(default, f"{path!r} default stream")
         _validate_native_hash_evidence(
             zone["get_file_hash_postcondition"], expected["sha256"], path
         )
@@ -4844,11 +4974,13 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
         if (
             type(readback) is not dict
             or set(readback) != {"observation", "result"}
-            or readback["result"]
-            != {
-                "Base64": base64.b64encode(logical).decode(),
-                "Length": len(logical),
-            }
+            or not _typed_equal(
+                readback["result"],
+                {
+                    "Base64": base64.b64encode(logical).decode(),
+                    "Length": len(logical),
+                },
+            )
         ):
             raise RuntimeError(f"passing native attestation has invalid {path!r} ADS readback")
         _validate_powershell_observation(
@@ -4879,18 +5011,20 @@ def _validate_artifact_evidence(report: dict, portable_record: dict) -> None:
             )
 
 
-def _validate_native_report(report: object) -> None:
+def _validate_native_report_body(report: object) -> None:
     """Fail closed on contradictions before a native report can be published."""
     if type(report) is not dict:
         raise RuntimeError("native attestation report must be an object")
     if (
         report.get("canonicalization") != CANONICALIZATION
         or report.get("schema") != SCHEMA_ID
+        or type(report.get("schema_version")) is not int
         or report.get("schema_version") != SCHEMA_VERSION
         or report.get("verdict") not in {"pass", "fail"}
         or type(report.get("failures")) is not list
         or not all(type(item) is str and item for item in report["failures"])
-        or _UTC_SECONDS.fullmatch(str(report.get("generated_at_utc", ""))) is None
+        or type(report.get("generated_at_utc")) is not str
+        or _UTC_SECONDS.fullmatch(report["generated_at_utc"]) is None
     ):
         raise RuntimeError("native attestation report has an invalid envelope")
     _validate_utc_timestamp(report["generated_at_utc"], "native attestation report")
@@ -4950,14 +5084,17 @@ def _validate_native_report(report: object) -> None:
         )
     ):
         raise RuntimeError("passing native attestation report has an invalid claim scope")
-    if report.get("artifact_counts") != {
-        "default_stream_files": EXPECTED_TOTAL_FILES,
-        "prefetch": EXPECTED_PREFETCH_FILES,
-        "scheduled_task_xml": EXPECTED_SCHEDULED_TASK_XML,
-        "shell_link": EXPECTED_SHELL_LINKS,
-        "synthetic_pe": EXPECTED_PE_FILES,
-        "zone_identifier": EXPECTED_ZONE_STREAMS,
-    }:
+    if not _typed_equal(
+        report.get("artifact_counts"),
+        {
+            "default_stream_files": EXPECTED_TOTAL_FILES,
+            "prefetch": EXPECTED_PREFETCH_FILES,
+            "scheduled_task_xml": EXPECTED_SCHEDULED_TASK_XML,
+            "shell_link": EXPECTED_SHELL_LINKS,
+            "synthetic_pe": EXPECTED_PE_FILES,
+            "zone_identifier": EXPECTED_ZONE_STREAMS,
+        },
+    ):
         raise RuntimeError("passing native attestation report has incomplete artifact counts")
     artifacts = report.get("artifacts")
     if (
@@ -5019,19 +5156,35 @@ def _validate_native_report(report: object) -> None:
         or len(set(zone_paths)) != EXPECTED_ZONE_STREAMS
     ):
         raise RuntimeError("passing native attestation report has inconsistent artifact paths")
+    fixture = report.get("fixture")
+    private_scene = report.get("private_scene")
+    prerequisite = report.get("portable_prerequisite")
+    producer = report.get("producer")
+    tool_record = report.get("tools")
+    positive = report.get("positive_control")
+    prefetch_control = report.get("prefetch_positive_control")
+    structured_records = (
+        (fixture, "fixture"),
+        (private_scene, "private scene"),
+        (prerequisite, "portable prerequisite"),
+        (producer, "producer"),
+        (tool_record, "native tools"),
+        (positive, "Authenticode positive control"),
+        (prefetch_control, "Prefetch positive control"),
+    )
+    malformed = [name for value, name in structured_records if type(value) is not dict]
+    if malformed:
+        raise RuntimeError(
+            "passing native attestation report has invalid structured evidence: "
+            + ", ".join(malformed)
+        )
     checks = (
-        (report.get("fixture", {}).get("post_observation"), "fixture"),
-        (report.get("private_scene", {}).get("post_observation"), "private scene"),
-        (
-            report.get("portable_prerequisite", {}).get("post_observation"),
-            "portable prerequisite",
-        ),
-        (report.get("producer", {}).get("source_post_observation"), "source"),
-        (report.get("tools", {}).get("post_observation"), "native tools"),
-        (
-            report.get("positive_control", {}).get("post_observation"),
-            "Authenticode positive control",
-        ),
+        (fixture.get("post_observation"), "fixture"),
+        (private_scene.get("post_observation"), "private scene"),
+        (prerequisite.get("post_observation"), "portable prerequisite"),
+        (producer.get("source_post_observation"), "source"),
+        (tool_record.get("post_observation"), "native tools"),
+        (positive.get("post_observation"), "Authenticode positive control"),
     )
     if any(type(value) is not dict or value.get("unchanged") is not True for value, _ in checks):
         failed = ", ".join(
@@ -5042,29 +5195,57 @@ def _validate_native_report(report: object) -> None:
         raise RuntimeError(
             f"passing native attestation report has a failed postcondition: {failed}"
         )
-    if report.get("positive_control", {}).get("verdict") != "pass":
+    if positive.get("verdict") != "pass":
         raise RuntimeError("passing native attestation report lacks its positive control")
-    if report.get("prefetch_positive_control", {}).get("verdict") != "pass":
+    if prefetch_control.get("verdict") != "pass":
         raise RuntimeError("passing native attestation report lacks its Prefetch positive control")
-    producer = report.get("producer", {})
     source = producer.get("source")
     source_post = producer.get("source_post_observation")
-    prerequisite = report.get("portable_prerequisite", {})
     portable_record = prerequisite.get("record")
+    portable_producer = portable_record.get("producer") if type(portable_record) is dict else None
+    portable_source = portable_producer.get("source") if type(portable_producer) is dict else None
+    portable_source_post = (
+        portable_producer.get("source_post_preparation")
+        if type(portable_producer) is dict
+        else None
+    )
     _validate_source_identity(source, "native attestation report")
     if (
-        producer.get("name") != "ArtifactForge"
+        set(producer) != {"name", "source", "source_post_observation"}
+        or producer.get("name") != "ArtifactForge"
         or type(source) is not dict
         or type(source_post) is not dict
-        or {name: value for name, value in source_post.items() if name != "unchanged"} != source
+        or set(source_post) != {*source, "unchanged"}
+        or source_post["unchanged"] is not True
+        or not _typed_equal(
+            {name: value for name, value in source_post.items() if name != "unchanged"},
+            source,
+        )
         or type(portable_record) is not dict
         or portable_record.get("schema") != PORTABLE_SCHEMA_ID
+        or type(portable_record.get("schema_version")) is not int
         or portable_record.get("schema_version") != PORTABLE_SCHEMA_VERSION
         or portable_record.get("verdict") != "pass"
         or portable_record.get("failures") != []
-        or portable_record.get("producer", {}).get("source") != source
+        or type(portable_producer) is not dict
+        or set(portable_producer) != {"name", "source", "source_post_preparation"}
+        or portable_producer["name"] != "ArtifactForge"
+        or not _typed_equal(portable_source, source)
+        or type(portable_source_post) is not dict
+        or set(portable_source_post) != {*source, "unchanged"}
+        or portable_source_post["unchanged"] is not True
+        or not _typed_equal(
+            {name: value for name, value in portable_source_post.items() if name != "unchanged"},
+            portable_source,
+        )
     ):
         raise RuntimeError("passing native attestation report does not bind source post-state")
+    portable_bytes = _canonical_json_bytes(portable_record)
+    validated_portable, _validated_portable_identity = _validate_prerequisite_bytes(portable_bytes)
+    if not _typed_equal(validated_portable, portable_record):
+        raise RuntimeError(
+            "passing native attestation report embeds a non-canonical portable prerequisite"
+        )
     _validate_utc_timestamp(
         portable_record.get("generated_at_utc"),
         "embedded portable prerequisite",
@@ -5086,68 +5267,119 @@ def _validate_native_report(report: object) -> None:
     local_initial = prerequisite.get("local_initial")
     prerequisite_identity = prerequisite.get("identity")
     prerequisite_post = prerequisite.get("post_observation")
-    portable_bytes = _canonical_json_bytes(portable_record)
     if (
         type(local_initial) is not dict
         or type(prerequisite_identity) is not dict
+        or set(prerequisite_identity) != {"sha256", "size"}
+        or type(prerequisite_identity.get("sha256")) is not str
+        or _HEX_64.fullmatch(prerequisite_identity["sha256"]) is None
+        or type(prerequisite_identity.get("size")) is not int
+        or not 0 <= prerequisite_identity["size"] <= MAX_RECORD_BYTES
         or type(prerequisite_post) is not dict
         or prerequisite_identity.get("sha256") != hashlib.sha256(portable_bytes).hexdigest()
         or prerequisite_identity.get("size") != len(portable_bytes)
         or any(
-            prerequisite_identity.get(field) != local_initial.get(field)
+            not _typed_equal(prerequisite_identity.get(field), local_initial.get(field))
             for field in ("sha256", "size")
         )
         or any(
-            prerequisite_post.get(field) != local_initial.get(field)
-            for field in ("filesystem_identity", "resolved_path", "sha256", "size")
+            not _typed_equal(prerequisite_post.get(field), local_initial.get(field))
+            for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
         )
     ):
         raise RuntimeError(
             "passing native attestation report does not bind prerequisite post-state"
         )
-    fixture = report.get("fixture", {})
-    portable_fixture = portable_record.get("fixture", {})
+    _validate_file_identity_fields(local_initial, "portable prerequisite")
+    _validate_file_identity_fields(prerequisite_post, "portable prerequisite postcondition")
+    portable_fixture = portable_record.get("fixture")
+    if type(portable_fixture) is not dict:
+        raise RuntimeError("passing native attestation report does not bind fixture post-state")
+    try:
+        embedded_manifest_bytes = _canonical_json_bytes(portable_fixture["manifest"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "passing native attestation report embeds an invalid fixture manifest"
+        ) from exc
+    embedded_manifest_identity = {
+        "sha256": hashlib.sha256(embedded_manifest_bytes).hexdigest(),
+        "size": len(embedded_manifest_bytes),
+    }
+    portable_manifest_file = portable_fixture.get("manifest_file")
+    fixture_carrier = fixture.get("carrier")
+    fixture_manifest = fixture.get("manifest_file")
+    fixture_identity = fixture.get("filesystem_identity")
     fixture_post = fixture.get("post_observation")
+    fixture_post_manifest = (
+        fixture_post.get("manifest_file") if type(fixture_post) is dict else None
+    )
+    fixture_post_identity = (
+        fixture_post.get("filesystem_identity") if type(fixture_post) is dict else None
+    )
+    fixture_post_scene = fixture_post.get("scene") if type(fixture_post) is dict else None
     if (
-        fixture.get("carrier") != portable_fixture.get("carrier")
-        or fixture.get("manifest_file") != portable_fixture.get("manifest_file")
-        or type(fixture.get("filesystem_identity")) is not dict
+        type(fixture_carrier) is not dict
+        or type(portable_manifest_file) is not dict
+        or set(portable_manifest_file) != {"sha256", "size"}
+        or not _typed_equal(portable_manifest_file, embedded_manifest_identity)
+        or type(fixture_manifest) is not dict
+        or set(fixture_manifest) != {"sha256", "size"}
+        or not _typed_equal(fixture_manifest, embedded_manifest_identity)
+        or type(fixture_identity) is not dict
+        or set(fixture_identity) != {"artifacts", "fixture", "manifest"}
         or type(fixture_post) is not dict
-        or fixture_post.get("manifest_file", {}).get("sha256")
-        != fixture.get("manifest_file", {}).get("sha256")
-        or fixture_post.get("manifest_file", {}).get("size")
-        != fixture.get("manifest_file", {}).get("size")
-        or {
-            name: value
-            for name, value in fixture_post.get("filesystem_identity", {}).items()
-            if name != "unchanged"
-        }
-        != fixture.get("filesystem_identity")
+        or type(fixture_post_manifest) is not dict
+        or set(fixture_post_manifest) != {"sha256", "size", "unchanged"}
+        or fixture_post_manifest["unchanged"] is not True
+        or not _typed_equal(
+            {name: value for name, value in fixture_post_manifest.items() if name != "unchanged"},
+            embedded_manifest_identity,
+        )
+        or type(fixture_post_identity) is not dict
+        or set(fixture_post_identity) != {"artifacts", "fixture", "manifest", "unchanged"}
+        or fixture_post_identity["unchanged"] is not True
+        or type(fixture_post_scene) is not dict
+        or set(fixture_post_scene)
+        != {"directory_count", "file_count", "total_bytes", "tree_sha256", "unchanged"}
+        or fixture_post_scene["unchanged"] is not True
+        or not _typed_equal(fixture_carrier, portable_fixture.get("carrier"))
         or any(
-            fixture_post.get("scene", {}).get(name) != fixture.get("carrier", {}).get(name)
+            not _typed_equal(fixture_post_identity[name], fixture_identity[name])
+            for name in ("artifacts", "fixture", "manifest")
+        )
+        or any(
+            not _typed_equal(fixture_post_scene.get(name), fixture_carrier.get(name))
             for name in ("directory_count", "file_count", "total_bytes", "tree_sha256")
         )
     ):
         raise RuntimeError("passing native attestation report does not bind fixture post-state")
-    private_scene = report.get("private_scene", {})
+    for name in ("artifacts", "fixture", "manifest"):
+        _validate_filesystem_identity_fields(
+            fixture_identity[name],
+            f"fixture {name}",
+        )
+        _validate_filesystem_identity_fields(
+            fixture_post_identity[name],
+            f"fixture {name} postcondition",
+        )
     private_initial = private_scene.get("initial")
     private_post = private_scene.get("post_observation")
     if (
-        private_initial != fixture.get("carrier")
+        set(private_scene) != {"initial", "post_observation"}
+        or type(private_initial) is not dict
+        or not _typed_equal(private_initial, fixture.get("carrier"))
         or type(private_post) is not dict
-        or {name: value for name, value in private_post.items() if name != "unchanged"}
-        != private_initial
+        or set(private_post) != {*private_initial, "unchanged"}
+        or private_post["unchanged"] is not True
+        or not _typed_equal(
+            {name: value for name, value in private_post.items() if name != "unchanged"},
+            private_initial,
+        )
     ):
         raise RuntimeError("passing native attestation report does not bind private-scene state")
     _validate_artifact_evidence(report, portable_record)
     host = report.get("host")
-    if type(host) is not dict or host.get("identity_sha256") != _canonical_digest(
-        {name: value for name, value in host.items() if name != "identity_sha256"}
-    ):
-        raise RuntimeError("passing native attestation report has invalid host evidence")
-    tool_record = report.get("tools", {})
-    if type(tool_record) is not dict:
-        raise RuntimeError("passing native attestation report has invalid tool evidence")
+    _validate_platform_evidence_record(host)
     tool_initial = tool_record.get("initial")
     tool_post_record = tool_record.get("post_observation")
     tool_post = tool_post_record.get("tools") if type(tool_post_record) is dict else None
@@ -5196,11 +5428,13 @@ def _validate_native_report(report: object) -> None:
             }
             or final["unchanged"] is not True
             or any(
-                final.get(field) != initial.get(field)
+                not _typed_equal(final.get(field), initial.get(field))
                 for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
             )
         ):
             raise RuntimeError(f"passing native attestation report does not bind {name}")
+        _validate_file_identity_fields(initial, f"reported native tool {name}")
+        _validate_file_identity_fields(final, f"reported native tool {name} postcondition")
         authenticode = initial.get("authenticode")
         if type(authenticode) is not dict:
             raise RuntimeError(f"passing native attestation report omits {name} authenticity")
@@ -5218,37 +5452,59 @@ def _validate_native_report(report: object) -> None:
     _validate_powershell_version_evidence(tool_initial.get("powershell"), host)
     _validate_tool_file_version_evidence(tool_initial.get("link"), "link")
     _validate_tool_file_version_evidence(tool_initial.get("vswhere"), "vswhere")
-    positive = report.get("positive_control")
-    if type(positive) is not dict:
-        raise RuntimeError("passing native attestation has invalid positive-control evidence")
     selected = positive.get("selected")
+    powershell_tool = tool_initial["powershell"]
+    powershell_authenticode = powershell_tool["authenticode"]
     if (
         set(positive) != {"attempts", "hash", "post_observation", "selected", "verdict"}
-        or type(positive["attempts"]) is not list
+        or not _typed_equal(positive["attempts"], [selected])
         or type(selected) is not dict
         or set(selected) != {"identity", "label", "observation", "signature", "winverifytrust"}
-        or selected not in positive["attempts"]
-        or selected["label"] not in {"WindowsPowerShell", "notepad", "kernel32", "cmd"}
+        or selected["label"] != "PowerShell7"
+        or not _typed_equal(selected["winverifytrust"], powershell_tool["winverifytrust"])
+        or not _typed_equal(selected["signature"], powershell_authenticode["result"])
+        or not _typed_equal(selected["observation"], powershell_authenticode["observation"])
     ):
         raise RuntimeError("passing native attestation has invalid positive-control evidence")
     selected_identity = selected.get("identity")
+    tool_identity = {
+        field: powershell_tool[field]
+        for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
+    }
     positive_post = positive.get("post_observation")
     if (
-        type(selected_identity) is not dict
+        not _typed_equal(selected_identity, tool_identity)
         or type(positive_post) is not dict
+        or set(positive_post)
+        != {
+            "filesystem_identity",
+            "path",
+            "resolved_path",
+            "sha256",
+            "size",
+            "unchanged",
+        }
+        or positive_post["unchanged"] is not True
         or any(
-            positive_post.get(field) != selected_identity.get(field)
-            for field in ("filesystem_identity", "resolved_path", "sha256", "size")
+            not _typed_equal(positive_post.get(field), selected_identity.get(field))
+            for field in ("filesystem_identity", "path", "resolved_path", "sha256", "size")
         )
     ):
         raise RuntimeError(
             "passing native attestation report does not bind positive-control post-state"
         )
+    _validate_file_identity_fields(
+        selected_identity,
+        "reported Authenticode positive control",
+    )
+    _validate_file_identity_fields(
+        positive_post,
+        "reported Authenticode positive-control postcondition",
+    )
     _validate_signed_signature_evidence(
         {"observation": selected["observation"], "result": selected["signature"]},
         "reported Authenticode positive control",
         independent_trust=selected["winverifytrust"],
-        require_os_binary=True,
     )
     _validate_native_hash_evidence(
         positive["hash"],
@@ -5259,6 +5515,16 @@ def _validate_native_report(report: object) -> None:
     parsed = json.loads(encoded, object_pairs_hook=_strict_object_pairs)
     if parsed != report:
         raise RuntimeError("native attestation report does not round-trip canonically")
+
+
+def _validate_native_report(report: object) -> None:
+    """Convert hostile shape errors into one controlled validation failure."""
+    try:
+        _validate_native_report_body(report)
+    except RuntimeError:
+        raise
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("native attestation report contains malformed evidence") from exc
 
 
 def _validated_report_bytes(report: object) -> bytes:

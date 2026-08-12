@@ -51,6 +51,17 @@ PROFILE_FAMILIES_V2 = {
     "linux-glibc-x86_64-loose-v2": "linux",
 }
 
+# A story is the incident shape a recipe asks for; the profile is the host it sits on.  The
+# enumeration is closed for the same reason the profile one is: an open vocabulary would let a
+# recipe name a scene no gate has ever been observed to reject.  Each entry owns a registered
+# scene builder, its own logical assurance expectations, and a mutation that turns it red.
+STORIES_V2 = {
+    "windows-dropper-v1": "windows",
+    "windows-download-only-v1": "windows",
+    "macos-quarantined-app-v1": "macos",
+    "linux-autostart-v1": "linux",
+}
+
 LINUX_METADATA_SCHEMA_V2 = "artifactforge-linux-posix-metadata-v2"
 MACOS_METADATA_SCHEMA_V2 = "artifactforge-macos-metadata-v2"
 WINDOWS_METADATA_SCHEMA_V2 = "artifactforge-windows-metadata-v2"
@@ -372,7 +383,7 @@ class ProfileSpecV2:
 
 
 def _clock_context_v2(
-    *, fixture_id: str, family: str, profile: ProfileSpecV2
+    *, fixture_id: str, family: str, story: str, profile: ProfileSpecV2
 ) -> bytes:
     """Canonical answer-free projection used by the one v2 clock derivation path."""
     return canonical_json_bytes(
@@ -380,6 +391,7 @@ def _clock_context_v2(
             "domain": CLOCK_CONTEXT_DOMAIN_V2,
             "fixture_id": fixture_id,
             "family": family,
+            "story": story,
             "profile": profile.to_mapping(),
         }
     )
@@ -408,6 +420,7 @@ class FixtureSpecV2:
     profile: ProfileSpecV2
     seed_hex: str
     causal_clock: CausalClockSpec
+    story: str
     schema: str = SPEC_SCHEMA_V2
     purpose: str = SPEC_PURPOSE_V2
 
@@ -429,6 +442,15 @@ class FixtureSpecV2:
             raise FixtureV2ValidationError(
                 f"profile {self.profile.id!r} belongs to {expected_family!r}, not {family!r}"
             )
+        story = _text(self.story, "spec.story", printable_ascii=True)
+        if story not in STORIES_V2:
+            choices = ", ".join(sorted(STORIES_V2))
+            raise FixtureV2ValidationError(f"spec.story must be one of: {choices}")
+        story_family = STORIES_V2[story]
+        if family != story_family:
+            raise FixtureV2ValidationError(
+                f"story {story!r} belongs to {story_family!r}, not {family!r}"
+            )
         seed = _text(self.seed_hex, "spec.seed_hex", printable_ascii=True)
         if _SEED_HEX.fullmatch(seed) is None:
             raise FixtureV2ValidationError(
@@ -442,6 +464,7 @@ class FixtureSpecV2:
                 context=_clock_context_v2(
                     fixture_id=fixture_id,
                     family=family,
+                    story=story,
                     profile=self.profile,
                 ),
             )
@@ -460,17 +483,20 @@ class FixtureSpecV2:
         family: str,
         profile: ProfileSpecV2,
         seed_hex: str,
+        story: str,
     ) -> FixtureSpecV2:
         return cls(
             fixture_id=fixture_id,
             family=family,
             profile=profile,
             seed_hex=seed_hex,
+            story=story,
             causal_clock=CausalClockSpec.from_seed_hex(
                 seed_hex,
                 context=_clock_context_v2(
                     fixture_id=fixture_id,
                     family=family,
+                    story=story,
                     profile=profile,
                 ),
             ),
@@ -486,6 +512,7 @@ class FixtureSpecV2:
                 "purpose",
                 "fixture_id",
                 "family",
+                "story",
                 "profile",
                 "seed_hex",
                 "causal_clock",
@@ -497,6 +524,7 @@ class FixtureSpecV2:
             purpose=_text(mapping["purpose"], "spec.purpose", printable_ascii=True),
             fixture_id=_text(mapping["fixture_id"], "spec.fixture_id", printable_ascii=True),
             family=_text(mapping["family"], "spec.family", printable_ascii=True),
+            story=_text(mapping["story"], "spec.story", printable_ascii=True),
             profile=ProfileSpecV2.from_mapping(mapping["profile"]),
             seed_hex=_text(mapping["seed_hex"], "spec.seed_hex", printable_ascii=True),
             causal_clock=_clock_from_mapping(mapping["causal_clock"]),
@@ -513,6 +541,7 @@ class FixtureSpecV2:
             "purpose": self.purpose,
             "fixture_id": self.fixture_id,
             "family": self.family,
+            "story": self.story,
             "profile": self.profile.to_mapping(),
             "seed_hex": self.seed_hex,
             "causal_clock": {
@@ -1868,6 +1897,7 @@ __all__ = [
     "NamedBlobV2",
     "NodeMetadataV2",
     "PROFILE_FAMILIES_V2",
+    "STORIES_V2",
     "ProfileSpecV2",
     "RECIPE_DIGEST_DOMAIN_V2",
     "SCENE_KEY_DOMAIN_V2",

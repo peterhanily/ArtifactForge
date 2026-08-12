@@ -20,7 +20,7 @@ diagnostic established all of the following:
 That diagnostic used the explicit dirty-source override. It is source-bound non-release
 evidence, not a clean tagged-release rehearsal. The first protected hosted release-attestation
 remains pending. Hosted schema-v6 Windows-native runs produced diagnostic failure evidence;
-the first complete passing native result remains pending schema-v7 confirmation.
+hosted schema-v7 run 30944614694 recorded the first complete passing native result.
 
 ## Claim boundary
 

@@ -4,6 +4,36 @@
 
 ### Added
 
+`artifactforge fixture extract` closes the release round trip. `release` writes canonical USTAR
+metadata, which normalises modes so the archive bytes stay deterministic, while a fixture
+carrier requires private modes; plain `tar -x` therefore produced a tree `verify` rejected, at
+the end of the documented quick start. Extraction verifies the archive first, writes nothing
+unless it passes, restores the carrier modes and refuses an existing destination.
+
+A v2 recipe now selects a `story`: the incident shape it wants, separately from the host
+profile it runs on. The enumeration is closed, because an open one would let a recipe ask for a
+scene no gate has ever been observed to reject. The field is required, is bound into both the
+causal-clock context and the recipe digest, is constrained per family in the spec and manifest
+schemas, and drives scene dispatch. Stories are a fixture concept: the benchmark keeps calling
+the scene builders directly, since its scenario shape is frozen at five questions per scene.
+
+`windows-download-only-v1` is the second Windows story. It serves arrival evidence — three
+resident PEs, a completed Chromium download row, and the logical mark of the web on exactly one
+of them — while Amcache, the SOFTWARE Run key, Prefetch, the Task definition and the Shell Link
+are absent. That absence is the story's claim, so it is asserted rather than assumed: the scene
+declares the exact surfaces it withholds, projection refuses a wrong declaration, smuggled
+execution truth or a withheld artifact served anyway, and logical assurance checks each surface
+by its own exact guest path. No artifact in the story carries the execution instant, because a
+last-access stamped at execution would assert the event the story withholds. Every one of those
+checks has a mutation that turns it red.
+
+`inventory.measure_change_visibility` probes whether a same-size in-place rewrite is visible
+in the host filesystem's stat timestamps, which is the exact capability the snapshot
+boundary's change-and-restore rejection rests on. `artifactforge scorecard` runs it and, where
+the capability is absent, records an honest gap so the verdict reads `gap` rather than a
+`pass` the host never earned. Verified against both controls: an APFS volume distinguishes
+8 of 8 rewrites, an HFS+ volume 0 of 8.
+
 Benchmark v3 introduces an evaluator-created local freshness ceremony with an internally
 minted CSPRNG suite key and ceremony identifier. Its exact public origin/reportability block
 and domain-separated key commitment are bound into `suite_id`; the matching canonical private
@@ -112,6 +142,21 @@ attestation remains pending for the current source revision.
 
 ### Changed
 
+The package version is now `0.6.0.dev0`. HEAD had continued to declare `0.5.0` well past that
+tag, so a wheel built here was indistinguishable from the released one by version or filename,
+and a v2 fixture manifest stamped `0.5.0` into its `generator` block for an ABI that did not
+exist at the tag. The frozen Fixture ABI v1 record keeps its own `0.5.0` release marker, which
+describes the historical byte producer rather than the installed package. Release-evidence
+tests now derive their fabricated payloads from `release_evidence.__version__` instead of
+repeating the literal, so the next bump needs no edit there.
+
+`docs/fixture-core.md` no longer states unconditionally that archive capture detects bytes
+restored before its second pass. The rejection depends on ctime moving when the bytes are
+rewritten, and a filesystem whose file-time granularity is coarser than the capture window
+leaves the whole identity tuple unchanged. The narrowed text names that boundary, and the
+seven affected tests now skip with an explicit host-capability reason instead of failing for
+a property of the volume they ran on.
+
 The public documentation now has one clear entry point and one source of truth for each claim.
 The root README starts with installation and fixture verification, uses compact platform and
 gate tables, and links to a new documentation index for the detailed contracts. The design and
@@ -125,6 +170,25 @@ Task/Shell-Link records as references rather than activation. The EvidenceForge 
 and all active technical guides received the same claim-boundary and plain-language pass.
 
 ### Fixed
+
+Gate 3's indicator hygiene was blind to UTF-16LE. It scanned raw bytes with ASCII-only
+patterns, so a routable address or a real hostname was caught in a PE and passed silently in a
+registry hive, a Shell Link or a Task definition — the three Windows formats that store all
+text as UTF-16LE, and the only places a Windows scene keeps strings. Both byte alignments are
+now projected and scanned. The Task Scheduler namespace URI is exempt because a definition is
+invalid without that exact string; the host on its own is not exempt, and any other use of it
+still fails.
+
+`artifactforge scorecard` now exits non-zero when its own verdict is `fail`. It previously
+returned 0 unless `--require-pass` was supplied, so the command that defines done was the one
+command that could not fail a build. A declared `gap` still exits 0: it is a named limitation
+rather than a broken result, and `--require-pass` is what rejects it.
+
+The installed command no longer answers ordinary mistakes with a stack trace. `main` stays the
+testable core and still raises; the console script is now a wrapper that turns an expected
+refusal into a message and exit 2, with `ARTIFACTFORGE_TRACEBACK=1` to re-raise. The
+solver-input refusal also no longer echoes the evaluator inventory, including the key path,
+back to whoever triggered it.
 
 The first hosted schema-v6 Windows report exposed a bad Authenticode control boundary. The
 attestor searched inbox Windows binaries. Three candidates returned `TRUST_E_NOSIGNATURE`
@@ -150,8 +214,8 @@ Link object has no namespace PIDL from which that WSH getter can project a path.
 records the native result as either `exact` or
 `unavailable-no-link-target-id-list`. This does not make the WSH getter a target-path
 authority. The strict first-party reader, liblnk, LnkParse3 and the manifest-to-resident-PE
-join remain authoritative for target identity. Hosted schema-v7 confirmation remains pending
-until the follow-up is pushed and run.
+join remain authoritative for target identity. Hosted run 30944614694 confirmed schema v7 on
+the fixed Windows runner, passing all ten jobs.
 
 The Windows-native PE observer now binds and invokes the parser that actually reads the
 files. Microsoft's Raymond Chen identifies `dumpbin.exe` as a wrapper around

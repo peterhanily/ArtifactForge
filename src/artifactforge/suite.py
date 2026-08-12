@@ -1813,8 +1813,13 @@ def _capture_public_export(
         path for path in by_path if path != "public.json" and not path.startswith("scenarios/")
     )
     if unexpected:
+        # Name the shape of the mistake, not the contents of the evaluator root.  This is the
+        # error a solver hits when it is pointed at the private tree, and echoing every path
+        # back at them would hand over the private inventory the export exists to withhold.
         raise ValueError(
-            "solver input contains evaluator-private or extra material: " + ", ".join(unexpected)
+            f"solver input is not a public export: it holds {len(unexpected)} entries outside "
+            "public.json and scenarios/. Point this at the directory produced by "
+            "'artifactforge bench export', not at the evaluator root"
         )
     scenario_payload = tuple(
         (path.removeprefix("scenarios/"), data)

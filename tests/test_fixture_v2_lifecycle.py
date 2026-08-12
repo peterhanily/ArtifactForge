@@ -63,10 +63,18 @@ SEEDS = {
 }
 
 
+_STORY_IDS = {
+    "windows": "windows-dropper-v1",
+    "macos": "macos-quarantined-app-v1",
+    "linux": "linux-autostart-v1",
+}
+
+
 def _spec(family: str) -> FixtureSpecV2:
     return FixtureSpecV2.create(
         fixture_id=f"lifecycle-{family}",
         family=family,
+        story=_STORY_IDS[family],
         profile=ProfileSpecV2(
             id=PROFILE_IDS[family],
             hostname=HOSTNAMES[family],

@@ -965,7 +965,7 @@ def _project_contract(payload: bytes, *, expected_version: str) -> dict[str, Any
         where="expected dev requirements",
     ):
         raise ReleaseEvidenceError("pyproject dev requirements differ from the release contract")
-    if project.get("scripts") != {"artifactforge": "artifactforge.cli:main"}:
+    if project.get("scripts") != {"artifactforge": "artifactforge.cli:console_main"}:
         raise ReleaseEvidenceError("pyproject console-script contract is wrong")
     if document.get("build-system") != {
         "requires": [f"hatchling=={EXPECTED_WHEEL_GENERATOR.removeprefix('hatchling ')}"],

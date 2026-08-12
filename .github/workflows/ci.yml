@@ -1157,14 +1157,17 @@ jobs:
           assert link["native_parse"]["result"]["IconLocation"] in {"", ",0"}
           assert link["native_parse"]["result"]["WorkingDirectory"] == ""
           link_profile = link["portable_assurance"]["profile"]
-          assert link_profile["target_path"] == r"C:\Program Files\vlc.exe"
+          # Deliberately structural. The target is a seed-derived resident name, so pinning
+          # the literal here breaks on any recipe change and can only be seen on a hosted
+          # Windows runner. Its identity is proven below against the emitted PE bytes.
+          assert link_profile["target_path"].startswith("C:\\")
+          assert link_profile["target_path"].casefold().endswith(".exe")
           native_target = link["native_parse"]["result"]["TargetPath"]
           native_target_state = link["native_parse"]["target_path_state"]
           assert (native_target, native_target_state) in {
               (link_profile["target_path"], "exact"),
               ("", "unavailable-no-link-target-id-list"),
           }
-          assert link["target"]["path"] == "C/Program Files/vlc.exe"
           assert link_profile["target_path"] == (
               f"{link['target']['path'][0]}:\\" +
               link["target"]["path"][2:].replace("/", "\\")

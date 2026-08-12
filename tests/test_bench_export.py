@@ -387,7 +387,7 @@ def test_cli_export_and_role_refusals(tmp_path, evaluator, capsys):
     assert "LIMITATION:" in output
     assert suite.PUBLIC_EXPORT_LIMITATION in output
 
-    with pytest.raises(ValueError, match="exact public export|evaluator-private"):
+    with pytest.raises(ValueError, match="not a public export|exact public export"):
         cli.main(
             [
                 "bench",

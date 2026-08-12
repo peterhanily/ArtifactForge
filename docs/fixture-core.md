@@ -126,6 +126,43 @@ an exact package version and its GeneratorIdentity v1 does not bind that release
 producer. V1 therefore remains inspectable but is intentionally not reproduced by current
 source; current cross-runtime guarantees apply only to the v2 ABI/profile and tested matrix.
 
+### What the recipe controls
+
+A v2 recipe controls five things and nothing else: `family`, `story`, `profile.hostname`,
+`profile.username` and `seed_hex`. `fixture_id` is a label, and `causal_clock` is not an input
+at all — the build re-derives it from the seed and the canonical recipe context and rejects any
+other anchor. `profile.id` is fixed per family.
+
+`story` names the incident shape. It is a closed enumeration, because an open one would let a
+recipe ask for a scene no gate has ever been observed to reject. Each story owns a registered
+scene builder, its own logical assurance expectations, and mutations that turn those
+expectations red:
+
+| Story | Shape |
+|---|---|
+| `windows-dropper-v1` | Download, execution, persistence and reference surfaces: 5 PEs, Amcache, SOFTWARE Run key, Prefetch, Chromium `History`, `Zone.Identifier`, Task XML, Shell Link |
+| `windows-download-only-v1` | Arrival without execution: 3 PEs, Chromium `History` and one `Zone.Identifier`; Amcache, Run key, Prefetch, Task XML and Shell Link are absent, and that absence is asserted |
+| `macos-quarantined-app-v1` | Quarantined download: Mach-O binaries, quarantine xattrs, QuarantineEventsV2, TCC, knowledgeC, LaunchAgents |
+| `linux-autostart-v1` | Autostart and shell history: 5 ELF files, 3 XDG autostart entries, one timestamped Bash history |
+
+Story shape is *not* a per-artifact choice. A recipe cannot ask for "these files"; it selects
+one registered story, and the story decides its inventory. Within a story, the seed chooses
+names, paths, counts drawn from fixed pools, and every derived value — never which artifact
+kinds appear.
+
+`windows-download-only-v1` is the case where absence carries the claim. A short inventory is
+not evidence that nothing ran: it is equally consistent with a builder that failed to write
+one. The scene therefore declares the exact surfaces it withholds, and projection refuses the
+build if that declaration is wrong, if the scene carries execution truth, or if any withheld
+artifact is served anyway. Its logical assurance then checks each withheld surface by its own
+exact guest path and reports it in its own failure. No artifact in that story carries the
+execution instant, because a last-access stamped at execution would assert the event the story
+withholds.
+
+Stories are a fixture concept. The benchmark keeps calling the scene builders directly: its
+scenario shape is frozen at five questions per scene, so a story that changed that shape would
+have to re-enter Gate 4's registered attack surface before it could mean anything.
+
 ### Derivation domains
 
 The recipe carries a public 256-bit seed and a causal clock. Fixture v2 uses independent,
@@ -300,10 +337,20 @@ normalization, so an invalid v2 source carrier cannot produce a valid archive.
 After the final byte is read, archive capture performs a full recursive second state pass
 through the held directory descriptors. It re-lists every directory and rechecks the complete
 observed name and file/directory identity set. This rejects ordinary replacement, growth,
-truncation and cross-file rolling mixed snapshots, including bytes restored before the second
-pass because ctime remains bound. It does not claim a mathematically atomic multi-file instant
-against a privileged actor continuously replaying filesystem states; that requires a
-filesystem-native snapshot or immutable source.
+truncation and cross-file rolling mixed snapshots.
+
+It also rejects bytes restored before the second pass, because rewriting them moves ctime and
+an unprivileged writer cannot reset ctime the way it can reset mtime. That rejection holds
+only where the host filesystem's file-time granularity is finer than the capture window. On a
+coarse-granularity filesystem — HFS+, ext3, FAT, or a kernel with jiffy-granularity timestamps
+— a same-size in-place rewrite leaves the entire identity tuple unchanged, and the restore is
+invisible to the second pass. `artifactforge scorecard` probes the host for this with
+`inventory.measure_change_visibility` and records an honest gap instead of a pass where the
+capability is absent, so the verdict describes the host it actually ran on.
+
+Capture does not claim a mathematically atomic multi-file instant against a privileged actor
+continuously replaying filesystem states; that requires a filesystem-native snapshot or
+immutable source.
 
 ## Current fidelity profiles
 
@@ -324,8 +371,8 @@ not a rename. Earlier v2 output used v17/XP Prefetch and remains bound to the ol
 created it; regenerate it rather than treating it as current-profile output. The released
 Fixture ABI v1 vectors and the byte-stable public `build_prefetch`/`prefetch_name_hash` v17/XP
 compatibility APIs are unchanged. Current scene generation selects `build_prefetch_v30`
-explicitly. The native `RtlDecompressBufferEx` observation remains conditional on a hosted
-Windows run and does not claim post-size tail consumption.
+explicitly. The native `RtlDecompressBufferEx` observation was completed by hosted run 30944614694 and does
+not claim post-size tail consumption.
 
 The profile's Chromium `History` is a bounded completed-download responder-
 query surface, not a full, native or migratable browser database. All three completed rows

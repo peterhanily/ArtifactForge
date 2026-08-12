@@ -1,6 +1,6 @@
 [project]
 name = "artifactforge"
-version = "0.5.0"
+version = "0.6.0.dev0"
 description = "Deterministic, parser-gated synthetic forensic artifacts with byte-derived identity."
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -65,7 +65,7 @@ dev = [
 # `evidenceforge`. Getting this wrong makes the install step exit 1.
 
 [project.scripts]
-artifactforge = "artifactforge.cli:main"
+artifactforge = "artifactforge.cli:console_main"
 
 [build-system]
 requires = ["hatchling==1.31.0"]

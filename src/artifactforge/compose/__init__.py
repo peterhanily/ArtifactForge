@@ -17,6 +17,7 @@ from artifactforge.compose.scene import (
     Scene,
     build_linux_scene,
     build_macos_scene,
+    build_windows_download_only_scene,
     build_windows_scene,
 )
 from artifactforge.compose.assurance import generate_linux_assurance
@@ -26,6 +27,7 @@ __all__ = [
     "FIXTURE_V2_SCENE_DERIVATION",
     "Scene",
     "SceneDerivation",
+    "build_windows_download_only_scene",
     "build_windows_scene",
     "build_macos_scene",
     "build_linux_scene",

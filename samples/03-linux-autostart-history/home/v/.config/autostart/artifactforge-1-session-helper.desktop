@@ -1,9 +1,9 @@
 [Desktop Entry]
 Version=1.5
 Type=Application
-Name=User helper 2
+Name=User helper 1
 Comment=Synthetic ArtifactForge XDG autostart evidence
-Exec=/home/v/.local/bin/af-sync
+Exec=/home/v/.local/bin/session-helper
 Terminal=false
 Hidden=false
 DBusActivatable=false

@@ -185,8 +185,8 @@ the local phase.
 
 **Status: complete in current source.** Implementation and local runtime closure are complete.
 A hosted schema-v6 Windows run produced partial evidence but failed its Shell Link contract.
-Hosted schema-v7 confirmation and protected release attestation remain pending. This is not a
-signed release or a package-publication claim.
+Hosted schema-v7 run 30944614694 then passed; protected release attestation remains pending. This is
+not a signed release or a package-publication claim.
 
 - The full parser-oracle matrix remains Python 3.11/3.12/3.13. A distinct CPython 3.14 lane
   binds the actual interpreter, builds/installs the zero-dependency wheel without dependencies,
@@ -198,8 +198,8 @@ signed release or a package-publication claim.
   that bound fixture/report pair, authenticates the Microsoft inspection-tool prerequisites,
   observes private copies and checks post-state without executing emitted PEs. The hosted
   schema-v6 run confirmed the repaired Authenticode control, including WinVerifyTrust, SHA-256
-  and post-state checks. It then stopped at the Shell Link contract. A complete hosted result
-  remains pending schema-v7 confirmation.
+  and post-state checks. It then stopped at the Shell Link contract. Hosted schema-v7 run
+  30944614694 produced the complete hosted result.
 - CI exercises responder-facing consumers and exact target-runtime controls rather than
   inferring support from lower-level parser imports.
 - Every third-party action is pinned to an immutable commit, hosted runner labels are fixed,
@@ -235,7 +235,7 @@ signed release or a package-publication claim.
 ### Phase 6: Windows coverage
 
 **Status: portable Phases 6A through 6C are complete in current source; hosted schema-v6
-Windows evidence is partial and schema-v7 confirmation remains pending.** The Windows scene
+Windows evidence was partial, and hosted schema-v7 run 30944614694 then passed.** The Windows scene
 now includes an owned-SQLite
 `chromium-completed-download-query-surface-v1` History artifact
 with three completed rows. Chromium's completed-download `hash` BLOB remains honestly empty;
@@ -276,8 +276,8 @@ public symbols, showed the implementation path consistent with this result: the 
 object has no namespace PIDL for the WSH getter to use. Schema v7 classifies the
 native target projection as `exact` or `unavailable-no-link-target-id-list`. It does not weaken
 target identity: the strict first-party reader, liblnk, LnkParse3 and the
-manifest-to-resident-PE join remain authoritative. Hosted schema-v7 confirmation is still
-pending, so the canaries do not yet support a complete hosted native-conformance claim. The
+manifest-to-resident-PE join remain authoritative. Hosted schema-v7 run 30944614694 passed, but the
+canaries remain inspection designs and still do not support a native-conformance claim. The
 current benchmark scene inventories are 14 Windows files and 16 macOS files; at 200
 alternating scenarios the public export is at most 3,001 files including `public.json`.
 Historical scorecard counts remain historical.
@@ -298,9 +298,9 @@ Gate 2 counts captured `.pf` files, decodes each executable name from its bytes,
 the exact scene-declared artifact count and name set before evaluating persisted and orphan
 execution joins.
 
-The Windows-native `RtlDecompressBufferEx` proof remains conditional until the hosted lane
-runs successfully. It compares only the declared output and does not claim that Windows
-consumed or rejected post-size bits. Version 31, alternate v30 variants and general multi-chunk
+The Windows-native `RtlDecompressBufferEx` proof was completed by hosted run 30944614694. It
+compares only the declared output and does not claim that Windows consumed or rejected
+post-size bits. Version 31, alternate v30 variants and general multi-chunk
 XPRESS-Huffman stay outside the claim. The public `build_prefetch`/`prefetch_name_hash` APIs
 remain byte-stable v17/XP compatibility surfaces. The still-unreleased `windows-loose-v2`
 profile was deliberately compatibility-reset in place rather than renamed; earlier generated

@@ -74,6 +74,13 @@ FILE_GUEST_PATHS = {
 }
 
 
+_STORY_IDS = {
+    "windows": "windows-dropper-v1",
+    "macos": "macos-quarantined-app-v1",
+    "linux": "linux-autostart-v1",
+}
+
+
 def _spec(
     family: str = "linux",
     *,
@@ -85,6 +92,7 @@ def _spec(
     return FixtureSpecV2.create(
         fixture_id=fixture_id,
         family=family,
+        story=_STORY_IDS[family],
         profile=ProfileSpecV2(
             id=FAMILY_PROFILES[family],
             hostname=hostname or f"{family}-01",

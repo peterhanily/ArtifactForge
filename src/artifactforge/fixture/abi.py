@@ -74,8 +74,8 @@ FIXTURE_ABI_V1 = FixtureABI(
     generator_abi=GENERATOR_ABI_V1,
     producer_profile=None,
     frozen_release="0.5.0",
-    # The current writers no longer emit the 0.5.0 bytes.  This slot must stay empty even
-    # while pyproject.toml still says 0.5.0; a future v2 implementation gets a new record.
+    # The current writers no longer emit the 0.5.0 bytes, so this slot must stay empty;
+    # a future v2 implementation gets a new record rather than reoccupying this one.
     producer_implementation=None,
 )
 

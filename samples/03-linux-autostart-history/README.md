@@ -22,11 +22,11 @@ Both readers report interpreter `/lib64/ld-linux-x86-64.so.2` and dependency `li
 
 | File | SHA-256 | LIEF type | pyelftools type |
 | --- | --- | --- | --- |
-| `home/v/.local/bin/af-sync` | `2d70362529921fee...` | DYN | ET_DYN |
-| `home/v/.local/bin/backup-watch` | `c0cae50146ca7d52...` | DYN | ET_DYN |
-| `home/v/.local/bin/cache-helper` | `2b78817fa6b3241e...` | DYN | ET_DYN |
-| `home/v/.local/bin/network-watch` | `9de5e447ced20b61...` | DYN | ET_DYN |
-| `home/v/.local/bin/update-check` | `cd6f9cfc8da03941...` | DYN | ET_DYN |
+| `home/v/.local/bin/cloud-watch` | `4d082fb6fcd4eb12...` | DYN | ET_DYN |
+| `home/v/.local/bin/search-index` | `682a3478cdf36195...` | DYN | ET_DYN |
+| `home/v/.local/bin/session-check` | `90f9cf45c1eda7f9...` | DYN | ET_DYN |
+| `home/v/.local/bin/session-helper` | `9ffcbf70a42f5f49...` | DYN | ET_DYN |
+| `home/v/.local/bin/thumbnail-helper` | `6315177e1798fa58...` | DYN | ET_DYN |
 
 ### XDG autostart: PyXDG and raw reader
 
@@ -34,9 +34,9 @@ Both readers agree on Type, Exec and Hidden. The raw reader also checks the exac
 
 | File | Exec | Hidden | Marker |
 | --- | --- | --- | --- |
-| `home/v/.config/autostart/artifactforge-1-update-check.desktop` | `/home/v/.local/bin/update-check` | false | `ARTIFACTFORGE` |
-| `home/v/.config/autostart/artifactforge-2-af-sync.desktop` | `/home/v/.local/bin/af-sync` | false | `ARTIFACTFORGE` |
-| `home/v/.config/autostart/artifactforge-3-backup-watch.desktop` | `/home/v/.local/bin/backup-watch` | false | `ARTIFACTFORGE` |
+| `home/v/.config/autostart/artifactforge-1-session-helper.desktop` | `/home/v/.local/bin/session-helper` | false | `ARTIFACTFORGE` |
+| `home/v/.config/autostart/artifactforge-2-thumbnail-helper.desktop` | `/home/v/.local/bin/thumbnail-helper` | false | `ARTIFACTFORGE` |
+| `home/v/.config/autostart/artifactforge-3-cloud-watch.desktop` | `/home/v/.local/bin/cloud-watch` | false | `ARTIFACTFORGE` |
 
 ### Bash history: dissect.target and raw reader
 
@@ -44,10 +44,10 @@ Both readers agree on the records in `home/v/.bash_history`. They read history a
 
 | Order | UTC timestamp | Epoch | Command |
 | --- | --- | --- | --- |
-| 0 | 2025-05-29T16:16:27+00:00 | 1748535387 | `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` |
-| 1 | 2025-05-29T16:17:27+00:00 | 1748535447 | `/home/v/.local/bin/update-check` |
-| 2 | 2025-05-29T16:18:27+00:00 | 1748535507 | `/home/v/.local/bin/cache-helper` |
-| 3 | 2025-05-29T16:19:27+00:00 | 1748535567 | `/home/v/.local/bin/network-watch` |
+| 0 | 2024-05-17T14:47:19+00:00 | 1715957239 | `: 'ARTIFACTFORGE-SYNTHETIC-LINUX'` |
+| 1 | 2024-05-17T14:48:19+00:00 | 1715957299 | `/home/v/.local/bin/session-helper` |
+| 2 | 2024-05-17T14:49:19+00:00 | 1715957359 | `/home/v/.local/bin/session-check` |
+| 3 | 2024-05-17T14:50:19+00:00 | 1715957419 | `/home/v/.local/bin/search-index` |
 
 ## Answer key
 

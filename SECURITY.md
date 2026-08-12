@@ -287,16 +287,16 @@ The full parser-oracle matrix is CPython 3.11–3.13. CPython 3.14 is core-only 
 full oracle set passes target installation, imports, positive controls and behavioral tests.
 Current reviewed blockers are `dissect-target==3.25.1` at runtime import and the absence of a
 reviewed CPython 3.14 binary distribution for `yara-python==4.5.4`; metadata inspection cannot
-waive either. The Windows-native observer does not execute generated PE files, but its first
-successful hosted Windows run remains required before making a hosted native claim.
+waive either. The Windows-native observer does not execute generated PE files. Hosted run 30944614694 was its
+first successful run; the claims it supports remain those listed in this policy.
 
 Current Windows scenes carry deterministic MAM algorithm-4 compressed Prefetch v30 variant 1.
 The portable expected-size reader, rather than an EOF-driven external decoder, owns exact wrapper,
 declared-output and inner-layout validation. `pyscca` acceptance and typed
 `pyscca`/Dissect agreement are semantic evidence; Dissect can expose fewer or more decoded
 bytes than MAM declares and is not a framing oracle. The Windows observer's
-`RtlDecompressBufferEx` check remains conditional until a hosted run succeeds. It compares the
-declared output and makes no claim that Windows consumed or rejected post-size bits.
+`RtlDecompressBufferEx` check was completed by hosted run 30944614694. It compares the declared
+output and makes no claim that Windows consumed or rejected post-size bits.
 
 ## Fixture filesystem boundary
 

@@ -35,6 +35,11 @@ contracts behind it.
 The benchmark is separate from generator assurance. A fixture can pass format, identity, and
 inertness gates without creating a reportable benchmark result.
 
+### Understand the EvidenceForge relationship
+
+- [EvidenceForge relationship](evidenceforge.md) records what was measured between the
+  two projects, and why their hashes do not currently join.
+
 ### Prepare release evidence
 
 - [Releasing](releasing.md) gives the operator sequence and lists every action the workflow

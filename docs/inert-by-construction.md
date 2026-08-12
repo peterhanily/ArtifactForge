@@ -68,8 +68,8 @@ returned an empty `TargetPath`. Inspection of Microsoft-hosted `wshom.ocx` and
 showed the implementation path consistent with this result: the Shell Link object has no
 namespace PIDL for that getter to use. Schema v7 classifies the native result as `exact` or
 `unavailable-no-link-target-id-list`. The strict first-party reader, liblnk, LnkParse3 and the
-manifest-to-resident-PE join remain the target-path authorities. Hosted schema-v7 confirmation
-is still pending. These canaries are inspection designs, not activation tests, and support
+manifest-to-resident-PE join remain the target-path authorities. Hosted schema-v7 run 30944614694 confirmed
+that contract. These canaries are inspection designs, not activation tests, and support
 only configuration/reference claims, not task registration, shortcut activation or target
 execution.
 
@@ -80,8 +80,8 @@ reader owns exact compressed framing and inner layout; `pyscca` acceptance plus 
 not an exact-size oracle. The Windows `RtlDecompressBufferEx` canary only decompresses a
 private copy and compares MAM's declared output with the portable reader; it neither launches
 the named program nor claims consumption of post-size bits. A hosted schema-v6 run completed
-this canary before a later Shell Link contract failure; a complete passing schema-v7 report
-remains pending.
+this canary before a later Shell Link contract failure; hosted schema-v7 run 30944614694 then
+produced a complete passing report.
 
 ## Why the Mach-O is ad-hoc signed
 

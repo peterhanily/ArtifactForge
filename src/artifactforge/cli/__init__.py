@@ -32,6 +32,7 @@ from artifactforge.inventory import (
     directory_ancestry_snapshot,
     directory_path_matches_descriptor,
     inventory_regular_files,
+    measure_change_visibility,
     open_real_directory,
     path_handle_file_observations_match,
     write_regular_file_at,
@@ -603,6 +604,29 @@ def cmd_gate(args) -> int:
     return 0 if report.ok else 1
 
 
+def _host_honest_gaps(args) -> list[str]:
+    """Name the host limitations the gates cannot see, so a run does not inherit an
+    unearned pass.
+
+    The snapshot boundary's change-and-restore rejection is only as strong as the
+    filesystem's timestamp granularity. Where a same-size rewrite leaves the stat tuple
+    unchanged, the check is silently weaker on this host than the documented claim, and the
+    verdict should read ``gap`` rather than ``pass``.
+    """
+    where = getattr(args, "gen_dir", None) or tempfile.gettempdir()
+    try:
+        visibility = measure_change_visibility(where)
+    except InventoryError as exc:
+        return [f"Host filesystem change visibility could not be probed at {where}: {exc}"]
+    if visibility.complete:
+        return []
+    return [
+        f"Host filesystem at {where} does not expose same-size in-place rewrites through "
+        f"stat timestamps ({visibility.describe()}), so archive capture cannot detect bytes "
+        f"restored before its second pass"
+    ]
+
+
 def cmd_scorecard(args) -> int:
     from artifactforge.scorecard import (
         ScorecardError,
@@ -665,9 +689,15 @@ def cmd_scorecard(args) -> int:
         artifactforge_version=__version__,
         git_commit=source["git_commit"][:7],
         sqlite_version=sqlite3.sqlite_version,
+        honest_gaps=_host_honest_gaps(args),
         measurement=suite.scorecard_measurement_provenance(args.n),
         source=source,
     )
+    # A red gate is a failure whether or not the caller asked for strictness; anything else
+    # would make the command that defines "done" the one command that cannot fail a build.
+    # ``gap`` stays green on its own: a declared limitation is honest, not broken, and
+    # --require-pass is what rejects it.
+    verdict_failed = card.get("verdict") == "fail"
     require_pass_failed = bool(
         getattr(args, "require_pass", False) and card.get("verdict") != "pass"
     )
@@ -690,7 +720,11 @@ def cmd_scorecard(args) -> int:
         print(render_measurement_compatibility(baseline, card))
         print(render_status_comparison(baseline, card))
         print(_scorecard_status_summary(card))
-        return 1 if rows or incompatible or status_rows or require_pass_failed else 0
+        return (
+            1
+            if rows or incompatible or status_rows or require_pass_failed or verdict_failed
+            else 0
+        )
     if args.out:
         try:
             save(card, args.out)
@@ -702,8 +736,14 @@ def cmd_scorecard(args) -> int:
             f"{len(card['honest_gaps'])} honest gaps"
         )
     else:
+        # The card goes to stdout so it stays pipeable; the verdict goes to stderr so a
+        # reader who ran this without redirecting still sees the answer.
         sys.stdout.write(rendered_card.decode("utf-8"))
-    return 1 if require_pass_failed else 0
+        print(
+            f"{_scorecard_status_summary(card)}, {len(card['honest_gaps'])} honest gaps",
+            file=sys.stderr,
+        )
+    return 1 if require_pass_failed or verdict_failed else 0
 
 
 def _scorecard_status_summary(card: dict) -> str:
@@ -1164,6 +1204,35 @@ def cmd_bench_export(args) -> int:
     return 0
 
 
+def console_main(argv=None) -> int:
+    """The installed command: turn an expected refusal into a message, not a stack trace.
+
+    ``main`` stays the testable core and keeps raising, so callers that want the exception
+    still get it. This wrapper is what the console script runs, and the refusals it catches
+    already carry the useful sentence — a traceback in front of one adds only the author's
+    source paths. Genuine defects still need their trace, so ``ARTIFACTFORGE_TRACEBACK``
+    re-raises everything untouched.
+    """
+    if os.environ.get("ARTIFACTFORGE_TRACEBACK"):
+        return main(argv)
+    try:
+        return main(argv)
+    except ImportError as exc:
+        print(
+            f"artifactforge: this command needs the parser oracles ({exc}).\n"
+            '  install them with: pip install "artifactforge[dev]"',
+            file=sys.stderr,
+        )
+        return 2
+    except (ValueError, OSError) as exc:
+        print(f"artifactforge: {exc}", file=sys.stderr)
+        print(
+            "  set ARTIFACTFORGE_TRACEBACK=1 to see where this came from",
+            file=sys.stderr,
+        )
+        return 2
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="artifactforge", description=__doc__)
     p.add_argument("--version", action="version", version=__version__)
@@ -1267,6 +1336,14 @@ def main(argv=None) -> int:
     )
     fr.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
     fr.set_defaults(func=fixture_commands.cmd_fixture_release)
+
+    fe = fsub.add_parser(
+        "extract", help="verify a release archive and write it back as a usable fixture"
+    )
+    fe.add_argument("archive", help="uncompressed .tar produced by 'fixture release'")
+    fe.add_argument("output", help="new fixture directory (must not already exist)")
+    fe.add_argument("--json", action="store_true", help="emit canonical machine-readable JSON")
+    fe.set_defaults(func=fixture_commands.cmd_fixture_extract)
 
     b = sub.add_parser(
         "bench", help="manage legacy diagnostics and Benchmark v3 one-shot evaluation"

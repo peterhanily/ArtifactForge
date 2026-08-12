@@ -25,7 +25,12 @@ from dataclasses import dataclass
 
 from artifactforge import __version__
 from artifactforge.compose.derivation import FIXTURE_V2_SCENE_DERIVATION
-from artifactforge.compose.scene import build_linux_scene, build_macos_scene, build_windows_scene
+from artifactforge.compose.scene import (
+    build_linux_scene,
+    build_macos_scene,
+    build_windows_download_only_scene,
+    build_windows_scene,
+)
 from artifactforge.content import ContentStore
 from artifactforge.fixture.abi import (
     FixtureProducerUnavailable,
@@ -237,8 +242,21 @@ def _build_scene(
         "staging_dir": str(staging),
     }
     if type(spec) is FixtureSpecV2:
+        # A v2 recipe selects its scene by story, not by family. The benchmark keeps calling
+        # the builders directly: its scenario shape is frozen at five questions per scene, so a
+        # story that changed that shape would have to re-enter Gate 4's registered attack
+        # surface before it could mean anything.
         arguments["causal_clock"] = spec.causal_clock
         arguments["derivation"] = FIXTURE_V2_SCENE_DERIVATION
+        if spec.story == "windows-dropper-v1":
+            return build_windows_scene(**arguments)
+        if spec.story == "windows-download-only-v1":
+            return build_windows_download_only_scene(**arguments)
+        if spec.story == "macos-quarantined-app-v1":
+            return build_macos_scene(**arguments)
+        if spec.story == "linux-autostart-v1":
+            return build_linux_scene(**arguments)
+        raise FixtureUsageError(f"fixture story has no registered builder: {spec.story!r}")
     if spec.family == "windows":
         return build_windows_scene(**arguments)
     if spec.family == "macos":
@@ -918,6 +936,42 @@ def _merge_logical_validity_report(primary: GateReport, logical: GateReport) -> 
     )
 
 
+def _windows_execution_surface_absences(manifest: FixtureManifestV2) -> list[str]:
+    """Check the absences the download-only story asserts, one named surface at a time.
+
+    Reporting "no execution artifacts were found" from a single sweep would pass just as
+    happily if the sweep itself were broken.  Each surface is therefore looked for by its own
+    exact guest path, and named in its own failure.
+    """
+    username = manifest.recipe.profile.username
+    surfaces = (
+        (
+            "Task definition",
+            lambda path: path.startswith("C:\\Windows\\System32\\Tasks\\ArtifactForge\\"),
+        ),
+        (
+            "Shell Link",
+            lambda path: path
+            == (
+                f"C:\\Users\\{username}\\AppData\\Roaming\\Microsoft\\Windows\\"
+                "Start Menu\\Programs\\ArtifactForgeMaintenance.lnk"
+            ),
+        ),
+        ("Amcache hive", lambda path: path == "C:\\Windows\\AppCompat\\Programs\\Amcache.hve"),
+        ("SOFTWARE hive", lambda path: path == "C:\\Windows\\System32\\config\\SOFTWARE"),
+        ("Prefetch record", lambda path: path.startswith("C:\\Windows\\Prefetch\\")),
+    )
+    failures = []
+    for label, matches in surfaces:
+        found = sorted(node.guest_path for node in manifest.payload.files if matches(node.guest_path))
+        if found:
+            failures.append(
+                f"v2 logical Windows download-only assurance forbids a {label}: "
+                + ", ".join(found)
+            )
+    return failures
+
+
 def _v2_logical_assurance_failures(
     manifest: FixtureManifestRecord,
     artifacts: Path,
@@ -1086,6 +1140,11 @@ def _v2_logical_assurance_failures(
             failures.append(
                 "v2 logical Windows Zone.Identifier-bearing target is not an emitted PE"
             )
+
+        if manifest.recipe.story == "windows-download-only-v1":
+            # Arrival is evidenced above; from here the story's claim is what is missing.
+            failures.extend(_windows_execution_surface_absences(manifest))
+            return failures
 
         task_nodes = [
             node

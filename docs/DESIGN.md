@@ -250,8 +250,8 @@ verified private snapshot with `readelf`, `objdump`, `file`, `desktop-file-valid
 non-executing Bash history round trip. The Windows canaries load task XML into an unregistered
 in-memory definition, open a Shell Link without `Save`, `Resolve`, or `Run`, and call
 `RtlDecompressBufferEx` only for the declared Prefetch output. Hosted schema-v6 runs on the
-preceding source revision were diagnostic and incomplete. The first complete passing result
-for current source remains pending schema-v7 confirmation.
+preceding source revision were diagnostic and incomplete. Hosted schema-v7 run 30944614694
+recorded the first complete passing result.
 
 ### Gate 4: solvability
 

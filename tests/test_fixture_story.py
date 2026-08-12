@@ -209,6 +209,145 @@ def test_an_untouched_download_only_manifest_declares_no_absence_failure(tmp_pat
 
     _spec_, _root, manifest = _download_only(tmp_path)
     assert operations._windows_execution_surface_absences(manifest) == []
+    assert operations._windows_withheld_instant_absences(manifest) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "label"),
+    [
+        ("creation_unix_ns", "creation"),
+        ("access_unix_ns", "access"),
+        ("write_unix_ns", "write"),
+        ("change_unix_ns", "change"),
+    ],
+)
+def test_each_withheld_instant_turns_the_absence_claim_red(tmp_path, field, label):
+    """The inventory is unchanged, so here only a stamp can betray the withheld event."""
+    from artifactforge.fixture import operations
+
+    spec, _root, manifest = _download_only(tmp_path)
+    executed = spec.causal_clock.windows().executed.unix_ns
+    node = manifest.payload.files[0]
+    metadata = node.metadata
+    stamped = node.__class__(
+        **{
+            **{
+                name: getattr(node, name)
+                for name in node.__dataclass_fields__
+            },
+            "metadata": metadata.__class__(
+                **{
+                    **{
+                        name: getattr(metadata, name)
+                        for name in metadata.__dataclass_fields__
+                    },
+                    field: executed,
+                }
+            ),
+        }
+    )
+    object.__setattr__(
+        manifest.payload, "files", (stamped, *manifest.payload.files[1:])
+    )
+    failures = operations._windows_withheld_instant_absences(manifest)
+    assert len(failures) == 1
+    assert "execution instant" in failures[0]
+    assert f"{label} time" in failures[0]
+    assert node.guest_path in failures[0]
+
+
+def test_stamping_the_download_with_the_execution_instant_turns_assurance_red(
+    tmp_path, monkeypatch
+):
+    """MUTATION: stamp the downloaded PE's last access at the execution instant.
+
+    Nothing is planted and nothing is withdrawn, so every surface absence stays green: the
+    inventory is the same four artifacts at the same four guest paths.  The mutation lands in
+    the last mile of projection, after the scene's declaration has been checked, so only a
+    check reading the metadata actually emitted can see it.
+    """
+    from artifactforge.compose import fixture_scene_v2
+
+    spec = _spec("windows", "windows-download-only-v1", seed_hex="7c" * 32)
+    executed = spec.causal_clock.windows().executed.unix_ns
+    projected = fixture_scene_v2._windows_metadata
+
+    def stamp_execution(*, created, accessed, written, changed, zone_identifier=None):
+        return projected(
+            created=created,
+            accessed=executed if zone_identifier is not None else accessed,
+            written=written,
+            changed=changed,
+            zone_identifier=zone_identifier,
+        )
+
+    monkeypatch.setattr(fixture_scene_v2, "_windows_metadata", stamp_execution)
+    root = tmp_path / "stamped-download"
+    manifest = build_fixture(spec, root)
+    marked = [
+        node
+        for node in manifest.payload.files
+        if any(blob.name == "Zone.Identifier" for blob in node.metadata.streams)
+    ]
+    assert [node.metadata.access_unix_ns for node in marked] == [executed]
+
+    result = verify_fixture(root, assurance=True)
+    # The fixture is canonical and reproduces exactly.  It does not fail; it lies.
+    assert result.integrity_ok
+    assert not result.reproduction_failures
+    assert result.assurance_ok is False
+    assert any(
+        "download-only" in failure
+        and "execution instant" in failure
+        and marked[0].guest_path in failure
+        for report in result.assurance_reports
+        for failure in report.fails
+    ), result.assurance_reports
+
+
+@pytest.mark.parametrize(
+    ("column", "message"),
+    [
+        ("opened", "History must record no opened download"),
+        ("end_time", "History forbids a withheld instant as end_time"),
+    ],
+)
+def test_a_history_that_records_execution_turns_assurance_red(
+    tmp_path, monkeypatch, column, message
+):
+    """MUTATION: let Chromium itself carry the execution instant.
+
+    The row checks above read paths, URLs and byte counts, and Gate 1 accepts an opened row
+    whose last access follows its end time, so this is the story's claim in the browser's own
+    words rather than in the manifest's.
+    """
+    from artifactforge.compose import scene as scene_builders
+
+    spec = _spec("windows", "windows-download-only-v1", seed_hex="7c" * 32)
+    executed_us = spec.causal_clock.windows().executed.filetime // 10
+    real_download = scene_builders.ChromiumDownload
+    override = (
+        {"opened": True, "last_access_time_windows_us": executed_us}
+        if column == "opened"
+        else {"end_time_windows_us": executed_us}
+    )
+
+    def executed_download(**fields):
+        return real_download(**{**fields, **override})
+
+    monkeypatch.setattr(scene_builders, "ChromiumDownload", executed_download)
+    root = tmp_path / f"history-{column}"
+    build_fixture(spec, root)
+
+    result = verify_fixture(root, assurance=True)
+    assert result.integrity_ok
+    assert not result.reproduction_failures
+    assert result.assurance_ok is False
+    assert any(
+        message in failure
+        for report in result.assurance_reports
+        for failure in report.fails
+    ), result.assurance_reports
 
 
 def _download_only_projection_case(root):

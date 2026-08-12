@@ -24,8 +24,10 @@ are absent. That absence is the story's claim, so it is asserted rather than ass
 declares the exact surfaces it withholds, projection refuses a wrong declaration, smuggled
 execution truth or a withheld artifact served anyway, and logical assurance checks each surface
 by its own exact guest path. No artifact in the story carries the execution instant, because a
-last-access stamped at execution would assert the event the story withholds. Every one of those
-checks has a mutation that turns it red.
+last-access stamped at execution would assert the event the story withholds: every emitted stamp
+must be one of the two arrival instants, and the History's own download rows must record no
+opened download and no withheld instant. Every one of those checks has a mutation that turns it
+red.
 
 `inventory.measure_change_visibility` probes whether a same-size in-place rewrite is visible
 in the host filesystem's stat timestamps, which is the exact capability the snapshot

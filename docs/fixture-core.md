@@ -157,7 +157,8 @@ build if that declaration is wrong, if the scene carries execution truth, or if 
 artifact is served anyway. Its logical assurance then checks each withheld surface by its own
 exact guest path and reports it in its own failure. No artifact in that story carries the
 execution instant, because a last-access stamped at execution would assert the event the story
-withholds.
+withholds: every emitted stamp must be one of the two arrival instants, and the History's own
+download rows must record no opened download and no withheld instant.
 
 Stories are a fixture concept. The benchmark keeps calling the scene builders directly: its
 scenario shape is frozen at five questions per scene, so a story that changed that shape would

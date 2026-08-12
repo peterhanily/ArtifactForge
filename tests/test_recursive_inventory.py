@@ -30,6 +30,7 @@ def _fixture_spec() -> FixtureSpecV2:
     return FixtureSpecV2.create(
         fixture_id="nested-linux-fixture",
         family="linux",
+        story="linux-autostart-v1",
         profile=ProfileSpecV2("linux-glibc-x86_64-loose-v2", "linux-01", "v"),
         seed_hex="71" * 32,
     )

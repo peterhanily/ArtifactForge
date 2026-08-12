@@ -34,6 +34,13 @@ from artifactforge.fixture.operations import (
 )
 
 
+_STORY_IDS = {
+    "windows": "windows-dropper-v1",
+    "macos": "macos-quarantined-app-v1",
+    "linux": "linux-autostart-v1",
+}
+
+
 def _spec(family: str = "windows") -> FixtureSpecV2:
     if family == "windows":
         profile = ProfileSpecV2("windows-loose-v2", "WKSTN-01", "v")
@@ -52,6 +59,7 @@ def _spec(family: str = "windows") -> FixtureSpecV2:
     return FixtureSpecV2.create(
         fixture_id=fixture_id,
         family=family,
+        story=_STORY_IDS[family],
         profile=profile,
         seed_hex=seed_hex,
     )
@@ -120,14 +128,14 @@ def test_builds_canonical_answer_free_fixture_and_verifies(tmp_path, family, exp
         served_paths = tuple(entry.served_path for entry in manifest.payload.files)
         assert served_paths == (
             "home/v/.bash_history",
-            "home/v/.config/autostart/artifactforge-1-update-check.desktop",
-            "home/v/.config/autostart/artifactforge-2-af-sync.desktop",
-            "home/v/.config/autostart/artifactforge-3-backup-watch.desktop",
-            "home/v/.local/bin/af-sync",
-            "home/v/.local/bin/backup-watch",
-            "home/v/.local/bin/cache-helper",
-            "home/v/.local/bin/network-watch",
-            "home/v/.local/bin/update-check",
+            "home/v/.config/autostart/artifactforge-1-session-helper.desktop",
+            "home/v/.config/autostart/artifactforge-2-thumbnail-helper.desktop",
+            "home/v/.config/autostart/artifactforge-3-cloud-watch.desktop",
+            "home/v/.local/bin/cloud-watch",
+            "home/v/.local/bin/search-index",
+            "home/v/.local/bin/session-check",
+            "home/v/.local/bin/session-helper",
+            "home/v/.local/bin/thumbnail-helper",
         )
         assert tuple(entry.guest_path for entry in manifest.payload.files) == tuple(
             "/" + path for path in served_paths

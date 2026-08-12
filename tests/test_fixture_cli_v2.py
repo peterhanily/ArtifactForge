@@ -60,6 +60,7 @@ def _linux_manifest(
     spec = FixtureSpecV2.create(
         fixture_id="cli-v2",
         family="linux",
+        story="linux-autostart-v1",
         profile=profile,
         seed_hex="4" * 64,
     )

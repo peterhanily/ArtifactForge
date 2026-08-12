@@ -25,7 +25,12 @@ from dataclasses import dataclass
 
 from artifactforge import __version__
 from artifactforge.compose.derivation import FIXTURE_V2_SCENE_DERIVATION
-from artifactforge.compose.scene import build_linux_scene, build_macos_scene, build_windows_scene
+from artifactforge.compose.scene import (
+    build_linux_scene,
+    build_macos_scene,
+    build_windows_download_only_scene,
+    build_windows_scene,
+)
 from artifactforge.content import ContentStore
 from artifactforge.fixture.abi import (
     FixtureProducerUnavailable,
@@ -237,8 +242,21 @@ def _build_scene(
         "staging_dir": str(staging),
     }
     if type(spec) is FixtureSpecV2:
+        # A v2 recipe selects its scene by story, not by family. The benchmark keeps calling
+        # the builders directly: its scenario shape is frozen at five questions per scene, so a
+        # story that changed that shape would have to re-enter Gate 4's registered attack
+        # surface before it could mean anything.
         arguments["causal_clock"] = spec.causal_clock
         arguments["derivation"] = FIXTURE_V2_SCENE_DERIVATION
+        if spec.story == "windows-dropper-v1":
+            return build_windows_scene(**arguments)
+        if spec.story == "windows-download-only-v1":
+            return build_windows_download_only_scene(**arguments)
+        if spec.story == "macos-quarantined-app-v1":
+            return build_macos_scene(**arguments)
+        if spec.story == "linux-autostart-v1":
+            return build_linux_scene(**arguments)
+        raise FixtureUsageError(f"fixture story has no registered builder: {spec.story!r}")
     if spec.family == "windows":
         return build_windows_scene(**arguments)
     if spec.family == "macos":
@@ -918,6 +936,84 @@ def _merge_logical_validity_report(primary: GateReport, logical: GateReport) -> 
     )
 
 
+def _windows_execution_surface_absences(manifest: FixtureManifestV2) -> list[str]:
+    """Check the absences the download-only story asserts, one named surface at a time.
+
+    Reporting "no execution artifacts were found" from a single sweep would pass just as
+    happily if the sweep itself were broken.  Each surface is therefore looked for by its own
+    exact guest path, and named in its own failure.
+    """
+    username = manifest.recipe.profile.username
+    surfaces = (
+        (
+            "Task definition",
+            lambda path: path.startswith("C:\\Windows\\System32\\Tasks\\ArtifactForge\\"),
+        ),
+        (
+            "Shell Link",
+            lambda path: path
+            == (
+                f"C:\\Users\\{username}\\AppData\\Roaming\\Microsoft\\Windows\\"
+                "Start Menu\\Programs\\ArtifactForgeMaintenance.lnk"
+            ),
+        ),
+        ("Amcache hive", lambda path: path == "C:\\Windows\\AppCompat\\Programs\\Amcache.hve"),
+        ("SOFTWARE hive", lambda path: path == "C:\\Windows\\System32\\config\\SOFTWARE"),
+        ("Prefetch record", lambda path: path.startswith("C:\\Windows\\Prefetch\\")),
+    )
+    failures = []
+    for label, matches in surfaces:
+        found = sorted(node.guest_path for node in manifest.payload.files if matches(node.guest_path))
+        if found:
+            failures.append(
+                f"v2 logical Windows download-only assurance forbids a {label}: "
+                + ", ".join(found)
+            )
+    return failures
+
+
+def _windows_withheld_instant_absences(manifest: FixtureManifestV2) -> list[str]:
+    """Check that no emitted stamp carries an instant the download-only story withholds.
+
+    A short inventory is only half of the claim.  Nothing ran, so nothing may be stamped as
+    though it had: a last access at ``executed`` asserts the withheld event exactly as loudly
+    as a Prefetch record would, and the surface sweep above cannot see it because it reads
+    guest paths.  Arrival is the only thing that happened here, so the two arrival instants
+    are the only ones a stamp may carry, and every other instant is named on its own.
+    """
+    timeline = manifest.recipe.causal_clock.windows()
+    arrival = (timeline.host_initialized.unix_ns, timeline.file_created.unix_ns)
+    withheld = {
+        timeline.run_configured.unix_ns: "run-key configuration",
+        timeline.executed.unix_ns: "execution",
+        timeline.prefetch_updated.unix_ns: "prefetch update",
+        timeline.amcache_observed.unix_ns: "Amcache observation",
+    }
+    failures = []
+    for node in manifest.payload.files:
+        metadata = node.metadata
+        if type(metadata) is not WindowsMetadataV2:
+            failures.append(
+                "v2 logical Windows download-only assurance requires Windows metadata on "
+                f"{node.guest_path}"
+            )
+            continue
+        for label, value in (
+            ("creation", metadata.creation_unix_ns),
+            ("access", metadata.access_unix_ns),
+            ("write", metadata.write_unix_ns),
+            ("change", metadata.change_unix_ns),
+        ):
+            if value in arrival:
+                continue
+            failures.append(
+                "v2 logical Windows download-only assurance forbids the "
+                f"{withheld.get(value, 'non-arrival')} instant as the {label} time of "
+                f"{node.guest_path}"
+            )
+    return failures
+
+
 def _v2_logical_assurance_failures(
     manifest: FixtureManifestRecord,
     artifacts: Path,
@@ -1086,6 +1182,34 @@ def _v2_logical_assurance_failures(
             failures.append(
                 "v2 logical Windows Zone.Identifier-bearing target is not an emitted PE"
             )
+
+        if manifest.recipe.story == "windows-download-only-v1":
+            # Arrival is evidenced above; from here the story's claim is what is missing.
+            failures.extend(_windows_execution_surface_absences(manifest))
+            failures.extend(_windows_withheld_instant_absences(manifest))
+            # Chromium's own record of the same claim.  Row times are free-running microsecond
+            # values rather than clock instants, so only the withheld instants can be named
+            # here; the emitted stamps are checked exactly above.
+            timeline = manifest.recipe.causal_clock.windows()
+            withheld_us = {
+                timeline.run_configured.filetime // 10,
+                timeline.executed.filetime // 10,
+                timeline.prefetch_updated.filetime // 10,
+                timeline.amcache_observed.filetime // 10,
+            }
+            for row in download_rows:
+                if (row.get("opened"), row.get("last_access_time")) != (0, 0):
+                    failures.append(
+                        "v2 logical Windows download-only History must record no opened "
+                        f"download: {row.get('target_path')}"
+                    )
+                for column in ("start_time", "end_time"):
+                    if row.get(column) in withheld_us:
+                        failures.append(
+                            "v2 logical Windows download-only History forbids a withheld "
+                            f"instant as {column}: {row.get('target_path')}"
+                        )
+            return failures
 
         task_nodes = [
             node

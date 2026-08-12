@@ -240,6 +240,7 @@ def windows_fixture(tmp_path_factory) -> Path:
     spec = FixtureSpecV2.create(
         fixture_id="native-windows-attestation-test",
         family="windows",
+        story="windows-dropper-v1",
         profile=ProfileSpecV2(
             id="windows-loose-v2",
             hostname="WKSTN-17",

@@ -24,6 +24,13 @@ ROOT = Path(__file__).parents[1]
 V1_SPEC = ROOT / "examples" / "fixtures" / "windows-loose-v1.json"
 
 
+_STORY_IDS = {
+    "windows": "windows-dropper-v1",
+    "macos": "macos-quarantined-app-v1",
+    "linux": "linux-autostart-v1",
+}
+
+
 def _args(**values):
     return argparse.Namespace(**values)
 
@@ -37,6 +44,7 @@ def _spec_path(tmp_path: Path, *, family: str = "windows") -> Path:
     spec = FixtureSpecV2.create(
         fixture_id=f"{family}-cli-v2",
         family=family,
+        story=_STORY_IDS[family],
         profile=ProfileSpecV2(
             id=profile_id,
             hostname=hostname,

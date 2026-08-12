@@ -32,6 +32,13 @@ from artifactforge.fixture.model_v2 import (
 from artifactforge.fixture.operations import build_fixture
 
 
+_STORY_IDS = {
+    "windows": "windows-dropper-v1",
+    "macos": "macos-quarantined-app-v1",
+    "linux": "linux-autostart-v1",
+}
+
+
 def _spec(family: str = "windows") -> FixtureSpecV2:
     profiles = {
         "windows": "windows-loose-v2",
@@ -46,6 +53,7 @@ def _spec(family: str = "windows") -> FixtureSpecV2:
     return FixtureSpecV2.create(
         fixture_id=fixture_ids[family],
         family=family,
+        story=_STORY_IDS[family],
         profile=ProfileSpecV2(
             id=profiles[family],
             hostname=f"{family}-01",

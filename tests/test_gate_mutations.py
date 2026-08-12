@@ -270,6 +270,47 @@ def test_inertness_reddens_when_an_indicator_could_be_real(tmp_path):
     assert any("RFC 2606" in f for f in new), new
 
 
+@pytest.mark.parametrize(
+    ("label", "indicator"),
+    [
+        ("host", "https://real-company-cdn.co.uk/payload"),
+        ("address", "beacon to 8.8.8.8 now"),
+    ],
+)
+def test_inertness_reddens_when_a_utf16le_indicator_could_be_real(tmp_path, label, indicator):
+    """MUTATION: hide the indicator in UTF-16LE, the encoding Windows text formats use.
+
+    Registry hives, Shell Link StringData and Task XML all store text as UTF-16LE. An
+    ASCII-only scan caught this indicator in a PE and passed it silently in a hive, which is
+    the one place a Windows scene actually keeps strings.
+    """
+    task = _windows(tmp_path)
+    before = inertness.run(task.directory)
+
+    with open(_persisted_pe(task), "ab") as f:
+        f.write(indicator.encode("utf-16-le"))
+
+    new = _new_fails(before, inertness.run(task.directory))
+    expected = "RFC 2606" if label == "host" else "RFC 5737"
+    assert any(expected in f for f in new), new
+
+
+def test_inertness_accepts_the_task_namespace_but_not_its_host(tmp_path):
+    """The exempt thing is the exact namespace URI, not schemas.microsoft.com."""
+    task = _windows(tmp_path)
+    before = inertness.run(task.directory)
+    assert before.ok, before.fails
+
+    with open(_persisted_pe(task), "ab") as f:
+        f.write(b"http://schemas.microsoft.com/windows/2004/02/mit/task")
+    assert not _new_fails(before, inertness.run(task.directory))
+
+    with open(_persisted_pe(task), "ab") as f:
+        f.write("https://schemas.microsoft.com/anything-else".encode("utf-16-le"))
+    new = _new_fails(before, inertness.run(task.directory))
+    assert any("RFC 2606" in f for f in new), new
+
+
 def test_inertness_reddens_when_the_code_section_is_not_inert(tmp_path):
     """MUTATION: write real instructions after the ret."""
     task = _windows(tmp_path)

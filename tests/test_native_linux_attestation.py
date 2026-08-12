@@ -84,6 +84,7 @@ def linux_fixture(tmp_path_factory) -> Path:
     spec = FixtureSpecV2.create(
         fixture_id="native-linux-attestation-test",
         family="linux",
+        story="linux-autostart-v1",
         profile=ProfileSpecV2(
             id="linux-glibc-x86_64-loose-v2",
             hostname="ws-lnx-17",

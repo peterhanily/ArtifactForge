@@ -990,8 +990,15 @@ def _verify_metadata(members: tuple[tarfile.TarInfo, ...]) -> list[str]:
     return failures
 
 
-def verify_release_archive(path: Path | str | int) -> ArchiveVerificationResult:
-    """Validate archive structure, metadata and every manifest-bound payload byte."""
+def _verified_archive(
+    path: Path | str | int,
+) -> tuple[ArchiveVerificationResult, "_FixtureSnapshot | None"]:
+    """Validate an archive and return the capture it reconstructs, if it reconstructs one.
+
+    Extraction must not re-derive the tree by a second route: whatever it writes has to be the
+    exact object verification already accepted, or the two could disagree.
+    """
+    reconstructed: _FixtureSnapshot | None = None
     payload, members, files = _read_archive(path)
     member_names = tuple(member.name + (
         "/" if member.isdir() and not member.name.endswith("/") else "") for member in members)
@@ -1074,7 +1081,7 @@ def verify_release_archive(path: Path | str | int) -> ArchiveVerificationResult:
                 for failure in reproduction.failures
             )
 
-    return ArchiveVerificationResult(
+    result = ArchiveVerificationResult(
         ok=not failures,
         failures=tuple(failures),
         manifest=manifest,
@@ -1082,6 +1089,36 @@ def verify_release_archive(path: Path | str | int) -> ArchiveVerificationResult:
         size=len(payload),
         members=member_names,
     )
+    return result, (reconstructed if result.ok else None)
+
+
+def verify_release_archive(path: Path | str | int) -> ArchiveVerificationResult:
+    """Validate archive structure, metadata and every manifest-bound payload byte."""
+    return _verified_archive(path)[0]
+
+
+def extract_release_archive(
+    source: Path | str | int, destination: Path | str
+) -> ArchiveVerificationResult:
+    """Write a verified release archive back out as a usable fixture.
+
+    `release` emits canonical USTAR metadata, which normalises modes to 0755/0644 for
+    determinism, while a fixture carrier requires 0700/0600. Plain `tar -x` therefore produces
+    a tree this project's own `verify` rejects. Extraction restores the carrier modes, so the
+    round trip closes. The archive is fully verified first and nothing is written unless it
+    passes, and an existing destination is refused rather than merged into.
+    """
+    result, snapshot = _verified_archive(source)
+    if not result.ok or snapshot is None:
+        raise FixtureArchiveError(
+            "refusing to extract an archive that failed verification: "
+            + "; ".join(result.failures or ("archive did not reconstruct its capture",))
+        )
+    target = Path(destination)
+    if target.exists() or target.is_symlink():
+        raise FixtureArchiveError(f"refusing existing extraction destination: {target}")
+    _materialize_snapshot(snapshot, target)
+    return result
 
 
 def _publish_archive_inode(source_fd: int, parent_fd: int, output_name: str) -> None:

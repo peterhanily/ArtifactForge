@@ -1,17 +1,17 @@
 {
   "schema": "artifactforge-fixture-spec-v2",
   "purpose": "public-reproducible-fixture",
-  "fixture_id": "macos-quarantined-app-001",
-  "family": "macos",
-  "story": "macos-quarantined-app-v1",
+  "fixture_id": "windows-download-only-001",
+  "family": "windows",
+  "story": "windows-download-only-v1",
   "profile": {
-    "id": "macos-14-loose-v2",
-    "hostname": "mac-01",
+    "id": "windows-loose-v2",
+    "hostname": "WKSTN-02",
     "username": "v"
   },
   "seed_hex": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
   "causal_clock": {
     "profile": "artifactforge-causal-clock-v1",
-    "anchor_unix_ns": 1750540855000000000
+    "anchor_unix_ns": 1681257103000000000
   }
 }

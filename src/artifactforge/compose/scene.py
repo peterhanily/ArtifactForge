@@ -210,6 +210,205 @@ def _linux_served_path(profile: HostProfile, guest_path: str) -> str:
     return guest_path[1:]
 
 
+def build_windows_download_only_scene(
+    store: ContentStore, *, skey: bytes, profile: HostProfile,
+    scene_dir: str, staging_dir: str,
+    causal_clock: CausalClockSpec | None = None,
+    derivation: SceneDerivation = BENCHMARK_SCENE_DERIVATION,
+) -> Scene:
+    """One completed download that was never run.
+
+    The dropper scene answers "what did this program do".  This one answers the narrower
+    question a responder asks first: which of these files came from the web, and is there any
+    evidence it executed?  Provenance is present — a completed Chromium download row and the
+    logical mark of the web on exactly one resident PE — while every execution and persistence
+    surface is absent by construction.  That absence is the claim, so the fixture's logical
+    assurance asserts it rather than merely not looking for it.
+    """
+    derivation = _scene_derivation(derivation)
+    derivation.validate_key(skey)
+    timeline = _causal_clock(skey, causal_clock).windows()
+    downloads_dir = f"{profile.home_dir}\\Downloads"
+
+    downloaded_name = derivation.pick(skey, "downloaded-name", pools.MALWARE_NAMES)
+    settled_names = derivation.pick_many(skey, "settled", pools.BENIGN_NAMES, 2)
+    downloaded_path = f"{downloads_dir}\\{downloaded_name}"
+
+    # --- three equal-size resident binaries, one of which arrived over HTTP ------------
+    # Generation order and the stored row order are independent for the same reason the
+    # dropper keeps them apart: position must not become a shortcut to the answer.
+    resident_specs = _keyed_order(
+        derivation,
+        skey,
+        "windows-download-only-generation",
+        [("downloaded", downloaded_name), *(("settled", name) for name in settled_names)],
+        identity=lambda item: item[1],
+    )
+    resident = {}
+    resident_claims = {}
+    for role, name in resident_specs:
+        content = store.materialize("pe:" + derivation.content_seed(skey, f"{role}:{name}"))
+        resident[name] = content
+        path = downloaded_path if name == downloaded_name else _full_path(name)
+        resident_claims[name] = {
+            "role": role,
+            "name": name,
+            "path": path,
+            "size": len(content.bytes),
+            "sha256": content.sha256,
+            "sha1": content.sha1,
+            "md5": content.md5,
+            "imphash": content.imphash,
+            "marker": content.marker,
+        }
+        _write(staging_dir, name, content.bytes)
+
+    # The downloaded name comes from a different pool than the settled ones; if those pools ever
+    # overlap the scene silently loses a file rather than failing, so state the shape here.
+    if len(resident) != 3:
+        raise ValueError(
+            f"Windows download-only scene needs three distinct residents: {sorted(resident)}"
+        )
+    sizes = {len(content.bytes) for content in resident.values()}
+    if len(sizes) != 1:
+        raise ValueError(f"Windows download-only residents left the fixed-size PE profile: {sizes}")
+    downloaded = resident[downloaded_name]
+
+    # --- browser download history: one resident arrival, two completed-and-gone -------
+    # Chromium persists an empty BLOB in downloads.hash, so the candidate digest travels in a
+    # marked reserved URL exactly as it does in the dropper scene.  The two absent rows stop
+    # the history surface from being a one-row lookup.
+    absent_names = derivation.pick_many(
+        skey,
+        "windows-download-only-absent",
+        [name for name in pools.BENIGN_NAMES if name not in resident],
+        2,
+    )
+    download_specs = [
+        {
+            "kind": "resident",
+            "name": downloaded_name,
+            "path": downloaded_path,
+            "sha256": downloaded.sha256,
+            "size": len(downloaded.bytes),
+            "start": timeline.host_initialized.filetime // 10 + 30_000_000,
+            "end": timeline.file_created.filetime // 10,
+        }
+    ]
+    for index, name in enumerate(absent_names, start=1):
+        start = timeline.host_initialized.filetime // 10 + index * 10_000_000
+        download_specs.append(
+            {
+                "kind": f"absent-{index}",
+                "name": name,
+                "path": f"{downloads_dir}\\{name}",
+                "sha256": derivation.value(
+                    skey, "windows-download-only-decoy", str(index)
+                ).hex(),
+                "size": len(downloaded.bytes),
+                "start": start,
+                "end": start + 5_000_000,
+            }
+        )
+    download_specs = _keyed_order(
+        derivation,
+        skey,
+        "windows-download-only-row",
+        download_specs,
+        identity=lambda row: row["kind"],
+    )
+    download_rows = []
+    download_truth = None
+    for index, row in enumerate(download_specs):
+        digest = row["sha256"]
+        token = derivation.content_seed(skey, f"windows-download-only-referrer:{index}")[:12]
+        source_url = (
+            "https://downloads.artifactforge.invalid/ARTIFACTFORGE/sha256/"
+            f"{digest}/{row['name']}"
+        )
+        referrer_url = (
+            "https://portal.artifactforge.invalid/ARTIFACTFORGE/catalog/" + token
+        )
+        download_rows.append(
+            ChromiumDownload(
+                target_path=row["path"],
+                source_url=source_url,
+                referrer_url=referrer_url,
+                sha256=bytes.fromhex(digest),
+                size=row["size"],
+                start_time_windows_us=row["start"],
+                end_time_windows_us=row["end"],
+                # Never opened: this scene's whole claim is that nothing ran.
+                opened=False,
+                last_access_time_windows_us=0,
+            )
+        )
+        if row["kind"] == "resident":
+            download_truth = {
+                "target_path": row["path"],
+                "sha256": digest,
+                "size": row["size"],
+                "source_url": source_url,
+                "referrer_url": referrer_url,
+            }
+    if download_truth is None:
+        raise AssertionError("download-only history lost its resident download relation")
+    _write(
+        staging_dir,
+        "History",
+        build_chromium_history(tuple(download_rows), identity_seed=skey),
+    )
+
+    allowlist = sorted([*resident, "History"])
+    artifacts = suite.stage(scene_dir, staging_dir, allowlist)
+
+    join = {
+        "family": "windows",
+        "os": f"{profile.os_family} {profile.version}",
+        "host": profile.hostname,
+        "user": profile.username,
+        "residents": _keyed_order(
+            derivation,
+            skey,
+            "windows-download-only-resident-truth",
+            list(resident_claims.values()),
+            identity=lambda claim: claim["name"],
+        ),
+        "browser_download": download_truth,
+        "decoys": {
+            "binaries": len(resident),
+            "browser_downloads": len(download_rows),
+        },
+        # Named so the fixture's logical assurance can assert each absence rather than infer
+        # it from an inventory that happens to be short.
+        "absent_surfaces": [
+            "amcache",
+            "prefetch",
+            "run-key",
+            "scheduled-task",
+            "shell-link",
+        ],
+        "pivots": {
+            "browser_download": (
+                "completed-download content-addressed URL -> resident PE SHA256; "
+                "URL/referrer -> logical Zone.Identifier on that one PE"
+            ),
+            "never_executed": (
+                "no prefetch record, Amcache row, Run value, Task definition or Shell Link "
+                "names any resident PE; arrival is evidenced, execution is not"
+            ),
+        },
+    }
+    timestamp_roles = {
+        **{
+            name: (("artifact.file-created", timeline.file_created.unix_ns),)
+            for name in resident
+        },
+        "History": (("artifact.logical-updated", timeline.file_created.unix_ns),),
+    }
+    return Scene("windows", scene_dir, artifacts, join, timestamp_roles)
+
+
 def build_windows_scene(store: ContentStore, *, skey: bytes, profile: HostProfile,
                         scene_dir: str, staging_dir: str,
                         causal_clock: CausalClockSpec | None = None,

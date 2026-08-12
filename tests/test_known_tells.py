@@ -207,7 +207,7 @@ def test_hive_disclosure_and_consumer_claims_match_the_typed_profile():
 
 def test_public_evidenceforge_comment_is_not_denied_by_local_status_prose():
     documents = (
-        "README.md",
+        "docs/evidenceforge.md",
         "docs/ROADMAP.md",
         "integration/evidenceforge/README.md",
         "integration/evidenceforge/MAINTAINER_NOTE_DRAFT.md",

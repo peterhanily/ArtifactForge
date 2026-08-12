@@ -59,6 +59,7 @@ def _v2_manifest(
     spec = FixtureSpecV2.create(
         fixture_id="archive-v2",
         family="linux",
+        story="linux-autostart-v1",
         profile=ProfileSpecV2(
             id="linux-glibc-x86_64-loose-v2",
             hostname="linux-01",

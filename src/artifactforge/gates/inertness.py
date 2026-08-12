@@ -65,6 +65,9 @@ _MARKER_EXEMPT_FORMATS = frozenset({"quarantine-xattr"})
 # RFC 2606 reserved TLDs/domains, and RFC 5737 / RFC 3849 documentation address ranges.
 _RESERVED_TLD = (".example", ".invalid", ".test", ".localhost")
 _RESERVED_DOMAIN = ("example.com", "example.net", "example.org")
+# Namespace URIs a format cannot be valid without. These are identifiers rather than hosts to
+# reach, and the exact string is what is exempt — the host alone is not.
+_FORMAT_NAMESPACE_URIS = (b"http://schemas.microsoft.com/windows/2004/02/mit/task",)
 _DOC_NETS = ("192.0.2.", "198.51.100.", "203.0.113.", "2001:db8:")
 # Reverse-DNS prefixes belonging to real organisations. A bundle identifier is a namespaced
 # claim of authorship, and on macOS it is embedded in the code signature — so an ad-hoc-signed
@@ -1014,14 +1017,42 @@ def _elf_code_is_inert(data: bytes) -> tuple[bool, str]:
     )
 
 
+def _indicator_haystacks(data: bytes) -> tuple[bytes, ...]:
+    """The raw bytes, plus UTF-16LE text projected down to ASCII.
+
+    Registry hives, Shell Link `StringData` and Task XML store all text as UTF-16LE, so an
+    ASCII-only scan is blind to three of the Windows formats this project emits: a real
+    hostname is caught in a PE and missed in a hive. Both byte alignments are projected
+    because a wide run need not begin on an even offset.
+    """
+    haystacks = [data]
+    for start in (0, 1):
+        projected = data[start:].decode("utf-16-le", "ignore").encode("ascii", "ignore")
+        if projected:
+            haystacks.append(projected)
+    return tuple(haystacks)
+
+
 def _indicator_hygiene(r: GateReport, where: str, data: bytes):
-    for host in set(_URL.findall(data)):
+    hosts, bundles, addresses = set(), set(), set()
+    for haystack in _indicator_haystacks(data):
+        # An XML namespace URI is an identifier, not a destination: a Task Scheduler
+        # definition is invalid without this exact string and no reader resolves it. Only the
+        # exact URI is removed, so any other use of the same host is still caught.
+        scannable = haystack
+        for namespace in _FORMAT_NAMESPACE_URIS:
+            scannable = scannable.replace(namespace, b"")
+        hosts.update(_URL.findall(scannable))
+        bundles.update(_BUNDLE_ID.findall(haystack))
+        addresses.update(_IPV4.findall(haystack))
+
+    for host in hosts:
         h = host.decode("ascii", "replace").lower().rstrip(".")
         if h.endswith(_RESERVED_TLD) or h in _RESERVED_DOMAIN:
             continue
         r.fail(f"{where}: URL host {h!r} is not an RFC 2606 reserved name — a "
                        f"synthetic artifact must never name a host that could be real")
-    for bundle in set(_BUNDLE_ID.findall(data)):
+    for bundle in bundles:
         b = bundle.decode("ascii", "replace")
         low = b.lower().rstrip(".")
         if any(low == k or low.startswith(k + ".") for k in _PLATFORM_IDENTIFIERS):
@@ -1031,7 +1062,7 @@ def _indicator_hygiene(r: GateReport, where: str, data: bytes):
                    f"prefix — on macOS that is embedded in the code signature, so a synthetic "
                    f"binary would be asserting something false about them")
 
-    for ip in set(_IPV4.findall(data)):
+    for ip in addresses:
         s = ip.decode()
         if any(s.startswith(n) for n in _DOC_NETS) or s.startswith(("10.", "127.", "192.168.")):
             continue

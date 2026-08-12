@@ -12,6 +12,7 @@ from artifactforge.fixture.archive import (
     FixtureArchiveError,
     FixtureArchiveMismatch,
     create_release_archive,
+    extract_release_archive,
 )
 from artifactforge.fixture.abi import MANIFEST_ABIS
 from artifactforge.fixture.canonical import CanonicalJSONError, canonical_json_bytes
@@ -752,9 +753,39 @@ def cmd_release(args) -> int:
     return EXIT_OK
 
 
+def cmd_extract(args) -> int:
+    try:
+        result = extract_release_archive(args.archive, args.output)
+    except (CanonicalJSONError, FixtureArchiveError, FixtureValidationError,
+            FixtureUsageError, OSError) as exc:
+        return _usage_error(args, "extract", exc)
+    mapping = {
+        "archive": str(args.archive),
+        "command": "extract",
+        "fixture": str(args.output),
+        "fixture_id": result.manifest.recipe.fixture_id,
+        "ok": True,
+        "payload": _payload_summary(result.manifest),
+        "sha256": result.sha256,
+    }
+    _emit(
+        args,
+        mapping,
+        [
+            f"fixture extract: PASS — {args.output}",
+            f"  fixture id: {result.manifest.recipe.fixture_id}",
+            f"  archive:    {result.sha256}",
+            "  carrier modes restored; verify with: "
+            f"artifactforge fixture verify {args.output}",
+        ],
+    )
+    return EXIT_OK
+
+
 # The parent parser may prefer fully qualified handler names; keep both spellings stable.
 cmd_fixture_build = cmd_build
 cmd_fixture_verify = cmd_verify
 cmd_fixture_inspect = cmd_inspect
 cmd_fixture_diff = cmd_diff
 cmd_fixture_release = cmd_release
+cmd_fixture_extract = cmd_extract

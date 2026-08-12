@@ -100,9 +100,8 @@ and limitations documented in
   even when the persisted and orphan pivots still exist.
 - **Native decompression is still conditional.** A parse-only Windows canary uses
   `RtlGetCompressionWorkSpaceSize`/`RtlDecompressBufferEx` and compares the declared output
-  with the expected-size reader, but no hosted Windows result exists yet. Even a successful
-  hosted run would not show that Windows consumed or rejected bits after the declared output
-  size.
+  with the expected-size reader. Hosted run 30944614694 completed it. That run does not show
+  whether Windows consumed or rejected bits after the declared output size.
 - **The v17 API is compatibility-only.** Public `build_prefetch` and `prefetch_name_hash`
   retain byte-stable SCCA v17/XP behavior for callers and historical fixtures; current scenes
   call `build_prefetch_v30` explicitly. The still-unreleased `windows-loose-v2` identifier was
@@ -147,7 +146,7 @@ and limitations documented in
   only an unregistered in-memory `TaskDefinition.XmlText` created with
   `TaskService.Connect`/`NewTask(0)`. It never calls a registration method. A hosted schema-v6
   run on the preceding revision accepted the task before a later Shell Link contract failure.
-  A complete passing schema-v7 report for current source remains pending.
+  Hosted schema-v7 run 30944614694 then produced a complete passing report.
 - **Marked.** The UTF-16 description and owned URI contain `ARTIFACTFORGE`; the description
   states that the task is synthetic, inert, disabled and trigger-free.
 
@@ -181,7 +180,7 @@ and limitations documented in
   the private-copy path only with `WScript.Shell.CreateShortcut`; it never calls `Save`,
   `Resolve` or `Run`. A hosted schema-v6 run on the preceding revision reached this call, but
   WSH returned an empty target path for the link with no `LinkTargetIDList`. The schema-v7
-  contract records that state explicitly; a complete passing report remains pending.
+  contract records that state explicitly, and hosted run 30944614694 passed with it.
 - **Marked.** The Unicode display name ends with `[ARTIFACTFORGE SYNTHETIC]`.
 
 ## zone-identifier

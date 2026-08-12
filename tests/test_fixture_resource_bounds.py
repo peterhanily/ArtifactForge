@@ -459,7 +459,9 @@ def test_snapshot_budgets_stable_actual_bytes_and_rejects_stat_open_growth(
     assert sum(path.stat().st_size for path in destination.iterdir()) == 3
 
 
-def test_snapshot_binds_outer_stat_to_the_stable_read(monkeypatch, tmp_path):
+def test_snapshot_binds_outer_stat_to_the_stable_read(
+    monkeypatch, tmp_path, requires_visible_rewrites
+):
     monkeypatch.setattr(
         resources,
         "RESOURCE_POLICY",
@@ -529,7 +531,9 @@ def test_tree_inventory_binds_full_state_across_stat_open_gap(monkeypatch, tmp_p
     assert changed
 
 
-def test_tree_inventory_rejects_a_mixed_sibling_epoch(monkeypatch, tmp_path):
+def test_tree_inventory_rejects_a_mixed_sibling_epoch(
+    monkeypatch, tmp_path, requires_visible_rewrites
+):
     root = tmp_path / "artifacts"
     root.mkdir()
     (root / "a").write_bytes(b"old-a")
@@ -560,7 +564,7 @@ def test_tree_inventory_rejects_a_mixed_sibling_epoch(monkeypatch, tmp_path):
 
 
 def test_tree_inventory_rejects_content_toggled_back_before_revalidation(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, requires_visible_rewrites
 ):
     root = tmp_path / "artifacts"
     root.mkdir()
@@ -593,7 +597,9 @@ def test_tree_inventory_rejects_content_toggled_back_before_revalidation(
     assert changed
 
 
-def test_snapshot_rejects_a_mixed_sibling_epoch(monkeypatch, tmp_path):
+def test_snapshot_rejects_a_mixed_sibling_epoch(
+    monkeypatch, tmp_path, requires_visible_rewrites
+):
     source = tmp_path / "source"
     source.mkdir()
     (source / "a").write_bytes(b"old-a")

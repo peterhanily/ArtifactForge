@@ -230,6 +230,7 @@
         "purpose",
         "fixture_id",
         "family",
+        "story",
         "profile",
         "seed_hex",
         "causal_clock"
@@ -250,6 +251,14 @@
             "windows",
             "macos",
             "linux"
+          ]
+        },
+        "story": {
+          "enum": [
+            "linux-autostart-v1",
+            "macos-quarantined-app-v1",
+            "windows-download-only-v1",
+            "windows-dropper-v1"
           ]
         },
         "profile": {
@@ -283,6 +292,12 @@
                     "$ref": "#/$defs/windows_username"
                   }
                 }
+              },
+              "story": {
+                "enum": [
+                  "windows-download-only-v1",
+                  "windows-dropper-v1"
+                ]
               }
             }
           }
@@ -303,6 +318,9 @@
                     "const": "macos-14-loose-v2"
                   }
                 }
+              },
+              "story": {
+                "const": "macos-quarantined-app-v1"
               }
             }
           }
@@ -323,6 +341,9 @@
                     "const": "linux-glibc-x86_64-loose-v2"
                   }
                 }
+              },
+              "story": {
+                "const": "linux-autostart-v1"
               }
             }
           }

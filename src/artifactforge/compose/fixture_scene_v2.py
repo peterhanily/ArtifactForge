@@ -362,6 +362,45 @@ def _windows_download_zone(
     return source, stream
 
 
+_WINDOWS_EXECUTION_SURFACES = ("amcache", "prefetch", "run-key", "scheduled-task", "shell-link")
+
+
+def _windows_no_execution_surfaces(scene: Scene, loose: Mapping[str, bytes]) -> dict[str, str]:
+    """Assert the absences that are the download-only story's whole claim.
+
+    A short inventory is not evidence that execution left no trace; it is equally consistent
+    with a builder that forgot to write one.  So the scene must name the surfaces it is
+    withholding, and each one is then checked to be genuinely absent from both the private
+    truth and the served bytes.
+    """
+    declared = scene.join.get("absent_surfaces")
+    if not isinstance(declared, list) or tuple(declared) != _WINDOWS_EXECUTION_SURFACES:
+        raise FixtureSceneProjectionError(
+            "Windows download-only scene must declare the exact absent execution surfaces"
+        )
+    for key in ("scheduled_task", "shell_link", "persisted", "prefetch", "orphan_execution"):
+        if key in scene.join:
+            raise FixtureSceneProjectionError(
+                f"Windows download-only scene carries execution truth {key!r}"
+            )
+    forbidden = {
+        _WINDOWS_SOFTWARE_SOURCE,
+        _WINDOWS_AMCACHE_SOURCE,
+        WINDOWS_TASK_XML_SOURCE,
+        WINDOWS_SHELL_LINK_SOURCE,
+    }
+    present = sorted(
+        source
+        for source in loose
+        if source in forbidden or source.endswith(".pf")
+    )
+    if present:
+        raise FixtureSceneProjectionError(
+            "Windows download-only scene serves execution artifacts: " + ", ".join(present)
+        )
+    return {}
+
+
 def _windows_reference_artifacts(
     spec: FixtureSpecV2,
     scene: Scene,
@@ -515,8 +554,18 @@ def _project_windows(
     timeline = spec.causal_clock.windows()
     resident_paths = _windows_resident_paths(scene, loose)
     downloaded_source, zone_identifier = _windows_download_zone(scene, resident_paths)
-    reference_guest_paths = _windows_reference_artifacts(
-        spec, scene, resident_paths, loose
+    if spec.story == "windows-download-only-v1":
+        reference_guest_paths = _windows_no_execution_surfaces(scene, loose)
+    else:
+        reference_guest_paths = _windows_reference_artifacts(
+            spec, scene, resident_paths, loose
+        )
+    # Nothing ran in the download-only story, so no artifact may carry the execution instant:
+    # a last-access stamped at `executed` would assert exactly the event the story withholds.
+    last_touch = (
+        timeline.file_created.unix_ns
+        if spec.story == "windows-download-only-v1"
+        else timeline.executed.unix_ns
     )
     result: list[ProjectedFileV2] = []
     for source, data in loose.items():
@@ -526,7 +575,7 @@ def _project_windows(
             )
             metadata = _windows_metadata(
                 created=timeline.file_created.unix_ns,
-                accessed=timeline.executed.unix_ns,
+                accessed=last_touch,
                 written=timeline.file_created.unix_ns,
                 changed=timeline.file_created.unix_ns,
                 zone_identifier=zone_identifier if source == downloaded_source else None,
@@ -574,13 +623,13 @@ def _project_windows(
             _require_timestamps(
                 scene,
                 source,
-                {"artifact.logical-updated": timeline.executed.unix_ns},
+                {"artifact.logical-updated": last_touch},
             )
             metadata = _windows_metadata(
                 created=timeline.host_initialized.unix_ns,
-                accessed=timeline.executed.unix_ns,
-                written=timeline.executed.unix_ns,
-                changed=timeline.executed.unix_ns,
+                accessed=last_touch,
+                written=last_touch,
+                changed=last_touch,
             )
             guest_path = (
                 f"C:\\Users\\{spec.profile.username}\\AppData\\Local\\Chromium\\"

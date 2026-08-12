@@ -772,7 +772,9 @@ def test_descriptor_capture_is_bounded(corpus, monkeypatch):
         attestation.corpus_inventory(corpus)
 
 
-def test_descriptor_capture_rejects_change_then_restore_directory_race(corpus, monkeypatch):
+def test_descriptor_capture_rejects_change_then_restore_directory_race(
+    corpus, monkeypatch, requires_visible_rewrites
+):
     original_scandir = os.scandir
     raced = False
 
@@ -791,7 +793,9 @@ def test_descriptor_capture_rejects_change_then_restore_directory_race(corpus, m
         attestation.corpus_inventory(corpus)
 
 
-def test_descriptor_capture_rejects_change_then_restore_file_race(corpus, monkeypatch):
+def test_descriptor_capture_rejects_change_then_restore_file_race(
+    corpus, monkeypatch, requires_visible_rewrites
+):
     original_read = os.read
     original = (corpus / "a.bin").read_bytes()
     raced = False
@@ -1115,7 +1119,9 @@ def test_tree_depth_limit_applies_to_regular_children_not_only_directories(
         attestation.corpus_inventory(corpus)
 
 
-def test_tree_end_state_rejects_change_restore_of_an_earlier_file(corpus, monkeypatch):
+def test_tree_end_state_rejects_change_restore_of_an_earlier_file(
+    corpus, monkeypatch, requires_visible_rewrites
+):
     original_reader = attestation._read_regular_fd
     original_a = (corpus / "a.bin").read_bytes()
 

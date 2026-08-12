@@ -135,7 +135,7 @@ def test_public_evidenceforge_figures_are_bound_to_the_committed_measurement(ef_
     zeek = results["zeek_files"]
     forms = adapter["distinct_logical_identities_by_verified_seed_form"]
     expected = {
-        "README.md": [
+        "docs/evidenceforge.md": [
             f"{sysmon['host_logs']} hosts, {sysmon['hashed_records']} Sysmon records",
             f"all {adapter['records_recovered_and_verified']}\nrecovered and verified",
             f"resolving to {adapter['distinct_logical_identities']}\ndistinct",

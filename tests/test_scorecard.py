@@ -655,7 +655,9 @@ def test_scorecard_command_is_stable_and_prints_scoped_status(tmp_path, monkeypa
     paths = [tmp_path / "first.json", tmp_path / "second.json"]
     for path in paths:
         args = SimpleNamespace(n=40, out=str(path), check=None, gen_dir=None, scene=None)
-        assert cli_module.cmd_scorecard(args) == 0
+        # Gate 4 is red above, so the command must be too: the exit code carries the verdict
+        # without needing --require-pass. The card is still written, and still reproduces.
+        assert cli_module.cmd_scorecard(args) == 1
 
     assert paths[0].read_bytes() == paths[1].read_bytes()
     generated = json.loads(paths[0].read_text())
@@ -774,6 +776,36 @@ def test_scorecard_require_pass_is_an_absolute_current_source_gate_and_keeps_evi
         gen_dir=None,
         scene=None,
         require_pass=True,
+    )
+
+    assert cli_module.cmd_scorecard(args) == expected_code
+    assert load(output)["verdict"] == expected_verdict
+
+
+@pytest.mark.parametrize(
+    ("generator_gap", "benchmark_fail", "expected_code", "expected_verdict"),
+    (
+        (False, False, 0, "pass"),
+        (True, False, 0, "gap"),
+        (False, True, 1, "fail"),
+    ),
+)
+def test_scorecard_exit_code_carries_the_verdict_without_require_pass(
+    tmp_path, monkeypatch, generator_gap, benchmark_fail, expected_code, expected_verdict
+):
+    """A red gate must fail the command by default.
+
+    Without this the one command that defines "done" is the only one that cannot fail a
+    build. A declared gap stays green here on purpose: it is a named limitation, not a
+    broken result, and --require-pass is what rejects it.
+    """
+    output = tmp_path / "default.json"
+    _install_scorecard_gate_reports(
+        monkeypatch,
+        _release_reports(generator_gap=generator_gap, benchmark_fail=benchmark_fail),
+    )
+    args = SimpleNamespace(
+        n=40, out=os.fspath(output), check=None, gen_dir=None, scene=None
     )
 
     assert cli_module.cmd_scorecard(args) == expected_code
@@ -1357,17 +1389,19 @@ def test_scorecard_measurement_suite_cannot_print_a_reportable_score(tmp_path, c
     assert f"suite_id: {public['suite_id']}" in output
 
 
-def test_package_version_is_consistent_with_release_metadata(card):
+def test_package_version_is_consistent_with_release_metadata():
+    """The committed card is not compared here: it is frozen v0.5 evidence for an older
+    commit, and test_committed_scorecard_has_exact_measurement_and_source_provenance
+    already binds its version to pyproject.toml read at the card's own recorded commit."""
     with open(os.path.join(ROOT, "pyproject.toml"), "rb") as f:
         project_version = tomllib.load(f)["project"]["version"]
     with open(os.path.join(ROOT, "uv.lock"), "rb") as f:
         packages = tomllib.load(f)["package"]
     lock_version = next(p["version"] for p in packages if p["name"] == "artifactforge")
 
-    assert project_version == "0.5.0"
+    assert project_version == "0.6.0.dev0"
     assert __version__ == project_version
     assert lock_version == project_version
-    assert card["generator"]["artifactforge_version"] == project_version
 
 
 def test_ci_consumes_the_frozen_oracle_lock_in_every_project_lane():

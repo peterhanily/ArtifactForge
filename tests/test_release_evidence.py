@@ -21,6 +21,10 @@ import pytest
 
 from artifactforge import release_evidence as release
 
+# Derived so a package version bump needs no edit here; the class of staleness this
+# closes is exactly what the hard-coded dependency contract once hid.
+_VERSION = release.__version__
+
 
 def _sha256_b64(payload: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
@@ -79,12 +83,12 @@ def _set_nested(document: dict, path: tuple[str, ...], value) -> None:
 
 def _metadata_payload(requirements: tuple[str, ...] | None = None) -> bytes:
     if requirements is None:
-        return release._expected_package_metadata("0.5.0")
+        return release._expected_package_metadata(_VERSION)
     selected = release.EXPECTED_DEV_REQUIREMENTS if requirements is None else requirements
     lines = [
         "Metadata-Version: 2.4",
         "Name: artifactforge",
-        "Version: 0.5.0",
+        f"Version: {_VERSION}",
         "Requires-Python: >=3.11",
         "Provides-Extra: dev",
         *(f"Requires-Dist: {item}; extra == 'dev'" for item in selected),
@@ -99,7 +103,7 @@ def _pyproject_payload() -> bytes:
     return (
         "[project]\n"
         "name='artifactforge'\n"
-        "version='0.5.0'\n"
+        f"version={_VERSION!r}\n"
         f"description={release.EXPECTED_DESCRIPTION!r}\n"
         "requires-python='>=3.11'\n"
         "license={text='MIT'}\n"
@@ -107,7 +111,7 @@ def _pyproject_payload() -> bytes:
         "dependencies=[]\n"
         f"optional-dependencies.dev=[\n    {requirements},\n]\n"
         "[project.scripts]\n"
-        "artifactforge='artifactforge.cli:main'\n"
+        "artifactforge='artifactforge.cli:console_main'\n"
         "[build-system]\n"
         "requires=['hatchling==1.31.0']\n"
         "build-backend='hatchling.build'\n"
@@ -147,7 +151,7 @@ def _lock_payload() -> bytes:
         "",
         "[[package]]",
         'name = "artifactforge"',
-        'version = "0.5.0"',
+        f'version = "{_VERSION}"',
         'source = { editable = "." }',
         "",
         "[package.optional-dependencies]",
@@ -196,12 +200,12 @@ def _wheel(
     requirements: tuple[str, ...] | None = None,
     release_payload: bytes = b"# verifier\n",
     link_member: bool = False,
-    entry_point: bytes = b"[console_scripts]\nartifactforge = artifactforge.cli:main\n",
+    entry_point: bytes = b"[console_scripts]\nartifactforge = artifactforge.cli:console_main\n",
     release_mode: int = 0o644,
     extra_directory: bool = False,
     reverse_record: bool = False,
 ) -> bytes:
-    dist_info = "artifactforge-0.5.0.dist-info"
+    dist_info = f"artifactforge-{_VERSION}.dist-info"
     files = {
         f"{dist_info}/METADATA": _metadata_payload(requirements),
         f"{dist_info}/WHEEL": (
@@ -210,7 +214,7 @@ def _wheel(
             b"Root-Is-Purelib: true\n"
             b"Tag: py3-none-any\n"
         ),
-        "artifactforge/__init__.py": b'__version__ = "0.5.0"\n',
+        "artifactforge/__init__.py": f'__version__ = "{_VERSION}"\n'.encode(),
         "artifactforge/release_evidence.py": release_payload,
         f"{dist_info}/entry_points.txt": entry_point,
         f"{dist_info}/licenses/LICENSE": b"MIT\n",
@@ -256,11 +260,11 @@ def _sdist(
     extra_files: dict[str, bytes] | None = None,
     release_mode: int = 0o644,
 ) -> bytes:
-    root = "artifactforge-0.5.0"
+    root = f"artifactforge-{_VERSION}"
     files = {
         f"{root}/LICENSE": b"MIT\n",
         f"{root}/PKG-INFO": _metadata_payload(),
-        f"{root}/src/artifactforge/__init__.py": b'__version__ = "0.5.0"\n',
+        f"{root}/src/artifactforge/__init__.py": f'__version__ = "{_VERSION}"\n'.encode(),
         f"{root}/src/artifactforge/release_evidence.py": b"# verifier\n",
     }
     files.update({f"{root}/{name}": payload for name, payload in _material_payloads().items()})
@@ -283,7 +287,7 @@ def _sdist(
 
 
 def _raw_sbom(*, development: bool) -> dict:
-    root_ref = "artifactforge-1@0.5.0"
+    root_ref = f"artifactforge-1@{_VERSION}"
     components = []
     dependencies = [{"ref": root_ref}]
     if development:
@@ -328,7 +332,7 @@ def _raw_sbom(*, development: bool) -> dict:
                 "type": "library",
                 "bom-ref": root_ref,
                 "name": "artifactforge",
-                "version": "0.5.0",
+                "version": _VERSION,
                 "properties": [{"name": "uv:package:is_project_root", "value": "true"}],
             },
         },
@@ -340,7 +344,7 @@ def _raw_sbom(*, development: bool) -> dict:
 @lru_cache(maxsize=1)
 def _fixture_git_tree() -> str:
     _wheel_files, _wheel_modes, sdist_files, sdist_modes = release._validated_archive_payloads(
-        _wheel(), _sdist(), version="0.5.0"
+        _wheel(), _sdist(), version=_VERSION
     )
     source_files = {name: payload for name, payload in sdist_files.items() if name != "PKG-INFO"}
     source_modes = {name: mode for name, mode in sdist_modes.items() if name != "PKG-INFO"}
@@ -372,7 +376,7 @@ def repository(tmp_path):
     root.mkdir()
     files = {
         "LICENSE": b"MIT\n",
-        "src/artifactforge/__init__.py": b'__version__ = "0.5.0"\n',
+        "src/artifactforge/__init__.py": f'__version__ = "{_VERSION}"\n'.encode(),
         "src/artifactforge/release_evidence.py": b"# verifier\n",
     }
     files.update(_material_payloads())
@@ -390,8 +394,8 @@ def dist_pair(tmp_path):
     first.mkdir()
     second.mkdir()
     payloads = {
-        "artifactforge-0.5.0-py3-none-any.whl": _wheel(),
-        "artifactforge-0.5.0.tar.gz": _sdist(),
+        f"artifactforge-{_VERSION}-py3-none-any.whl": _wheel(),
+        f"artifactforge-{_VERSION}.tar.gz": _sdist(),
     }
     for directory in (first, second):
         for name, payload in payloads.items():
@@ -620,7 +624,7 @@ def test_source_snapshot_hashes_raw_tracked_bytes_despite_git_textconv(tmp_path,
 
 def test_create_refuses_nonidentical_builds(tmp_path, repository, dist_pair, monkeypatch):
     _patch_inputs(monkeypatch)
-    (dist_pair[1] / "artifactforge-0.5.0-py3-none-any.whl").write_bytes(b"different")
+    (dist_pair[1] / f"artifactforge-{_VERSION}-py3-none-any.whl").write_bytes(b"different")
     with pytest.raises(release.ReleaseEvidenceError, match="not byte-identical"):
         release.create_release_evidence(
             *dist_pair, tmp_path / "evidence", repository_root=repository
@@ -681,20 +685,20 @@ def test_wheel_record_tamper_is_detected():
     wheel[len(wheel) // 3] ^= 1
     with pytest.raises(release.ReleaseEvidenceError):
         release._inspect_wheel(
-            "artifactforge-0.5.0-py3-none-any.whl", bytes(wheel), version="0.5.0"
+            f"artifactforge-{_VERSION}-py3-none-any.whl", bytes(wheel), version=_VERSION
         )
 
 
 def test_wheel_dependency_marker_cannot_hide_an_unconditional_runtime_branch():
     wheel = _wheel(requirements=('definitely-evil; extra == "dev" or python_version >= "3.11"',))
     with pytest.raises(release.ReleaseEvidenceError, match="metadata|dev requirements"):
-        release._inspect_wheel("artifactforge-0.5.0-py3-none-any.whl", wheel, version="0.5.0")
+        release._inspect_wheel(f"artifactforge-{_VERSION}-py3-none-any.whl", wheel, version=_VERSION)
 
 
 def test_distribution_names_and_archive_paths_must_be_canonical():
     with pytest.raises(release.ReleaseEvidenceError, match="wheel filename"):
         release._inspect_wheel(
-            "artifactforge-EVIL-0.5.0-py3-none-any.whl", _wheel(), version="0.5.0"
+            f"artifactforge-EVIL-{_VERSION}-py3-none-any.whl", _wheel(), version=_VERSION
         )
 
 
@@ -710,30 +714,30 @@ def test_sdist_cannot_smuggle_a_repository_file_outside_git_inventory(repository
     monkeypatch.setattr(release, "_repository_source_paths", lambda _repo: allowed)
     hostile = _sdist(
         extra_files={
-            "artifactforge-0.5.0/.git/config": hidden.read_bytes(),
+            f"artifactforge-{_VERSION}/.git/config": hidden.read_bytes(),
         }
     )
-    release._inspect_sdist("artifactforge-0.5.0.tar.gz", hostile, version="0.5.0")
+    release._inspect_sdist(f"artifactforge-{_VERSION}.tar.gz", hostile, version=_VERSION)
     with pytest.raises(release.ReleaseEvidenceError, match="sdist/Git source inventories differ"):
         release._bind_distribution_chain(
-            _wheel(), hostile, version="0.5.0", repository_root=repository
+            _wheel(), hostile, version=_VERSION, repository_root=repository
         )
     with pytest.raises(release.ReleaseEvidenceError, match="sdist filename"):
-        release._inspect_sdist("artifactforge-EVIL-0.5.0.tar.gz", _sdist(), version="0.5.0")
+        release._inspect_sdist(f"artifactforge-EVIL-{_VERSION}.tar.gz", _sdist(), version=_VERSION)
     with pytest.raises(release.ReleaseEvidenceError, match="unsafe test path"):
         release._safe_relative_name("safe//but-noncanonical", "test path")
     with pytest.raises(release.ReleaseEvidenceError, match="wheel package bytes differ"):
         release._bind_distribution_chain(
             _wheel(release_payload=b"# different wheel source\n"),
             _sdist(),
-            version="0.5.0",
+            version=_VERSION,
             repository_root=None,
         )
     with pytest.raises(release.ReleaseEvidenceError, match="console entry point"):
         release._bind_distribution_chain(
             _wheel(entry_point=b"[console_scripts]\nartifactforge = attacker:main\n"),
             _sdist(),
-            version="0.5.0",
+            version=_VERSION,
             repository_root=None,
         )
 
@@ -747,37 +751,37 @@ def test_sdist_traversal_is_rejected():
         archive.addfile(info, io.BytesIO(b"x"))
     hostile = gzip.compress(tar_bytes.getvalue(), mtime=release.EXPECTED_ARCHIVE_EPOCH)
     with pytest.raises(release.ReleaseEvidenceError, match="unsafe sdist member"):
-        release._inspect_sdist("artifactforge-0.5.0.tar.gz", hostile, version="0.5.0")
+        release._inspect_sdist(f"artifactforge-{_VERSION}.tar.gz", hostile, version=_VERSION)
 
 
 def test_distribution_containers_reject_hidden_bytes_and_link_entries():
     wheel = _wheel()
     for hostile in (b"hidden-prefix" + wheel, wheel + b"hidden-suffix"):
         with pytest.raises(release.ReleaseEvidenceError, match="ZIP"):
-            release._inspect_wheel("artifactforge-0.5.0-py3-none-any.whl", hostile, version="0.5.0")
+            release._inspect_wheel(f"artifactforge-{_VERSION}-py3-none-any.whl", hostile, version=_VERSION)
     with pytest.raises(release.ReleaseEvidenceError, match="link or special"):
         release._inspect_wheel(
-            "artifactforge-0.5.0-py3-none-any.whl",
+            f"artifactforge-{_VERSION}-py3-none-any.whl",
             _wheel(link_member=True),
-            version="0.5.0",
+            version=_VERSION,
         )
     with pytest.raises(release.ReleaseEvidenceError, match="directory|central"):
         release._inspect_wheel(
-            "artifactforge-0.5.0-py3-none-any.whl",
+            f"artifactforge-{_VERSION}-py3-none-any.whl",
             _wheel(extra_directory=True),
-            version="0.5.0",
+            version=_VERSION,
         )
     with pytest.raises(release.ReleaseEvidenceError, match="canonical"):
         release._inspect_wheel(
-            "artifactforge-0.5.0-py3-none-any.whl",
+            f"artifactforge-{_VERSION}-py3-none-any.whl",
             _wheel(release_mode=0o4644),
-            version="0.5.0",
+            version=_VERSION,
         )
     with pytest.raises(release.ReleaseEvidenceError, match="RECORD bytes/order"):
         release._inspect_wheel(
-            "artifactforge-0.5.0-py3-none-any.whl",
+            f"artifactforge-{_VERSION}-py3-none-any.whl",
             _wheel(reverse_record=True),
-            version="0.5.0",
+            version=_VERSION,
         )
 
     for central_offset, replacement in ((4, b"\x15\x03"), (36, b"\x01\x00")):
@@ -786,7 +790,7 @@ def test_distribution_containers_reject_hidden_bytes_and_link_entries():
         hostile[central + central_offset : central + central_offset + 2] = replacement
         with pytest.raises(release.ReleaseEvidenceError, match="central"):
             release._inspect_wheel(
-                "artifactforge-0.5.0-py3-none-any.whl", bytes(hostile), version="0.5.0"
+                f"artifactforge-{_VERSION}-py3-none-any.whl", bytes(hostile), version=_VERSION
             )
 
     sdist = _sdist()
@@ -798,7 +802,7 @@ def test_distribution_containers_reject_hidden_bytes_and_link_entries():
         ),
     ):
         with pytest.raises(release.ReleaseEvidenceError, match="gzip member|trailing data"):
-            release._inspect_sdist("artifactforge-0.5.0.tar.gz", hostile, version="0.5.0")
+            release._inspect_sdist(f"artifactforge-{_VERSION}.tar.gz", hostile, version=_VERSION)
     for hostile in (
         gzip.compress(
             gzip.decompress(sdist) + (b"\0" * 512),
@@ -809,7 +813,7 @@ def test_distribution_containers_reject_hidden_bytes_and_link_entries():
         _mutate_first_tar_header(sdist, 329, b"0000001\0"),
     ):
         with pytest.raises(release.ReleaseEvidenceError, match="tar|noncanonical"):
-            release._inspect_sdist("artifactforge-0.5.0.tar.gz", hostile, version="0.5.0")
+            release._inspect_sdist(f"artifactforge-{_VERSION}.tar.gz", hostile, version=_VERSION)
 
 
 def test_distribution_chain_binds_source_sdist_and_wheel_modes(repository, monkeypatch):
@@ -823,7 +827,7 @@ def test_distribution_chain_binds_source_sdist_and_wheel_modes(repository, monke
         release._bind_distribution_chain(
             _wheel(release_mode=0o755),
             _sdist(release_mode=0o755),
-            version="0.5.0",
+            version=_VERSION,
             repository_root=repository,
         )
 
@@ -835,7 +839,7 @@ def test_offline_distribution_chain_binds_recorded_materials_to_sdist_bytes():
         release._bind_distribution_chain(
             _wheel(),
             _sdist(),
-            version="0.5.0",
+            version=_VERSION,
             repository_root=None,
             source_record=source,
         )
@@ -848,7 +852,7 @@ def test_offline_clean_distribution_reconstructs_the_recorded_git_tree():
         release._bind_distribution_chain(
             _wheel(),
             _sdist(),
-            version="0.5.0",
+            version=_VERSION,
             repository_root=None,
             source_record=source,
         )
@@ -857,7 +861,7 @@ def test_offline_clean_distribution_reconstructs_the_recorded_git_tree():
 def test_runtime_sbom_rejects_a_dependency():
     subject = {
         "kind": "wheel",
-        "name": "artifactforge-0.5.0-py3-none-any.whl",
+        "name": f"artifactforge-{_VERSION}-py3-none-any.whl",
         "sha256": "sha256:" + "6" * 64,
         "size": 10,
     }
@@ -865,7 +869,7 @@ def test_runtime_sbom_rejects_a_dependency():
         _raw_sbom(development=False),
         profile_name="runtime-distribution",
         source=_source(),
-        project_version="0.5.0",
+        project_version=_VERSION,
         uv_version="0.11.17",
         subject=subject,
     )
@@ -887,7 +891,7 @@ def test_runtime_sbom_rejects_a_dependency():
             profile_name="runtime-distribution",
             subject=subject,
             source=_source(),
-            project_version="0.5.0",
+            project_version=_VERSION,
         )
 
 
@@ -905,19 +909,19 @@ def test_development_sbom_requires_every_direct_oracle_requirement():
             raw,
             profile_name="development-oracle-closure",
             source=_source(),
-            project_version="0.5.0",
+            project_version=_VERSION,
             uv_version="0.11.17",
             subject=None,
         )
 
 
 def test_development_sbom_versions_and_edges_are_bound_to_the_bundled_lock():
-    contract = release._locked_development_contract(_lock_payload(), project_version="0.5.0")
+    contract = release._locked_development_contract(_lock_payload(), project_version=_VERSION)
     document = release._normalize_uv_sbom(
         _raw_sbom(development=True),
         profile_name="development-oracle-closure",
         source=_source(),
-        project_version="0.5.0",
+        project_version=_VERSION,
         uv_version="0.11.17",
         subject=None,
     )
@@ -941,7 +945,7 @@ def test_development_sbom_versions_and_edges_are_bound_to_the_bundled_lock():
         profile_name="development-oracle-closure",
         subject=None,
         source=_source(),
-        project_version="0.5.0",
+        project_version=_VERSION,
     )
     with pytest.raises(release.ReleaseEvidenceError, match="differ from uv.lock"):
         release._validate_development_sbom_against_lock(document, contract)
@@ -954,7 +958,7 @@ def test_lock_rejects_a_direct_version_outside_its_declared_constraint():
         1,
     )
     with pytest.raises(release.ReleaseEvidenceError, match="does not satisfy"):
-        release._locked_development_contract(hostile, project_version="0.5.0")
+        release._locked_development_contract(hostile, project_version=_VERSION)
 
 
 @pytest.mark.parametrize("location", ("ref", "child"))
@@ -969,7 +973,7 @@ def test_raw_uv_dependency_references_reject_unhashable_values(location):
             raw,
             profile_name="development-oracle-closure",
             source=_source(),
-            project_version="0.5.0",
+            project_version=_VERSION,
             uv_version="0.11.17",
             subject=None,
         )
@@ -985,7 +989,7 @@ def test_raw_uv_dependency_references_reject_unhashable_values(location):
 )
 def test_project_contract_rejects_build_and_dependency_override_surfaces(addition):
     with pytest.raises(release.ReleaseEvidenceError, match="closed release profile"):
-        release._project_contract(_pyproject_payload() + addition, expected_version="0.5.0")
+        release._project_contract(_pyproject_payload() + addition, expected_version=_VERSION)
 
 
 def test_verifier_rejects_every_byproduct_tamper(tmp_path, repository, dist_pair, monkeypatch):
@@ -1198,13 +1202,13 @@ def test_malformed_json_and_toml_fail_closed_without_tracebacks(tmp_path, capsys
     with pytest.raises(release.ReleaseEvidenceError, match="surrogate"):
         release._strict_json(b'{"x":"\\ud800"}', label="hostile", maximum=6000)
     with pytest.raises(release.ReleaseEvidenceError, match="project table"):
-        release._project_contract(b"project=[]\n", expected_version="0.5.0")
+        release._project_contract(b"project=[]\n", expected_version=_VERSION)
     for hostile_toml in (
         b"x=" + (b"[" * 500) + b"0" + (b"]" * 500),
         b"x=" + (b"1" * 5000),
     ):
         with pytest.raises(release.ReleaseEvidenceError, match="project identity"):
-            release._project_contract(hostile_toml, expected_version="0.5.0")
+            release._project_contract(hostile_toml, expected_version=_VERSION)
     evidence = tmp_path / "bad"
     evidence.mkdir()
     manifest_path = evidence / "release-evidence.json"

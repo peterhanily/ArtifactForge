@@ -59,12 +59,20 @@ BUILDERS = {
 }
 
 
+_STORY_IDS = {
+    "windows": "windows-dropper-v1",
+    "macos": "macos-quarantined-app-v1",
+    "linux": "linux-autostart-v1",
+}
+
+
 def _case(root: Path, family: str):
     builder, profile_factory = BUILDERS[family]
     host = profile_factory()
     spec = FixtureSpecV2.create(
         fixture_id=f"projection-{family}",
         family=family,
+        story=_STORY_IDS[family],
         profile=ProfileSpecV2(
             id=PROFILE_IDS[family],
             hostname=host.hostname,
@@ -355,6 +363,7 @@ def test_projection_rejects_inexact_inventory_profile_clock_and_resident_truth(t
     other_spec = FixtureSpecV2.create(
         fixture_id=spec.fixture_id,
         family=spec.family,
+        story=_STORY_IDS[spec.family],
         profile=spec.profile,
         seed_hex="42" * 32,
     )

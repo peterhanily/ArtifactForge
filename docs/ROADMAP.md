@@ -13,10 +13,12 @@ that a protected release ran. The next external steps are:
    annotated version tags.
 2. Run the manual exact-tag workflow and retain its GitHub and Sigstore attestations for the
    wheel, source archive, and SBOM subjects.
-3. Obtain the first successful fixed-runner Windows-native result for the current source.
-4. Keep CPython 3.14 core-only until the complete locked oracle set installs, imports, and
+3. Keep CPython 3.14 core-only until the complete locked oracle set installs, imports, and
    passes its controls. `dissect-target==3.25.1` and `yara-python==4.5.4` are the current
    promotion blockers.
+
+The fixed-runner Windows-native result is no longer open: hosted schema-v7 run 30944614694
+produced the first complete passing observation.
 
 Publishing to PyPI, creating a GitHub release, and creating or pushing a tag remain separate
 approval-gated actions. See [`releasing.md`](releasing.md).
@@ -74,7 +76,8 @@ The current v30 Prefetch writer deliberately covers one metric, one volume, one 
 two strings, and a single compression chunk. Open extensions include version 31, alternate v30
 layouts, multiple volumes, directory strings, MFT references, and broader XPRESS-Huffman
 encodings. A hosted schema-v6 run completed the Windows `RtlDecompressBufferEx` canary before
-a later Shell Link contract failure. A complete passing schema-v7 report remains pending.
+a later Shell Link contract failure. Hosted schema-v7 run 30944614694 produced the first
+complete passing report.
 
 TaskCache and Jump Lists remain deferred. TaskCache requires defended writers and independent
 readers for its Actions, Triggers, DynamicInfo, Hash, and security-descriptor blobs. Automatic
@@ -84,6 +87,24 @@ Link profile.
 Later candidates are EVTX, ShimCache, SRUM, and the USN journal. EVTX has the highest value and
 the largest implementation cost because its binary XML template model needs its own writer,
 reader, profile, and mutation suite.
+
+### Stories
+
+A v2 recipe selects a `story` from a closed enumeration. `windows-dropper-v1` and
+`windows-download-only-v1` are registered; macOS and Linux have one each. The mechanism is
+family-general, so the open work is stories rather than plumbing.
+
+`windows-download-only-v1` has no entry in the sample gallery. `scripts/write_sample_docs.py`
+builds its Windows and macOS sections from a benchmark suite and its Linux section from a
+fixture; a second Windows fixture section is the missing piece.
+
+Every new story costs more than a scene builder. It needs its own logical assurance
+expectations, because a story's shape is a claim, and mutations that turn each expectation red.
+A story whose claim is an absence costs more again: absence must be declared up front and
+checked surface by surface, since a short inventory is equally consistent with a builder that
+failed to write one. Stories stay a fixture concept while Gate 4's scenario shape is frozen at
+five questions per scene; a story that changed that shape would have to re-enter its registered
+attack surface first.
 
 ## 4. Linux and macOS coverage
 

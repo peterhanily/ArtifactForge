@@ -2,14 +2,51 @@
 
 [![CI](https://github.com/peterhanily/ArtifactForge/actions/workflows/ci.yml/badge.svg)](https://github.com/peterhanily/ArtifactForge/actions/workflows/ci.yml)
 
-ArtifactForge creates deterministic forensic fixture files for Windows, macOS, and Linux. It
-emits real file formats, derives hashes from the emitted bytes, and checks the results with
-independent readers.
+ArtifactForge builds forensic artifacts to practise on, when you cannot use real ones.
+
+If you teach DFIR, write detections, test a parser, or need a repeatable scene for an exercise,
+your options are usually a real disk image you cannot share, or a flat CSV that no forensic tool
+will open. ArtifactForge gives you the third option: actual PE files, registry hives, Prefetch
+records, SQLite databases and plists that real parsers read, generated from a seed so everyone
+gets byte-identical copies.
+
+One command, under a second:
+
+```console
+$ artifactforge fixture build examples/fixtures/windows-loose-v2.json out/windows
+fixture build: PASS — out/windows
+  fixture id:  windows-dropper-001
+  recipe:      sha256:283e7ce9cb73e3783495dc75a31d1c8b7e2703c0156766f19105fbfe74391381
+  payload:     sha256:12ffbb3a3f6957f37ca6b235fcda0ceb4d688fc9bc961b4397e668c630043d89
+  directories/files: 23/14
+  integrity/reproduction: pass/pass
+
+$ find out/windows/artifacts -type f | sort
+out/windows/artifacts/C/Program Files/acrord32.exe
+out/windows/artifacts/C/Users/v/AppData/Local/Chromium/User Data/Default/History
+out/windows/artifacts/C/Users/v/AppData/Local/Temp/wmi_perf.exe
+out/windows/artifacts/C/Users/v/AppData/Roaming/.../ArtifactForgeMaintenance.lnk
+out/windows/artifacts/C/Windows/AppCompat/Programs/Amcache.hve
+out/windows/artifacts/C/Windows/Prefetch/WMI_PERF.EXE-E24C367F.pf
+out/windows/artifacts/C/Windows/System32/config/SOFTWARE
+out/windows/artifacts/C/Windows/System32/Tasks/ArtifactForge/Maintenance-826527787c60
+```
+
+Those files are joined the way a real scene is joined: the Amcache `FileId` values are the SHA-1
+digests of the PE files actually on disk, the Prefetch record names the program that ran, and the
+Chromium download row points at the executable in `Temp`. Nothing is a stub — every byte is
+parsed back by `pefile`, LIEF, regipy, libregf, `pyscca` and Dissect before it ships.
+
+Every artifact carries an in-band `ARTIFACTFORGE-SYNTHETIC-<16 hex>` marker, so anything that
+escapes into a case file or a rule set can be identified as synthetic later.
 
 > [!CAUTION]
-> ArtifactForge is experimental. Every artifact is synthetic and was collected from no real
-> incident or host. Do not add its values to blocklists, detections, or threat-intelligence
-> systems. Do not upload generated samples to public malware services such as VirusTotal.
+> Every artifact is synthetic and came from no real incident or host. Do not add its values to
+> blocklists, detections, or threat-intelligence systems, and do not upload generated samples to
+> public malware services such as VirusTotal.
+
+For a guided tour of the whole pipeline in one script, run
+[`scripts/demo.sh`](scripts/demo.sh).
 
 This is an independent personal project. It is not affiliated with or endorsed by Cisco,
 Cisco Talos, EvidenceForge, Microsoft, Apple, or any other organisation named here. The work
@@ -19,28 +56,37 @@ began in response to [EvidenceForge issue #332](https://github.com/Cisco-Talos/E
 
 ## Quick start
 
-ArtifactForge requires Python 3.11 or newer. The examples below use
-[uv](https://docs.astral.sh/uv/).
+ArtifactForge needs Python 3.11 or newer and, for the `scorecard` command, a git checkout. The
+examples below use [uv](https://docs.astral.sh/uv/).
 
 ```sh
+git clone https://github.com/peterhanily/ArtifactForge && cd ArtifactForge
 uv venv
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev]"     # the parsers that --assurance checks against live in this extra
 
 uv run artifactforge fixture build examples/fixtures/windows-loose-v2.json out/windows
 uv run artifactforge fixture verify out/windows --assurance
 uv run artifactforge fixture release out/windows out/windows.tar --assurance
+uv run artifactforge fixture extract out/windows.tar out/from-archive
 ```
 
-Run the complete test and gate suites with:
+Use `fixture extract` rather than `tar -x`: the archive normalises file modes so its bytes stay
+deterministic, and extraction restores the private carrier modes that `verify` requires.
+
+Four scenes ship as recipes in [`examples/fixtures/`](examples/fixtures/) — a Windows dropper, a
+Windows download that never executed, a quarantined macOS app, and a Linux autostart. The
+`-v1.json` files beside them are frozen historical vectors that `build` deliberately refuses.
+
+To re-run everything the project checks about itself:
 
 ```sh
-uv run pytest -q
-uv run artifactforge scorecard
+uv run pytest -q                 # ~15 minutes
+uv run artifactforge scorecard   # ~10 minutes; writes the card to stdout, verdict to stderr
 ```
 
 The [`samples/`](samples/) directory contains generated Windows, macOS, and Linux scenes with
-parser observations and byte-derived answer keys. These samples are documentation fixtures,
-not benchmark data.
+parser observations and byte-derived answer keys, so you can read one without running anything.
+These samples are documentation fixtures, not benchmark data.
 
 ## What it produces
 
@@ -50,13 +96,21 @@ not benchmark data.
 | macOS | arm64 Mach-O, knowledgeC, TCC, QuarantineEventsV2, quarantine xattr values, LaunchAgent plists | LIEF and macholib; SQLite plus a bounded byte reader; plistlib plus an independent binary-plist reader; two quarantine-xattr readers |
 | Linux | ELF64 x86-64, XDG autostart entries, timestamped Bash history | LIEF and pyelftools; PyXDG plus a raw reader; dissect.target plus a raw reader |
 
-The current public fixture profiles are:
+A recipe picks a host profile and a story. The profile is the machine; the story is the
+incident shape:
 
-- `windows-loose-v2`
-- `macos-14-loose-v2`
-- `linux-glibc-x86_64-loose-v2`
+| Profile | Story | What the scene contains |
+|---|---|---|
+| `windows-loose-v2` | `windows-dropper-v1` | Download, execution, persistence and reference surfaces |
+| `windows-loose-v2` | `windows-download-only-v1` | Arrival without execution: the mark of the web on one PE, with every execution and persistence surface absent and asserted absent |
+| `macos-14-loose-v2` | `macos-quarantined-app-v1` | Quarantined download with TCC and knowledgeC records |
+| `linux-glibc-x86_64-loose-v2` | `linux-autostart-v1` | Autostart entries and timestamped shell history |
 
-They describe loose artifacts and logical filesystem metadata. They do not describe a disk
+Both lists are closed. A recipe selects a registered story; it cannot describe arbitrary
+actions, and within a story the seed chooses names, paths and values but never which artifact
+kinds appear. See [`docs/fixture-core.md`](docs/fixture-core.md) for the exact recipe surface.
+
+These describe loose artifacts and logical filesystem metadata. They do not describe a disk
 image, an installed host, or proof that any persistence mechanism was activated.
 
 ## Assurance model
@@ -104,8 +158,8 @@ a Shell Link, or activates a LaunchAgent. See
 - Current Fixture ABI v2 databases use ArtifactForge's owned SQLite leaf writer. Frozen
   Fixture ABI v1 vectors remain parse-only and retain their older producer boundary.
 - Native Windows canaries exist for Prefetch decompression, task loading, and Shell Link
-  loading. Hosted schema-v6 runs produced diagnostic failure evidence; the first complete,
-  passing hosted observation is still pending schema-v7 confirmation.
+  loading. Earlier hosted schema-v6 runs produced only diagnostic failure evidence. Hosted
+  schema-v7 run 30944614694 recorded the first complete, passing native observation.
 
 The complete format-by-format limitations are in [`KNOWN_TELLS.md`](KNOWN_TELLS.md).
 
@@ -125,41 +179,11 @@ Regenerate the gallery with:
 
 ## EvidenceForge relationship
 
-EvidenceForge is not a runtime or development dependency. ArtifactForge includes an isolated
-adapter and contract tests for its synthetic log model. The distribution name is
-`evidence-forge`; the import name is `evidenceforge`.
-
-On a fresh, unmodified EvidenceForge v1.13.1 `branch-office-example` run, the adapter observed
-**7 hosts, 853 Sysmon records carrying SHA256, all 853
-recovered and verified** against the hashes EvidenceForge emitted, resolving to 105
-distinct Sysmon logical identities. The verified seed forms were `from_host_metadata` for 78
-identities and `with_description` for 27. Event ID 1 gives 614 records and 78 distinct
-SHA1/SHA256 values.
-
-The same run's Zeek `files.json` has 722 rows: 525 certificate and 197 non-certificate rows,
-with 119 distinct SHA1 and 103 distinct SHA256 values overall. The same-algorithm Sysmon and
-Zeek sets are disjoint, but their basenames are also disjoint. That stock scenario therefore
-shows separate emitter-local identity domains, not a controlled same-file mismatch.
-
-A separate controlled scenario models one HTTP download to an exact path followed by execution
-of that path. It includes same-name and unrelated-path controls and shows that the Zeek and
-Sysmon seed formulas do not join for that modeled logical file. This is a relationship between
-modeled events, not proof of shared materialized file bytes.
-
-The source records and upstream-ready material are in
-[`measurements/`](measurements/) and
-[`integration/evidenceforge/`](integration/evidenceforge/). ArtifactForge has already been
-mentioned in a
-[public EvidenceForge #332 follow-up](https://github.com/Cisco-Talos/EvidenceForge/issues/332#issuecomment-5152265897).
-No formal issue or pull request has been opened from the local drafts.
-
-To run the pinned contract locally:
-
-```sh
-uv pip install "evidence-forge @ git+https://github.com/Cisco-Talos/EvidenceForge@v1.13.1"
-uv run python -m evidenceforge generate scenario.yaml -o ef-out
-ARTIFACTFORGE_EF_OUT=ef-out uv run pytest -q tests/ef_contract/
-```
+[EvidenceForge](https://github.com/Cisco-Talos/EvidenceForge) is Cisco Talos's generator
+for synthetic security *logs*; ArtifactForge makes the *files* those logs would describe.
+It is not a runtime or development dependency here. The two tools' hashes do not currently
+join, and [`docs/evidenceforge.md`](docs/evidenceforge.md) records the measurements that
+show why.
 
 ## Experimental benchmark
 
@@ -214,8 +238,9 @@ after ten rule-file load failures. This is not a clean-corpus or zero-detection 
 scanner provenance and hashes are recorded in [`SECURITY.md`](SECURITY.md).
 
 Portable implementation for Windows coverage phases 6A through 6C is complete. Hosted
-schema-v6 Windows-native runs produced partial failure evidence, but no complete passing report.
-Schema-v7 confirmation and the first protected hosted release-attestation run are still pending.
+schema-v6 Windows-native runs produced partial failure evidence; hosted schema-v7 run
+30944614694 then passed all ten jobs, including the first complete Windows-native observation.
+The first protected hosted release-attestation run is still pending.
 
 ## Documentation
 
@@ -226,6 +251,7 @@ Schema-v7 confirmation and the first protected hosted release-attestation run ar
 | [`docs/fixture-core.md`](docs/fixture-core.md) | Fixture schema, lifecycle, verification, and release contract |
 | [`KNOWN_TELLS.md`](KNOWN_TELLS.md) | Exact format limitations and synthetic markers |
 | [`SECURITY.md`](SECURITY.md) | Safe handling, disclosure, scanner evidence, and supply-chain boundaries |
+| [`docs/evidenceforge.md`](docs/evidenceforge.md) | What was measured against EvidenceForge |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Work that remains open |
 | [`docs/IMPROVEMENT-PLAN.md`](docs/IMPROVEMENT-PLAN.md) | Completed hardening phases and their evidence |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release and unreleased history |

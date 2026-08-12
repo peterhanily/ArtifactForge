@@ -38,6 +38,76 @@ _CROSS_OBSERVATION_FILE_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
 _STABLE_FILE_FIELDS = (*_CROSS_OBSERVATION_FILE_FIELDS, "st_ctime_ns")
 
 
+@dataclass(frozen=True)
+class ChangeVisibility:
+    """How many same-size in-place rewrites a filesystem made visible in its stat timestamps."""
+
+    samples: int
+    distinguished: int
+    minimum_delta_ns: int | None
+
+    @property
+    def complete(self) -> bool:
+        return self.samples > 0 and self.distinguished == self.samples
+
+    def describe(self) -> str:
+        observed = (
+            f"smallest observed timestamp step {self.minimum_delta_ns} ns"
+            if self.minimum_delta_ns is not None
+            else "no timestamp step observed at all"
+        )
+        return f"{self.distinguished} of {self.samples} same-size rewrites were visible; {observed}"
+
+
+def measure_change_visibility(directory, *, samples: int = 8) -> ChangeVisibility:
+    """Probe whether a same-size in-place rewrite moves this filesystem's stat timestamps.
+
+    The snapshot boundary rejects bytes restored before its second pass only because
+    rewriting them moves ctime.  Where file-time granularity is coarser than that window the
+    whole identity tuple is unchanged, so the restore is invisible and the rejection would be
+    a property of the host rather than of the check.  Callers declare that shortfall instead
+    of reporting a pass they did not earn.
+    """
+    if type(samples) is not int or samples < 1:
+        raise InventoryError("change-visibility sample count must be a positive integer")
+    payload_size = 64
+    distinguished = 0
+    minimum_delta_ns: int | None = None
+    try:
+        handle, name = tempfile.mkstemp(dir=Path(directory), prefix=".artifactforge-visibility-")
+        try:
+            os.write(handle, b"\0" * payload_size)
+            os.fsync(handle)
+            before = os.fstat(handle)
+            for index in range(samples):
+                os.lseek(handle, 0, os.SEEK_SET)
+                os.write(handle, bytes(((index % 255) + 1,)) * payload_size)
+                os.fsync(handle)
+                after = os.fstat(handle)
+                moved = [
+                    delta
+                    for delta in (
+                        abs(getattr(after, field) - getattr(before, field))
+                        for field in ("st_mtime_ns", "st_ctime_ns")
+                    )
+                    if delta
+                ]
+                if moved:
+                    distinguished += 1
+                    step = min(moved)
+                    if minimum_delta_ns is None or step < minimum_delta_ns:
+                        minimum_delta_ns = step
+                before = after
+        finally:
+            os.close(handle)
+            os.unlink(name)
+    except OSError as exc:
+        raise InventoryError(f"cannot probe change visibility in {directory}: {exc}") from exc
+    return ChangeVisibility(
+        samples=samples, distinguished=distinguished, minimum_delta_ns=minimum_delta_ns
+    )
+
+
 def windows_creation_time_ns(state: os.stat_result) -> int | None:
     """Return CPython's explicit Windows creation time, failing closed if unavailable."""
     if sys.version_info[:2] >= (3, 12):

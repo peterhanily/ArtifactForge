@@ -3,6 +3,7 @@
   "purpose": "public-reproducible-fixture",
   "fixture_id": "linux-autostart-001",
   "family": "linux",
+  "story": "linux-autostart-v1",
   "profile": {
     "id": "linux-glibc-x86_64-loose-v2",
     "hostname": "linux-01",
@@ -11,6 +12,6 @@
   "seed_hex": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
   "causal_clock": {
     "profile": "artifactforge-causal-clock-v1",
-    "anchor_unix_ns": 1748535207000000000
+    "anchor_unix_ns": 1715957059000000000
   }
 }

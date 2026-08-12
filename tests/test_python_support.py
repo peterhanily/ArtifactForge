@@ -42,10 +42,10 @@ main = GLOBALS["main"]
 
 
 EXPECTED_FIXTURE_DIGESTS = {
-    "windows-loose-v2.json": ("d2d3865e7eca534c6b1102a77106270a19e10b502c5e4c4cbe0878270ef95ef4"),
-    "macos-14-loose-v2.json": ("da227fd866a0c1b70471be4c5a7a49c06c5af498598821a065ebd1165bd2dea6"),
+    "windows-loose-v2.json": ("e7cccfe4e1a92df917824542e9c7207dcb7ca5cf7eddee6e29edeac5123f66d8"),
+    "macos-14-loose-v2.json": ("42df69cd77fe3c6d40d45d9a5a02f0f76590797fac60be6a80c6b86eb5c5099b"),
     "linux-glibc-x86_64-loose-v2.json": (
-        "1ec6bfc7caa38a6c0e43988d9e8028a80a85c3a25a103d8f9d420a463a375759"
+        "46a6e60629a6c06a81db63509757d256fa3390e2a7021f5dc2219dbb27ffa073"
     ),
 }
 
